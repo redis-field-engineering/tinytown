@@ -33,12 +33,49 @@ The conductor knows how to use the `tt` CLI to orchestrate your project.
 
 1. **Context Injection**: The conductor receives context about:
    - Current town state (agents, tasks, pending messages)
-   - Available `tt` commands
+   - Whether this is a **fresh start** or **resuming** an existing session
+   - Available `tt` commands and suggested team roles
    - Its role as orchestrator
 
 2. **AI Model Launch**: Your default model (claude, auggie, etc.) starts with this context
 
 3. **Natural Conversation**: You describe what you want, the AI orchestrates
+
+## Fresh Start vs Resuming
+
+The conductor behaves differently based on existing state:
+
+### Fresh Start (No Agents)
+
+When starting with a new town, the conductor:
+1. Asks what you're trying to build
+2. Offers to analyze the project (README, design docs, codebase)
+3. Suggests appropriate team roles for your project
+4. Helps break down your idea into tasks and agent assignments
+
+### Resuming (Existing Agents)
+
+When agents already exist, the conductor:
+1. Shows current agent status
+2. Checks progress with `tt status --deep`
+3. Continues coordinating from where you left off
+
+## Suggested Team Roles
+
+The conductor knows about common team roles and when to suggest them:
+
+| Role | When to Suggest |
+|------|-----------------|
+| `backend` | API development, server-side logic |
+| `frontend` | UI/UX implementation |
+| `tester` | Writing and running tests |
+| `reviewer` | **Always include** - quality gate |
+| `devops` | CI/CD, deployment, infrastructure |
+| `security` | Security review, vulnerability analysis |
+| `docs` | Documentation, API specs, README |
+| `architect` | System design, code structure |
+
+The conductor will analyze your project and suggest roles that make sense.
 
 ## Example Session
 

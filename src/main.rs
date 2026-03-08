@@ -836,6 +836,62 @@ Begin work. Check your inbox and keep working until it's empty.
                     agent.name, agent.state, inbox
                 ));
             }
+
+            // Detect if this is a fresh start or resuming
+            let is_fresh_start = agents.is_empty();
+            let startup_mode = if is_fresh_start {
+                r#"## 🆕 Fresh Start
+
+This is a new town with no agents yet. Your first job is to help the user:
+
+1. **Understand their goal**: What do they want to build or accomplish?
+2. **Analyze the project**: Look at the codebase, README, or any design docs
+3. **Suggest team roles**: Based on the project, recommend which agents would help:
+
+### Common Team Roles
+
+| Role | When to Use |
+|------|-------------|
+| `backend` | API development, server-side logic |
+| `frontend` | UI/UX implementation |
+| `tester` | Writing and running tests |
+| `reviewer` | **Always include** - quality gate for all work |
+| `devops` | CI/CD, deployment, infrastructure |
+| `security` | Security review, vulnerability analysis |
+| `docs` | Documentation, API specs, README updates |
+| `architect` | System design, code structure decisions |
+
+4. **Break down the work**: Help decompose their idea into specific, assignable tasks
+
+### First Interaction Template
+
+Ask the user:
+> "I'm ready to help orchestrate your project! To get started:
+> 1. What are you trying to build or accomplish?
+> 2. Is there a design doc, README, or existing code I should analyze?
+> 3. Based on that, I'll suggest which agents to spawn and how to break down the work."
+
+If they provide a design or task, analyze it and propose:
+- Which agents to spawn (always include reviewer!)
+- Task breakdown with assignments
+- Suggested order of execution"#
+                    .to_string()
+            } else {
+                format!(
+                    r#"## 🔄 Resuming Session
+
+You have existing agents running:
+{agent_status}
+Check their status with `tt status --deep` to see progress, then continue coordinating.
+
+If work is stalled or you need to pivot, you can:
+- `tt kill <agent>` to stop agents
+- Spawn new agents for different roles
+- Reassign tasks as needed"#,
+                    agent_status = agent_status
+                )
+            };
+
             if agent_status.is_empty() {
                 agent_status = "  (no agents spawned yet)\n".to_string();
             }
@@ -851,6 +907,8 @@ You are the **conductor** of Tinytown "{name}" - like the train conductor guidin
 **Location:** {root}
 **Agents ({agent_count}):**
 {agent_status}
+
+{startup_mode}
 
 ## Your Capabilities
 
@@ -948,6 +1006,7 @@ Now, help the user orchestrate their project!
                 root = cli.town.display(),
                 agent_count = agents.len(),
                 agent_status = agent_status,
+                startup_mode = startup_mode,
             );
 
             // Write context to a temp file for the model
