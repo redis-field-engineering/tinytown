@@ -3,7 +3,6 @@ name: Release Please
 on:
   push:
     branches:
-      - master
       - main
 
 permissions:
@@ -95,5 +94,4 @@ jobs:
 
       - name: Publish to crates.io
         run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        continue-on-error: true
 

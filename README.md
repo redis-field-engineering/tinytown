@@ -205,6 +205,12 @@ If you need more, add it yourself in 10 lines.
 
 ## 📦 Installation
 
+### Quick Install
+
+```bash
+cargo install tinytown
+```
+
 ### Prerequisites
 
 **Redis 8.0+** is required. Tinytown will check your Redis version on startup.
