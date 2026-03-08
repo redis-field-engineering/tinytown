@@ -72,6 +72,18 @@ pub struct RedisConfig {
     /// TCP port (if not using socket)
     #[serde(default = "default_port")]
     pub port: u16,
+
+    /// Enable AOF persistence (state survives restart)
+    #[serde(default)]
+    pub persist: bool,
+
+    /// AOF file path (relative to town root)
+    #[serde(default = "default_aof_path")]
+    pub aof_path: String,
+}
+
+fn default_aof_path() -> String {
+    "redis.aof".to_string()
 }
 
 fn default_true() -> bool {
@@ -97,6 +109,8 @@ impl Default for RedisConfig {
             socket_path: DEFAULT_SOCKET_NAME.to_string(),
             host: "127.0.0.1".to_string(),
             port: 6379,
+            persist: false,
+            aof_path: default_aof_path(),
         }
     }
 }

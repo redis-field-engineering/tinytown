@@ -135,6 +135,12 @@ enum Commands {
         #[arg(default_value = "push")]
         direction: String,
     },
+
+    /// Save Redis state to AOF file (for version control)
+    Save,
+
+    /// Restore Redis state from AOF file
+    Restore,
 }
 
 #[tokio::main]
@@ -676,6 +682,7 @@ tt plan --init              # Create tasks.toml for planning
 tt plan                     # View planned tasks
 tt sync push                # Send tasks.toml to Redis
 tt sync pull                # Save Redis state to tasks.toml (for git)
+tt save                     # Save Redis AOF snapshot (for version control)
 ```
 
 ## Your Role
@@ -830,6 +837,50 @@ Now, help the user orchestrate their project!
                     info!("  push - Send tasks.toml to Redis");
                     info!("  pull - Save Redis tasks to tasks.toml");
                 }
+            }
+        }
+
+        Commands::Save => {
+            let town = Town::connect(&cli.town).await?;
+            let config = town.config();
+            let aof_path = cli.town.join(&config.redis.aof_path);
+
+            // Trigger Redis BGREWRITEAOF to compact and save
+            info!("💾 Saving Redis state...");
+
+            let redis_url = config.redis_url();
+            let client = redis::Client::open(redis_url)?;
+            let mut conn = client.get_multiplexed_async_connection().await?;
+
+            // Trigger background rewrite
+            let _: () = redis::cmd("BGREWRITEAOF").query_async(&mut conn).await?;
+
+            info!("   AOF rewrite triggered. File: {}", aof_path.display());
+            info!("");
+            info!("   To version control Redis state:");
+            info!("   git add {}", config.redis.aof_path);
+            info!("   git commit -m 'Save town state'");
+        }
+
+        Commands::Restore => {
+            let config = tinytown::Config::load(&cli.town)?;
+            let aof_path = cli.town.join(&config.redis.aof_path);
+
+            if !aof_path.exists() {
+                info!("❌ No AOF file found at: {}", aof_path.display());
+                info!("   Run 'tt save' first to create one.");
+            } else {
+                info!("📂 AOF file found: {}", aof_path.display());
+                info!("");
+                info!("   To restore from AOF:");
+                info!("   1. Stop Redis if running");
+                info!(
+                    "   2. Start Redis with: redis-server --appendonly yes --appendfilename {}",
+                    config.redis.aof_path
+                );
+                info!("   3. Redis will replay the AOF and restore state");
+                info!("");
+                info!("   Or just run 'tt init' - it will use existing AOF if present.");
             }
         }
     }

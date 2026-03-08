@@ -38,6 +38,8 @@
 - [tt conductor](./cli/conductor.md)
 - [tt plan](./cli/plan.md)
 - [tt sync](./cli/sync.md)
+- [tt save](./cli/save.md)
+- [tt restore](./cli/restore.md)
 
 # Coming from Gastown?
 

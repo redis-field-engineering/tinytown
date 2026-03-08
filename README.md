@@ -112,15 +112,18 @@ Tinytown is built on **5 core types**:
 | Command | Description |
 |---------|-------------|
 | `tt init` | Initialize a new town |
-| `tt spawn <name>` | Create a new agent (uses default model) |
+| `tt spawn <name>` | Create a new agent (starts AI process!) |
 | `tt assign <agent> <task>` | Assign a task |
 | `tt list` | List all agents |
-| `tt status` | Show town status |
-| `tt conductor` | 🚂 Interactive orchestration mode |
+| `tt status [--deep]` | Show town status (--deep for activity) |
+| `tt kill <agent>` | Stop an agent gracefully |
+| `tt inbox <agent>` | Check agent's message inbox |
+| `tt send [--urgent] <agent> <msg>` | Send message to agent |
+| `tt conductor` | 🚂 AI orchestrator mode |
 | `tt plan --init` | Create tasks.toml for planning |
-| `tt sync push` | Push tasks.toml to Redis |
-| `tt start` | Start the town |
-| `tt stop` | Stop the town |
+| `tt sync [push\|pull]` | Sync tasks.toml ↔ Redis |
+| `tt save` | Save Redis state to AOF (for git) |
+| `tt restore` | Restore Redis state from AOF |
 
 ## 🤖 Supported Agent CLIs
 
