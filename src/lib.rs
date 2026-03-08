@@ -49,6 +49,7 @@ pub mod error;
 pub mod global_config;
 pub mod message;
 pub mod plan;
+pub mod redis_manager;
 pub mod task;
 pub mod town;
 
@@ -59,5 +60,6 @@ pub use error::{Error, Result};
 pub use global_config::GlobalConfig;
 pub use message::{Message, MessageId, MessageType, Priority};
 pub use plan::{TaskEntry, TasksFile, TasksMeta};
+pub use redis_manager::RedisManager;
 pub use task::{Task, TaskId, TaskState};
 pub use town::Town;
