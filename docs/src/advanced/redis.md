@@ -34,14 +34,12 @@ By default, Tinytown:
 
 ### TCP Connection
 
-```json
-{
-  "redis": {
-    "use_socket": false,
-    "host": "127.0.0.1",
-    "port": 6379
-  }
-}
+```toml
+[redis]
+use_socket = false
+host = "127.0.0.1"
+port = 6379
+bind = "127.0.0.1"
 ```
 
 **Use for:**
@@ -49,21 +47,64 @@ By default, Tinytown:
 - Docker containers
 - Networked deployments
 
+## Security
+
+### Password Authentication
+
+Enable password authentication for TCP connections:
+
+```toml
+[redis]
+use_socket = false
+host = "127.0.0.1"
+port = 6379
+password = "your-secret-password"
+```
+
+**Note:** Password is required when binding to non-localhost addresses.
+
+### TLS Encryption
+
+Enable TLS for encrypted connections:
+
+```toml
+[redis]
+use_socket = false
+host = "redis.example.com"
+port = 6379
+password = "secret123"
+tls_enabled = true
+tls_cert = "/etc/ssl/redis.crt"
+tls_key = "/etc/ssl/redis.key"
+tls_ca_cert = "/etc/ssl/ca.crt"
+```
+
+When TLS is enabled:
+- Tinytown uses the `rediss://` URL scheme
+- The non-TLS port is disabled
+- Certificates are passed to Redis server on startup
+
+### Security Recommendations
+
+1. **Use Unix sockets for local development** - Most secure, no network exposure
+2. **Bind to localhost** (`127.0.0.1`) when possible
+3. **Always use password** for non-localhost bindings
+4. **Enable TLS** for production and remote connections
+5. **Use environment variables** for passwords in CI/CD
+
 ## Connecting to External Redis
 
 Use an existing Redis server instead of starting one:
 
-```json
-{
-  "redis": {
-    "use_socket": false,
-    "host": "redis.example.com",
-    "port": 6379
-  }
-}
+```toml
+[redis]
+use_socket = false
+host = "redis.example.com"
+port = 6379
+password = "your-password"
 ```
 
-Tinytown will connect without starting a new server.
+Tinytown will connect without starting a new server (external hosts are auto-detected).
 
 ## Persistence
 
@@ -173,21 +214,19 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
 
 volumes:
   redis-data:
 ```
 
 Then configure Tinytown:
-```json
-{
-  "redis": {
-    "use_socket": false,
-    "host": "localhost",
-    "port": 6379
-  }
-}
+```toml
+[redis]
+use_socket = false
+host = "localhost"
+port = 6379
+password = "your-docker-redis-password"
 ```
 
 ## Performance Tuning
