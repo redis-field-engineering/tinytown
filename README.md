@@ -34,11 +34,15 @@ Think of it as:
 ## 🚀 Quick Start
 
 ```bash
+# 0. Bootstrap Redis (one-time setup, uses AI to download & build)
+tt bootstrap
+export PATH="$HOME/.tt/bin:$PATH"
+
 # 1. Initialize a new town (auto-names from git repo+branch)
 tt init
 # Creates town "my-repo-feature-branch"
 
-# 2. Spawn an agent (uses default_model from config)
+# 2. Spawn an agent (uses default CLI from config)
 tt spawn worker-1
 
 # 3. Assign a task
@@ -50,6 +54,8 @@ tt conductor
 ```
 
 That's it! Your agents are now coordinating via Redis.
+
+> **Note:** `tt bootstrap` delegates to an AI agent to download Redis from GitHub and compile it for your machine. Alternatively: `brew install redis` (macOS) or `apt install redis-server` (Ubuntu).
 
 ## 💻 Code Example
 
@@ -112,6 +118,7 @@ Tinytown is built on **5 core types**:
 
 | Command | Description |
 |---------|-------------|
+| `tt bootstrap [version]` | Download & build Redis (uses AI agent) |
 | `tt init` | Initialize a new town |
 | `tt spawn <name>` | Create a new agent (starts AI process!) |
 | `tt assign <agent> <task>` | Assign a task |

@@ -31,6 +31,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Bootstrap: Download and build Redis (delegates to an AI agent)
+    Bootstrap {
+        /// Redis version to install (default: latest)
+        #[arg(default_value = "latest")]
+        version: String,
+
+        /// AI CLI to use for bootstrapping
+        #[arg(short, long, default_value = "claude")]
+        model: String,
+    },
+
     /// Initialize a new town
     Init {
         /// Town name
@@ -143,6 +154,124 @@ enum Commands {
     Restore,
 }
 
+/// Bootstrap Redis by delegating to an AI coding agent.
+///
+/// The agent fetches the release from GitHub, downloads source, and builds it.
+fn bootstrap_redis(version: &str, model: &str) -> Result<()> {
+    use std::process::Command;
+
+    let tt_dir = dirs::home_dir()
+        .map(|h| h.join(".tt"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".tt"));
+
+    info!("🚀 Bootstrapping Redis {} to {}", version, tt_dir.display());
+    info!("   Using {} to download and build Redis...", model);
+    info!("");
+
+    // Create .tt directory
+    std::fs::create_dir_all(&tt_dir)?;
+
+    let version_instruction = if version == "latest" {
+        "Find the latest stable release from https://github.com/redis/redis/releases".to_string()
+    } else {
+        format!("Use Redis version {}", version)
+    };
+
+    let prompt = format!(
+        r#"# Task: Download and Build Redis
+
+{version_instruction}
+
+## Steps
+
+1. Go to https://github.com/redis/redis/releases
+2. Find the release (latest stable, or the specific version requested)
+3. Download the source tarball (.tar.gz) to {tt_dir}
+4. Extract it
+5. Run `make` to build Redis
+6. Copy the binaries (redis-server, redis-cli) to {tt_dir}/bin/
+
+## Target Directory
+
+Install to: {tt_dir}
+
+Final binaries should be at:
+- {tt_dir}/bin/redis-server
+- {tt_dir}/bin/redis-cli
+
+## Important
+
+- Use curl or wget to download
+- The source URL format is: https://github.com/redis/redis/archive/refs/tags/<version>.tar.gz
+- After building, verify with: {tt_dir}/bin/redis-server --version
+
+## When Done
+
+Print the path to add to PATH:
+export PATH="{tt_dir}/bin:$PATH"
+
+Or add to your shell rc file.
+"#,
+        version_instruction = version_instruction,
+        tt_dir = tt_dir.display()
+    );
+
+    // Write prompt to temp file
+    let prompt_file = tt_dir.join("bootstrap_prompt.md");
+    std::fs::write(&prompt_file, &prompt)?;
+
+    // Get the model command
+    let model_cmd = match model {
+        "claude" => "claude --print --dangerously-skip-permissions",
+        "auggie" => "auggie --print",
+        "codex" => "codex exec --dangerously-bypass-approvals-and-sandbox",
+        "aider" => "aider --yes --no-auto-commits --message",
+        _ => model, // Allow custom commands
+    };
+
+    info!("📋 Running: {} < {}", model_cmd, prompt_file.display());
+    info!("   (This may take a few minutes to download and compile)");
+    info!("");
+
+    // Run the AI agent
+    let status = Command::new("sh")
+        .args(["-c", &format!("{} < {}", model_cmd, prompt_file.display())])
+        .current_dir(&tt_dir)
+        .status()?;
+
+    // Clean up prompt file
+    let _ = std::fs::remove_file(&prompt_file);
+
+    if status.success() {
+        let redis_bin = tt_dir.join("bin/redis-server");
+        if redis_bin.exists() {
+            info!("");
+            info!("✅ Redis installed successfully!");
+            info!("");
+            info!("   Add to your PATH:");
+            info!("   export PATH=\"{}/bin:$PATH\"", tt_dir.display());
+            info!("");
+            info!("   Or add to ~/.zshrc or ~/.bashrc for persistence.");
+            info!("");
+            info!("   Then run: tt init");
+        } else {
+            info!("");
+            info!("⚠️  Agent finished but redis-server not found at expected location.");
+            info!("   Check {} for build artifacts.", tt_dir.display());
+            info!("   You may need to run 'tt bootstrap' again or build manually.");
+        }
+    } else {
+        info!("");
+        info!("❌ Bootstrap failed. Check the output above for errors.");
+        info!("   You can also install Redis manually:");
+        info!("   - macOS: brew install redis");
+        info!("   - Ubuntu: sudo apt install redis-server");
+        info!("   - From source: https://redis.io/docs/latest/operate/oss_and_stack/install/");
+    }
+
+    Ok(())
+}
+
 /// Derive a town name from git repo and branch, or fall back to directory name.
 ///
 /// Format: `<repo>-<branch>` (e.g., `redisearch-feature-auth`)
@@ -219,6 +348,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     match cli.command {
+        Commands::Bootstrap { version, model } => {
+            bootstrap_redis(&version, &model)?;
+        }
+
         Commands::Init { name } => {
             let name = name.unwrap_or_else(|| derive_town_name(&cli.town));
 

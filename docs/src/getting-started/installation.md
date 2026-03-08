@@ -6,7 +6,20 @@ Getting Tinytown running takes about 30 seconds.
 
 ### Redis 8.0+
 
-Tinytown requires Redis 8.0 or later. It will check your version on startup.
+Tinytown requires Redis 8.0 or later.
+
+#### Option 1: Bootstrap (Recommended) ⭐
+
+Let Tinytown download and build Redis for you using an AI agent:
+
+```bash
+tt bootstrap
+export PATH="$HOME/.tt/bin:$PATH"
+```
+
+This gets you the latest Redis compiled and optimized for your machine. Add the export to `~/.zshrc` or `~/.bashrc` for persistence.
+
+#### Option 2: Package Manager
 
 **macOS:**
 ```bash
@@ -21,11 +34,12 @@ sudo apt-get update
 sudo apt-get install redis
 ```
 
-**From Source:**
+#### Option 3: From Source (Manual)
+
 ```bash
-curl -O https://download.redis.io/redis-stable.tar.gz
-tar xzf redis-stable.tar.gz
-cd redis-stable && make && sudo make install
+curl -LO https://github.com/redis/redis/archive/refs/tags/8.0.2.tar.gz
+tar xzf 8.0.2.tar.gz
+cd redis-8.0.2 && make && sudo make install
 ```
 
 For more options, see the [Redis downloads page](https://redis.io/downloads/).

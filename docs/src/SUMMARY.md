@@ -27,6 +27,7 @@
 
 # CLI Reference
 
+- [tt bootstrap](./cli/bootstrap.md)
 - [tt init](./cli/init.md)
 - [tt spawn](./cli/spawn.md)
 - [tt assign](./cli/assign.md)

@@ -52,13 +52,13 @@ pub enum Error {
 
     /// Redis not installed
     #[error(
-        "Redis not found. Please install Redis 8.0+ and ensure 'redis-server' is on your PATH.\nSee: https://redis.io/downloads/"
+        "Redis not found. Run 'tt bootstrap' to download and build Redis automatically.\n\nAlternatives:\n  - macOS: brew install redis\n  - Ubuntu: sudo apt install redis-server\n  - Manual: https://redis.io/downloads/"
     )]
     RedisNotInstalled,
 
     /// Redis version too old
     #[error(
-        "Redis version {0} is too old. Tinytown requires Redis 8.0 or later.\nSee: https://redis.io/downloads/"
+        "Redis version {0} is too old. Tinytown requires Redis 8.0+.\n\nRun 'tt bootstrap' to install the latest version.\n\nAlternatives:\n  - macOS: brew upgrade redis\n  - Ubuntu: See https://redis.io/downloads/"
     )]
     RedisVersionTooOld(String),
 
