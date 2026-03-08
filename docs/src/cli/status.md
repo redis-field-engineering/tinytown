@@ -14,11 +14,13 @@ Displays comprehensive status of the town including:
 - Town name and location
 - Redis connection info
 - All agents with their states and pending messages
+- **With `--deep`**: Recent activity from each agent
 
 ## Options
 
 | Option | Short | Description |
 |--------|-------|-------------|
+| `--deep` | | Show recent agent activity (stored in Redis) |
 | `--town <PATH>` | `-t` | Town directory (default: `.`) |
 | `--verbose` | `-v` | Enable verbose logging |
 
@@ -30,8 +32,7 @@ Displays comprehensive status of the town including:
 tt status
 ```
 
-## Output
-
+Output:
 ```
 🏘️  Town: my-project
 📂 Root: /Users/you/projects/my-project
@@ -40,6 +41,31 @@ tt status
    backend (Working) - 0 messages pending
    frontend (Idle) - 2 messages pending
    reviewer (Idle) - 1 messages pending
+```
+
+### Deep Status (with activity)
+
+```bash
+tt status --deep
+```
+
+Output:
+```
+🏘️  Town: my-project
+📂 Root: /Users/you/projects/my-project
+📡 Redis: unix:///Users/you/projects/my-project/redis.sock
+🤖 Agents: 3
+   backend (Working) - 0 messages pending
+      └─ Round 3: ✅ completed
+      └─ Round 2: ✅ completed
+      └─ Round 1: ✅ completed
+   frontend (Idle) - 2 messages pending
+      └─ Round 5: ✅ completed
+   reviewer (Idle) - 1 messages pending
+      └─ Round 2: ⚠️ model error
+
+📊 Deep status shows last activity from each agent.
+   Activity is stored in Redis with 1-hour TTL.
 ```
 
 ## Output Fields

@@ -26,6 +26,15 @@ const STATE_PREFIX: &str = "mt:agent:";
 /// Key prefix for tasks
 const TASK_PREFIX: &str = "mt:task:";
 
+/// Key prefix for agent activity logs
+const ACTIVITY_PREFIX: &str = "mt:activity:";
+
+/// TTL for activity logs (1 hour)
+const ACTIVITY_TTL_SECS: u64 = 3600;
+
+/// Max activity entries per agent
+const ACTIVITY_MAX_ENTRIES: isize = 10;
+
 /// Pub/sub channel for broadcasts
 const BROADCAST_CHANNEL: &str = "mt:broadcast";
 
@@ -154,6 +163,45 @@ impl Channel {
         match result {
             Some(data) => Ok(Some(serde_json::from_str(&data)?)),
             None => Ok(None),
+        }
+    }
+
+    /// Log agent activity (bounded, with TTL).
+    ///
+    /// Stores recent activity in Redis list, trimmed to ACTIVITY_MAX_ENTRIES.
+    /// TTL ensures cleanup even if agent dies.
+    #[instrument(skip(self, activity))]
+    pub async fn log_agent_activity(&self, agent_id: AgentId, activity: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let key = format!("{}{}", ACTIVITY_PREFIX, agent_id);
+
+        // Prepend to list (newest first)
+        let _: () = conn.lpush(&key, activity).await?;
+
+        // Trim to max entries
+        let _: () = conn.ltrim(&key, 0, ACTIVITY_MAX_ENTRIES - 1).await?;
+
+        // Set/refresh TTL
+        let _: () = conn.expire(&key, ACTIVITY_TTL_SECS as i64).await?;
+
+        debug!("Logged activity for agent {}", agent_id);
+        Ok(())
+    }
+
+    /// Get recent agent activity.
+    ///
+    /// Returns the last N activity entries, newest first.
+    #[instrument(skip(self))]
+    pub async fn get_agent_activity(&self, agent_id: AgentId) -> Result<Option<String>> {
+        let mut conn = self.conn.clone();
+        let key = format!("{}{}", ACTIVITY_PREFIX, agent_id);
+
+        let entries: Vec<String> = conn.lrange(&key, 0, 4).await?; // Get last 5
+
+        if entries.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(entries.join("\n")))
         }
     }
 }

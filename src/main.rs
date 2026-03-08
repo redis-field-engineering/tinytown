@@ -82,7 +82,11 @@ enum Commands {
     },
 
     /// Show town status
-    Status,
+    Status {
+        /// Show deep status with recent agent activity
+        #[arg(long)]
+        deep: bool,
+    },
 
     /// Start the town (Redis server)
     Start,
@@ -244,7 +248,7 @@ async fn main() -> Result<()> {
             info!("📋 Assigned task {} to agent '{}'", task_id, agent);
         }
 
-        Commands::Status => {
+        Commands::Status { deep } => {
             let town = Town::connect(&cli.town).await?;
             let config = town.config();
 
@@ -261,6 +265,21 @@ async fn main() -> Result<()> {
                     "   {} ({:?}) - {} messages pending",
                     agent.name, agent.state, inbox_len
                 );
+
+                if deep {
+                    // Get recent activity from Redis
+                    if let Ok(Some(activity)) = town.channel().get_agent_activity(agent.id).await {
+                        for line in activity.lines().take(5) {
+                            info!("      └─ {}", line);
+                        }
+                    }
+                }
+            }
+
+            if deep {
+                info!("");
+                info!("📊 Deep status shows last activity from each agent.");
+                info!("   Activity is stored in Redis with 1-hour TTL.");
             }
         }
 
@@ -426,17 +445,27 @@ Begin work on your current task.
                 // Clean up prompt file
                 let _ = std::fs::remove_file(&prompt_file);
 
-                match status {
+                // Log activity and result
+                let activity_msg = match &status {
                     Ok(s) if s.success() => {
                         info!("   ✅ Round {} complete", round);
+                        format!("Round {}: ✅ completed", round)
                     }
                     Ok(_) => {
                         info!("   ⚠️ Model exited with error");
+                        format!("Round {}: ⚠️ model error", round)
                     }
                     Err(e) => {
                         info!("   ❌ Failed to run model: {}", e);
-                        break;
+                        format!("Round {}: ❌ failed: {}", round, e)
                     }
+                };
+
+                // Store activity in Redis (bounded, TTL'd)
+                channel.log_agent_activity(agent_id, &activity_msg).await?;
+
+                if status.is_err() {
+                    break;
                 }
 
                 // Update agent state back to idle
@@ -512,8 +541,9 @@ tt inbox <agent>                   # Check agent's inbox
 
 ### Check status
 ```bash
-tt status    # Overview of town and agents
-tt list      # List all agents
+tt status         # Overview of town and agents
+tt status --deep  # Deep status with recent agent activity
+tt list           # List all agents
 ```
 
 ### Plan and persist tasks
