@@ -29,11 +29,29 @@ The agent:
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--model <MODEL>` | `-m` | AI model to use (uses `default_model` from config) |
+| `--model <MODEL>` | `-m` | AI CLI to use (default: from `tinytown.json`) |
 | `--max-rounds <N>` | | Maximum iterations before stopping (default: 10) |
 | `--foreground` | | Run in foreground instead of background |
 | `--town <PATH>` | `-t` | Town directory (default: `.`) |
 | `--verbose` | `-v` | Enable verbose logging |
+
+## Setting the Default CLI
+
+Edit `tinytown.json` to change which AI CLI is used by default:
+
+```json
+{
+  "name": "my-town",
+  "default_model": "auggie"
+}
+```
+
+Then all `tt spawn` commands use that CLI:
+
+```bash
+tt spawn backend              # Uses auggie (from config)
+tt spawn frontend --model codex   # Override to use codex
+```
 
 ## Built-in Agent CLIs
 

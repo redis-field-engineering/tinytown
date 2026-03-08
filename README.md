@@ -162,6 +162,25 @@ Single `tinytown.json` file:
 }
 ```
 
+### Setting the Default CLI
+
+Change `default_model` in `tinytown.json` to set which AI CLI is used when spawning agents:
+
+```json
+{
+  "default_model": "auggie"
+}
+```
+
+Available options: `claude`, `auggie`, `codex`, `aider`, `gemini`, `copilot`, `cursor`
+
+Or override per-agent:
+
+```bash
+tt spawn backend              # Uses default_model from config
+tt spawn frontend --model auggie   # Override for this agent
+```
+
 ## 🎯 Design Philosophy
 
 **Simplicity over features.** We include only what you need:
