@@ -101,12 +101,12 @@ impl AgentState {
     }
 }
 
-/// Configuration for spawning a specific agent model.
+/// Configuration for an agent CLI (e.g., claude, auggie, codex).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentModel {
-    /// Model name (e.g., "claude", "gemini", "local")
+pub struct AgentCli {
+    /// CLI name (e.g., "claude", "auggie", "codex")
     pub name: String,
-    /// Command to run the agent
+    /// Command to run the agent CLI
     pub command: String,
     /// Working directory
     pub workdir: Option<String>,
@@ -115,8 +115,8 @@ pub struct AgentModel {
     pub env: std::collections::HashMap<String, String>,
 }
 
-impl AgentModel {
-    /// Create a new agent model configuration.
+impl AgentCli {
+    /// Create a new agent CLI configuration.
     #[must_use]
     pub fn new(name: impl Into<String>, command: impl Into<String>) -> Self {
         Self {
@@ -139,8 +139,8 @@ pub struct Agent {
     pub agent_type: AgentType,
     /// Current state
     pub state: AgentState,
-    /// Model being used
-    pub model: String,
+    /// CLI being used (e.g., "claude", "auggie")
+    pub cli: String,
     /// Current task (if working)
     pub current_task: Option<crate::task::TaskId>,
     /// When agent was created
@@ -157,14 +157,14 @@ pub struct Agent {
 impl Agent {
     /// Create a new agent.
     #[must_use]
-    pub fn new(name: impl Into<String>, model: impl Into<String>, agent_type: AgentType) -> Self {
+    pub fn new(name: impl Into<String>, cli: impl Into<String>, agent_type: AgentType) -> Self {
         let now = Utc::now();
         Self {
             id: AgentId::new(),
             name: name.into(),
             agent_type,
             state: AgentState::Starting,
-            model: model.into(),
+            cli: cli.into(),
             current_task: None,
             created_at: now,
             last_heartbeat: now,
@@ -182,7 +182,7 @@ impl Agent {
             name: name.into(),
             agent_type: AgentType::Supervisor,
             state: AgentState::Starting,
-            model: "supervisor".into(),
+            cli: "supervisor".into(),
             current_task: None,
             created_at: now,
             last_heartbeat: now,

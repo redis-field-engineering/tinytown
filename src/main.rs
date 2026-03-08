@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use tinytown::{Result, Task, Town, plan};
+use tinytown::{GlobalConfig, Result, Task, Town, plan};
 
 #[derive(Parser)]
 #[command(name = "tt")]
@@ -37,9 +37,9 @@ enum Commands {
         #[arg(default_value = "latest")]
         version: String,
 
-        /// AI CLI to use for bootstrapping
-        #[arg(short, long, default_value = "claude")]
-        model: String,
+        /// Agent CLI to use for bootstrapping (uses default_cli from global config if not specified)
+        #[arg(short, long)]
+        cli: Option<String>,
     },
 
     /// Initialize a new town
@@ -54,9 +54,9 @@ enum Commands {
         /// Agent name
         name: String,
 
-        /// Model to use (uses default_model from config if not specified)
+        /// CLI to use (uses default_cli from config if not specified)
         #[arg(short, long)]
-        model: Option<String>,
+        cli: Option<String>,
 
         /// Maximum rounds before agent stops (default: runs until done)
         #[arg(long, default_value = "10")]
@@ -152,12 +152,21 @@ enum Commands {
 
     /// Restore Redis state from AOF file
     Restore,
+
+    /// View or set global configuration (~/.tt/config.toml)
+    Config {
+        /// Config key to get or set (e.g., default_cli)
+        key: Option<String>,
+
+        /// Value to set (if omitted, shows current value)
+        value: Option<String>,
+    },
 }
 
 /// Bootstrap Redis by delegating to an AI coding agent.
 ///
 /// The agent fetches the release from GitHub, downloads source, and builds it.
-fn bootstrap_redis(version: &str, model: &str) -> Result<()> {
+fn bootstrap_redis(version: &str, cli: &str) -> Result<()> {
     use std::process::Command;
 
     let tt_dir = dirs::home_dir()
@@ -165,14 +174,14 @@ fn bootstrap_redis(version: &str, model: &str) -> Result<()> {
         .unwrap_or_else(|| std::path::PathBuf::from(".tt"));
 
     info!("🚀 Bootstrapping Redis {} to {}", version, tt_dir.display());
-    info!("   Using {} to download and build Redis...", model);
+    info!("   Using {} to download and build Redis...", cli);
     info!("");
 
     // Create .tt directory
     std::fs::create_dir_all(&tt_dir)?;
 
     let version_instruction = if version == "latest" {
-        "Find the latest stable release from https://github.com/redis/redis/releases".to_string()
+        "Find the latest stable release version number from https://github.com/redis/redis/releases (e.g., 8.0.2)".to_string()
     } else {
         format!("Use Redis version {}", version)
     };
@@ -185,32 +194,31 @@ fn bootstrap_redis(version: &str, model: &str) -> Result<()> {
 ## Steps
 
 1. Go to https://github.com/redis/redis/releases
-2. Find the release (latest stable, or the specific version requested)
-3. Download the source tarball (.tar.gz) to {tt_dir}
-4. Extract it
-5. Run `make` to build Redis
-6. Copy the binaries (redis-server, redis-cli) to {tt_dir}/bin/
+2. Find the release version (e.g., 8.0.2)
+3. Download the source tarball (.tar.gz) to {tt_dir}/versions/
+4. Extract it to {tt_dir}/versions/redis-<version>/ (e.g., redis-8.0.2)
+5. cd into the extracted directory and run `make` to build Redis
+6. Create {tt_dir}/bin/ directory if it doesn't exist
+7. Create symlinks in {tt_dir}/bin/ pointing to the built binaries:
+   - ln -sf {tt_dir}/versions/redis-<version>/src/redis-server {tt_dir}/bin/redis-server
+   - ln -sf {tt_dir}/versions/redis-<version>/src/redis-cli {tt_dir}/bin/redis-cli
 
 ## Target Directory
 
-Install to: {tt_dir}
-
-Final binaries should be at:
-- {tt_dir}/bin/redis-server
-- {tt_dir}/bin/redis-cli
+Base directory: {tt_dir}
+Version directory: {tt_dir}/versions/redis-<version>/
+Symlinks: {tt_dir}/bin/redis-server, {tt_dir}/bin/redis-cli
 
 ## Important
 
 - Use curl or wget to download
 - The source URL format is: https://github.com/redis/redis/archive/refs/tags/<version>.tar.gz
 - After building, verify with: {tt_dir}/bin/redis-server --version
+- The symlinks allow easy switching between versions
 
 ## When Done
 
-Print the path to add to PATH:
-export PATH="{tt_dir}/bin:$PATH"
-
-Or add to your shell rc file.
+Print the installed version and confirm the symlinks are working.
 "#,
         version_instruction = version_instruction,
         tt_dir = tt_dir.display()
@@ -220,22 +228,22 @@ Or add to your shell rc file.
     let prompt_file = tt_dir.join("bootstrap_prompt.md");
     std::fs::write(&prompt_file, &prompt)?;
 
-    // Get the model command
-    let model_cmd = match model {
+    // Get the CLI command
+    let cli_cmd = match cli {
         "claude" => "claude --print --dangerously-skip-permissions",
         "auggie" => "auggie --print",
         "codex" => "codex exec --dangerously-bypass-approvals-and-sandbox",
         "aider" => "aider --yes --no-auto-commits --message",
-        _ => model, // Allow custom commands
+        _ => cli, // Allow custom commands
     };
 
-    info!("📋 Running: {} < {}", model_cmd, prompt_file.display());
+    info!("📋 Running: {} < {}", cli_cmd, prompt_file.display());
     info!("   (This may take a few minutes to download and compile)");
     info!("");
 
     // Run the AI agent
     let status = Command::new("sh")
-        .args(["-c", &format!("{} < {}", model_cmd, prompt_file.display())])
+        .args(["-c", &format!("{} < {}", cli_cmd, prompt_file.display())])
         .current_dir(&tt_dir)
         .status()?;
 
@@ -245,19 +253,28 @@ Or add to your shell rc file.
     if status.success() {
         let redis_bin = tt_dir.join("bin/redis-server");
         if redis_bin.exists() {
+            // Get version from the installed binary
+            let version_output = Command::new(&redis_bin)
+                .arg("--version")
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .unwrap_or_default();
+
             info!("");
             info!("✅ Redis installed successfully!");
+            info!("   Location: {}", redis_bin.display());
+            if !version_output.is_empty() {
+                info!("   {}", version_output.trim());
+            }
             info!("");
-            info!("   Add to your PATH:");
-            info!("   export PATH=\"{}/bin:$PATH\"", tt_dir.display());
-            info!("");
-            info!("   Or add to ~/.zshrc or ~/.bashrc for persistence.");
-            info!("");
-            info!("   Then run: tt init");
+            info!("   Tinytown will automatically use this Redis.");
+            info!("   Run: tt init");
         } else {
             info!("");
             info!("⚠️  Agent finished but redis-server not found at expected location.");
-            info!("   Check {} for build artifacts.", tt_dir.display());
+            info!("   Expected: {}", redis_bin.display());
+            info!("   Check {}/versions/ for build artifacts.", tt_dir.display());
             info!("   You may need to run 'tt bootstrap' again or build manually.");
         }
     } else {
@@ -348,8 +365,14 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     match cli.command {
-        Commands::Bootstrap { version, model } => {
-            bootstrap_redis(&version, &model)?;
+        Commands::Bootstrap { version, cli: cli_arg } => {
+            // Use CLI arg, or fall back to global config default_cli
+            let cli_name = cli_arg.unwrap_or_else(|| {
+                GlobalConfig::load()
+                    .map(|c| c.default_cli)
+                    .unwrap_or_else(|_| "claude".to_string())
+            });
+            bootstrap_redis(&version, &cli_name)?;
         }
 
         Commands::Init { name } => {
@@ -366,16 +389,26 @@ async fn main() -> Result<()> {
 
         Commands::Spawn {
             name,
-            model,
+            cli: cli_arg,
             max_rounds,
             foreground,
         } => {
             let town = Town::connect(&cli.town).await?;
-            let model = model.unwrap_or_else(|| town.config().default_model.clone());
-            let agent = town.spawn_agent(&name, &model).await?;
+            // Priority: CLI arg > town config > global config
+            let cli_name = cli_arg.unwrap_or_else(|| {
+                let town_cli = &town.config().default_cli;
+                if !town_cli.is_empty() {
+                    town_cli.clone()
+                } else {
+                    GlobalConfig::load()
+                        .map(|c| c.default_cli)
+                        .unwrap_or_else(|_| "claude".to_string())
+                }
+            });
+            let agent = town.spawn_agent(&name, &cli_name).await?;
             let agent_id = agent.id().to_string();
 
-            info!("🤖 Spawned agent '{}' using model '{}'", name, model);
+            info!("🤖 Spawned agent '{}' using CLI '{}'", name, cli_name);
             info!("   ID: {}", agent_id);
 
             // Get the path to this executable
@@ -611,23 +644,23 @@ async fn main() -> Result<()> {
                 .parse()
                 .map_err(|_| tinytown::Error::AgentNotFound(format!("Invalid agent ID: {}", id)))?;
 
-            // Get model command
+            // Get CLI command
             let agent_state = channel.get_agent_state(agent_id).await?;
-            let model_name = agent_state
+            let cli_name = agent_state
                 .as_ref()
-                .map(|a| a.model.clone())
-                .unwrap_or_else(|| config.default_model.clone());
-            let model_cmd = config
-                .models
-                .get(&model_name)
-                .map(|m| m.command.clone())
-                .unwrap_or_else(|| model_name.clone());
+                .map(|a| a.cli.clone())
+                .unwrap_or_else(|| config.default_cli.clone());
+            let cli_cmd = config
+                .agent_clis
+                .get(&cli_name)
+                .map(|c| c.command.clone())
+                .unwrap_or_else(|| cli_name.clone());
 
             info!(
                 "🔄 Agent '{}' starting loop (max {} rounds)",
                 name, max_rounds
             );
-            info!("   Model: {} ({})", model_name, model_cmd);
+            info!("   CLI: {} ({})", cli_name, cli_cmd);
 
             for round in 1..=max_rounds {
                 info!("\n📍 Round {}/{}", round, max_rounds);
@@ -756,14 +789,14 @@ Begin work. Check your inbox and keep working until it's empty.
                     channel.set_agent_state(&agent).await?;
                 }
 
-                // Run the AI model
-                info!("   🤖 Running {}...", model_name);
+                // Run the agent CLI
+                info!("   🤖 Running {}...", cli_name);
                 let output_file = cli.town.join(format!("logs/{}_round_{}.log", name, round));
                 let output = std::fs::File::create(&output_file)?;
 
                 let status = std::process::Command::new("sh")
                     .arg("-c")
-                    .arg(format!("cat '{}' | {}", prompt_file.display(), model_cmd))
+                    .arg(format!("cat '{}' | {}", prompt_file.display(), cli_cmd))
                     .current_dir(&cli.town)
                     .stdin(std::process::Stdio::null())
                     .stdout(output.try_clone()?)
@@ -780,11 +813,11 @@ Begin work. Check your inbox and keep working until it's empty.
                         format!("Round {}: ✅ completed", round)
                     }
                     Ok(_) => {
-                        info!("   ⚠️ Model exited with error");
-                        format!("Round {}: ⚠️ model error", round)
+                        info!("   ⚠️ CLI exited with error");
+                        format!("Round {}: ⚠️ CLI error", round)
                     }
                     Err(e) => {
-                        info!("   ❌ Failed to run model: {}", e);
+                        info!("   ❌ Failed to run CLI: {}", e);
                         format!("Round {}: ❌ failed: {}", round, e)
                     }
                 };
@@ -916,7 +949,7 @@ You have access to the `tt` CLI tool. Run these commands in your shell to orches
 
 ### Spawn agents (starts actual AI process!)
 ```bash
-tt spawn <name>                    # Spawn agent with default model (backgrounds)
+tt spawn <name>                    # Spawn agent with default CLI (backgrounds)
 tt spawn <name> --foreground       # Run in foreground (see output)
 tt spawn <name> --max-rounds 5     # Limit iterations (default: 10)
 ```
@@ -1009,27 +1042,26 @@ Now, help the user orchestrate their project!
                 startup_mode = startup_mode,
             );
 
-            // Write context to a temp file for the model
+            // Write context to a temp file for the CLI
             let context_file = cli.town.join(".conductor_context.md");
             std::fs::write(&context_file, &context)?;
 
-            // Get the model command
-            let model = &config.default_model;
-            let model_config = config.models.get(model);
+            // Get the CLI command
+            let cli_name = &config.default_cli;
+            let cli_config = config.agent_clis.get(cli_name);
 
-            info!("🚂 Starting conductor with {} model...", model);
+            info!("🚂 Starting conductor with {} CLI...", cli_name);
             info!("   Context: {}", context_file.display());
             info!("");
 
-            // Get the command for the model
-            let command = if let Some(m) = model_config {
-                m.command.clone()
+            // Get the command for the CLI
+            let command = if let Some(c) = cli_config {
+                c.command.clone()
             } else {
-                model.clone() // Fallback to model name as command
+                cli_name.clone() // Fallback to CLI name as command
             };
 
-            // Launch the model with the context
-            // Claude CLI: cat context | claude
+            // Launch the CLI with the context
             // Most AI CLIs accept input from stdin or can read files
             let shell_cmd = format!(
                 "cat '{}' && echo '' && echo '---' && echo '' && {}",
@@ -1040,7 +1072,7 @@ Now, help the user orchestrate their project!
             info!("   Running: {}", command);
             info!("");
 
-            // Execute the AI model interactively
+            // Execute the agent CLI interactively
             let status = std::process::Command::new("sh")
                 .arg("-c")
                 .arg(&shell_cmd)
@@ -1151,6 +1183,51 @@ Now, help the user orchestrate their project!
                 info!("   3. Redis will replay the AOF and restore state");
                 info!("");
                 info!("   Or just run 'tt init' - it will use existing AOF if present.");
+            }
+        }
+
+        Commands::Config { key, value } => {
+            let config_path = GlobalConfig::config_path()?;
+
+            match (key, value) {
+                // No args: show all config
+                (None, None) => {
+                    let config = GlobalConfig::load()?;
+                    info!("⚙️  Global config: {}", config_path.display());
+                    info!("");
+                    info!("default_cli = \"{}\"", config.default_cli);
+                    if !config.agent_clis.is_empty() {
+                        info!("");
+                        info!("[agent_clis]");
+                        for (name, cmd) in &config.agent_clis {
+                            info!("{} = \"{}\"", name, cmd);
+                        }
+                    }
+                    info!("");
+                    info!("Available CLIs: claude, auggie, codex, aider, gemini, copilot, cursor");
+                }
+                // Key only: show that value
+                (Some(key), None) => {
+                    let config = GlobalConfig::load()?;
+                    if let Some(val) = config.get(&key) {
+                        println!("{}", val);
+                    } else {
+                        info!("❌ Unknown config key: {}", key);
+                        info!("   Available keys: default_cli, agent_clis.<name>");
+                    }
+                }
+                // Key and value: set it
+                (Some(key), Some(value)) => {
+                    let mut config = GlobalConfig::load()?;
+                    config.set(&key, &value)?;
+                    config.save()?;
+                    info!("✅ Set {} = \"{}\"", key, value);
+                    info!("   Saved to: {}", config_path.display());
+                }
+                // Value without key (shouldn't happen due to clap)
+                (None, Some(_)) => {
+                    info!("❌ Please specify a key");
+                }
             }
         }
     }

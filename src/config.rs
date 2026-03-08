@@ -10,14 +10,14 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::AgentModel;
+use crate::agent::AgentCli;
 use crate::error::{Error, Result};
 
 /// Default Redis socket path within a town.
 pub const DEFAULT_SOCKET_NAME: &str = "redis.sock";
 
 /// Default config file name.
-pub const CONFIG_FILE: &str = "tinytown.json";
+pub const CONFIG_FILE: &str = "tinytown.toml";
 
 /// Town configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,20 +33,20 @@ pub struct Config {
     #[serde(default)]
     pub redis: RedisConfig,
 
-    /// Available agent models
+    /// Available agent CLIs (e.g., claude, auggie, codex)
     #[serde(default)]
-    pub models: HashMap<String, AgentModel>,
+    pub agent_clis: HashMap<String, AgentCli>,
 
-    /// Default model to use
-    #[serde(default = "default_model")]
-    pub default_model: String,
+    /// Default CLI to use when spawning agents
+    #[serde(default = "default_cli")]
+    pub default_cli: String,
 
     /// Maximum concurrent agents
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
 }
 
-fn default_model() -> String {
+fn default_cli() -> String {
     "claude".to_string()
 }
 
@@ -119,52 +119,51 @@ impl Config {
     /// Create a new configuration with defaults.
     #[must_use]
     pub fn new(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
-        let mut models = HashMap::new();
+        let mut agent_clis = HashMap::new();
 
         // Built-in CLI presets with correct non-interactive flags
-        // These are agent CLIs, not models - they use their own default models internally
 
         // Claude Code: --print for non-interactive, --dangerously-skip-permissions for full access
-        models.insert(
+        agent_clis.insert(
             "claude".to_string(),
-            AgentModel::new("claude", "claude --print --dangerously-skip-permissions"),
+            AgentCli::new("claude", "claude --print --dangerously-skip-permissions"),
         );
 
         // Auggie (Augment CLI): --print for non-interactive
-        models.insert(
+        agent_clis.insert(
             "auggie".to_string(),
-            AgentModel::new("auggie", "auggie --print"),
+            AgentCli::new("auggie", "auggie --print"),
         );
 
         // Codex: exec for non-interactive, --dangerously-bypass-approvals-and-sandbox for full access
-        models.insert(
+        agent_clis.insert(
             "codex".to_string(),
-            AgentModel::new(
+            AgentCli::new(
                 "codex",
                 "codex exec --dangerously-bypass-approvals-and-sandbox",
             ),
         );
 
         // Aider: --yes for auto-confirm, --no-auto-commits to not auto-commit
-        models.insert(
+        agent_clis.insert(
             "aider".to_string(),
-            AgentModel::new("aider", "aider --yes --no-auto-commits --message"),
+            AgentCli::new("aider", "aider --yes --no-auto-commits --message"),
         );
 
         // These may need updates when their CLIs are available/verified
-        models.insert("gemini".to_string(), AgentModel::new("gemini", "gemini"));
-        models.insert(
+        agent_clis.insert("gemini".to_string(), AgentCli::new("gemini", "gemini"));
+        agent_clis.insert(
             "copilot".to_string(),
-            AgentModel::new("copilot", "gh copilot"),
+            AgentCli::new("copilot", "gh copilot"),
         );
-        models.insert("cursor".to_string(), AgentModel::new("cursor", "cursor"));
+        agent_clis.insert("cursor".to_string(), AgentCli::new("cursor", "cursor"));
 
         Self {
             name: name.into(),
             root: root.into(),
             redis: RedisConfig::default(),
-            models,
-            default_model: "claude".to_string(),
+            agent_clis,
+            default_cli: "claude".to_string(),
             max_agents: 10,
         }
     }
@@ -179,7 +178,8 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(&config_path)?;
-        let mut config: Config = serde_json::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("Invalid tinytown.toml: {}", e))))?;
         config.root = root.to_path_buf();
 
         Ok(config)
@@ -188,7 +188,8 @@ impl Config {
     /// Save configuration to the town directory.
     pub fn save(&self) -> Result<()> {
         let config_path = self.root.join(CONFIG_FILE);
-        let content = serde_json::to_string_pretty(self)?;
+        let content = toml::to_string_pretty(self)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to serialize config: {}", e))))?;
         std::fs::write(&config_path, content)?;
         Ok(())
     }
