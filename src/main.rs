@@ -13,6 +13,20 @@ use tracing_subscriber::EnvFilter;
 
 use tinytown::{GlobalConfig, Result, Task, Town, plan};
 
+/// Build a shell command to run an agent CLI with a prompt/instruction file.
+/// Different CLIs have different ways to accept input:
+/// - auggie: uses --instruction-file flag
+/// - claude, codex, etc.: accept input via stdin (pipe or redirect)
+fn build_cli_command(cli_name: &str, cli_cmd: &str, prompt_file: &std::path::Path) -> String {
+    if cli_name == "auggie" {
+        // Auggie uses --instruction-file flag
+        format!("{} --instruction-file '{}'", cli_cmd, prompt_file.display())
+    } else {
+        // Other CLIs accept input via stdin
+        format!("cat '{}' | {}", prompt_file.display(), cli_cmd)
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "tt")]
 #[command(author, version, about = "Tinytown - Simple multi-agent orchestration using Redis", long_about = None)]
@@ -110,6 +124,16 @@ enum Commands {
         /// Agent name to stop
         agent: String,
     },
+
+    /// Remove stopped/stale agents from Redis
+    Prune {
+        /// Remove ALL agents (not just stopped ones)
+        #[arg(long)]
+        all: bool,
+    },
+
+    /// Show pending tasks/messages for all agents
+    Tasks,
 
     /// Check an agent's inbox
     Inbox {
@@ -237,13 +261,14 @@ Print the installed version and confirm the symlinks are working.
         _ => cli, // Allow custom commands
     };
 
-    info!("📋 Running: {} < {}", cli_cmd, prompt_file.display());
+    let shell_cmd = build_cli_command(cli, cli_cmd, &prompt_file);
+    info!("📋 Running: {}", shell_cmd);
     info!("   (This may take a few minutes to download and compile)");
     info!("");
 
     // Run the AI agent
     let status = Command::new("sh")
-        .args(["-c", &format!("{} < {}", cli_cmd, prompt_file.display())])
+        .args(["-c", &shell_cmd])
         .current_dir(&tt_dir)
         .status()?;
 
@@ -533,6 +558,29 @@ async fn main() -> Result<()> {
             if deep {
                 info!("");
                 info!("📊 Stats: rounds completed, uptime since spawn");
+
+                // Show recent logs from each agent
+                info!("");
+                info!("📜 Recent Agent Logs (last 50 lines each):");
+                let log_dir = cli.town.join("logs");
+                if log_dir.exists() {
+                    let mut shown_logs = std::collections::HashSet::new();
+                    for agent in town.list_agents().await {
+                        let log_file = log_dir.join(format!("{}.log", agent.name));
+                        if log_file.exists() && !shown_logs.contains(&agent.name) {
+                            shown_logs.insert(agent.name.clone());
+                            info!("");
+                            info!("--- {} ({}) ---", agent.name, log_file.display());
+                            if let Ok(content) = std::fs::read_to_string(&log_file) {
+                                let lines: Vec<&str> = content.lines().collect();
+                                let start = lines.len().saturating_sub(50);
+                                for line in &lines[start..] {
+                                    info!("  {}", line);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -559,6 +607,94 @@ async fn main() -> Result<()> {
 
             info!("🛑 Requested stop for agent '{}'", agent);
             info!("   Agent will stop at the start of its next round.");
+        }
+
+        Commands::Prune { all } => {
+            use tinytown::AgentState;
+
+            let town = Town::connect(&cli.town).await?;
+            let agents = town.list_agents().await;
+
+            let mut removed = 0;
+            for agent in agents {
+                let should_remove = all || matches!(agent.state, AgentState::Stopped | AgentState::Error);
+                if should_remove {
+                    town.channel().delete_agent(agent.id).await?;
+                    info!("🗑️  Removed {} ({}) - {:?}", agent.name, agent.id, agent.state);
+                    removed += 1;
+                }
+            }
+
+            if removed == 0 {
+                info!("No agents to prune.");
+            } else {
+                info!("✨ Pruned {} agent(s)", removed);
+            }
+        }
+
+        Commands::Tasks => {
+            use tinytown::TaskId;
+
+            let town = Town::connect(&cli.town).await?;
+            let agents = town.list_agents().await;
+
+            if agents.is_empty() {
+                info!("No agents. Run 'tt spawn <name>' to create one.");
+            } else {
+                info!("📋 Pending Tasks by Agent:");
+                info!("");
+
+                let mut total_tasks = 0;
+                for agent in &agents {
+                    let messages = town.channel().peek_inbox(agent.id, 20).await.unwrap_or_default();
+                    if messages.is_empty() {
+                        continue;
+                    }
+
+                    info!("  {} ({:?}):", agent.name, agent.state);
+                    for msg in &messages {
+                        // Get a one-line summary (first 80 chars)
+                        let summary: String = match &msg.msg_type {
+                            tinytown::MessageType::TaskAssign { task_id } => {
+                                // Look up the actual task to get description
+                                if let Ok(tid) = task_id.parse::<TaskId>() {
+                                    if let Ok(Some(task)) = town.channel().get_task(tid).await {
+                                        let first_line = task.description.lines().next().unwrap_or(&task.description);
+                                        if first_line.len() > 80 {
+                                            format!("{}...", &first_line[..77])
+                                        } else {
+                                            first_line.to_string()
+                                        }
+                                    } else {
+                                        format!("Task {}", task_id)
+                                    }
+                                } else {
+                                    format!("Task {}", task_id)
+                                }
+                            }
+                            tinytown::MessageType::Custom { kind, payload } => {
+                                let first_line = payload.lines().next().unwrap_or(payload);
+                                let truncated = if first_line.len() > 70 {
+                                    format!("{}...", &first_line[..67])
+                                } else {
+                                    first_line.to_string()
+                                };
+                                format!("[{}] {}", kind, truncated)
+                            }
+                            _ => format!("{:?}", msg.msg_type),
+                        };
+                        info!("    • {}", summary);
+                        total_tasks += 1;
+                    }
+                    info!("");
+                }
+
+                if total_tasks == 0 {
+                    info!("  (no pending tasks)");
+                } else {
+                    info!("Total: {} pending task(s)", total_tasks);
+                }
+            }
         }
 
         Commands::Start => {
@@ -794,9 +930,10 @@ Begin work. Check your inbox and keep working until it's empty.
                 let output_file = cli.town.join(format!("logs/{}_round_{}.log", name, round));
                 let output = std::fs::File::create(&output_file)?;
 
+                let shell_cmd = build_cli_command(&cli_name, &cli_cmd, &prompt_file);
                 let status = std::process::Command::new("sh")
                     .arg("-c")
-                    .arg(format!("cat '{}' | {}", prompt_file.display(), cli_cmd))
+                    .arg(&shell_cmd)
                     .current_dir(&cli.town)
                     .stdin(std::process::Stdio::null())
                     .stdout(output.try_clone()?)
@@ -1046,50 +1183,53 @@ Now, help the user orchestrate their project!
             let context_file = cli.town.join(".conductor_context.md");
             std::fs::write(&context_file, &context)?;
 
-            // Get the CLI command
+            // Get the CLI name (conductor runs interactively, not in --print mode)
             let cli_name = &config.default_cli;
-            let cli_config = config.agent_clis.get(cli_name);
 
             info!("🚂 Starting conductor with {} CLI...", cli_name);
             info!("   Context: {}", context_file.display());
             info!("");
 
-            // Get the command for the CLI
-            let command = if let Some(c) = cli_config {
-                c.command.clone()
-            } else {
-                cli_name.clone() // Fallback to CLI name as command
+            // Build the interactive command (no --print flag)
+            // For conductor, we want full interactive mode
+            let exec_cmd = match cli_name.as_str() {
+                "auggie" => format!(
+                    "exec auggie --instruction-file '{}'",
+                    context_file.display()
+                ),
+                "claude" => format!(
+                    "exec claude --resume '{}'",
+                    context_file.display()
+                ),
+                "aider" => format!(
+                    "exec aider --message-file '{}'",
+                    context_file.display()
+                ),
+                _ => {
+                    // For unknown CLIs, try piping the context
+                    format!(
+                        "cat '{}' | exec {}",
+                        context_file.display(),
+                        cli_name
+                    )
+                }
             };
 
-            // Launch the CLI with the context
-            // Most AI CLIs accept input from stdin or can read files
-            let shell_cmd = format!(
-                "cat '{}' && echo '' && echo '---' && echo '' && {}",
-                context_file.display(),
-                command
-            );
-
-            info!("   Running: {}", command);
+            info!("   Running: {}", exec_cmd);
             info!("");
 
-            // Execute the agent CLI interactively
-            let status = std::process::Command::new("sh")
+            // Use exec to replace this process with the CLI
+            // This gives full interactive control (stdin/stdout/stderr)
+            use std::os::unix::process::CommandExt;
+            let err = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(&shell_cmd)
+                .arg(&exec_cmd)
                 .current_dir(&cli.town)
-                .stdin(std::process::Stdio::inherit())
-                .stdout(std::process::Stdio::inherit())
-                .stderr(std::process::Stdio::inherit())
-                .status()?;
+                .exec();
 
-            if !status.success() {
-                info!("❌ Conductor exited with error");
-            } else {
-                info!("👋 Conductor signing off!");
-            }
-
-            // Cleanup context file
-            let _ = std::fs::remove_file(&context_file);
+            // If we get here, exec failed
+            eprintln!("❌ Failed to exec conductor: {}", err);
+            std::process::exit(1);
         }
 
         Commands::Plan { init } => {

@@ -206,6 +206,21 @@ impl Channel {
         Ok(len)
     }
 
+    /// Peek at inbox messages without removing them.
+    pub async fn peek_inbox(&self, agent_id: AgentId, count: isize) -> Result<Vec<Message>> {
+        let mut conn = self.conn.clone();
+        let inbox_key = format!("{}{}", INBOX_PREFIX, agent_id);
+        let items: Vec<String> = conn.lrange(&inbox_key, 0, count - 1).await?;
+
+        let mut messages = Vec::new();
+        for item in items {
+            if let Ok(msg) = serde_json::from_str::<Message>(&item) {
+                messages.push(msg);
+            }
+        }
+        Ok(messages)
+    }
+
     /// Broadcast a message to all agents.
     pub async fn broadcast(&self, message: &Message) -> Result<()> {
         let mut conn = self.conn.clone();
@@ -233,6 +248,49 @@ impl Channel {
             Some(data) => Ok(Some(serde_json::from_str(&data)?)),
             None => Ok(None),
         }
+    }
+
+    /// List all agents from Redis.
+    pub async fn list_agents(&self) -> Result<Vec<crate::agent::Agent>> {
+        let mut conn = self.conn.clone();
+        let pattern = format!("{}*", STATE_PREFIX);
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async(&mut conn)
+            .await?;
+
+        let mut agents = Vec::new();
+        for key in keys {
+            if let Ok(Some(data)) = conn.get::<_, Option<String>>(&key).await {
+                if let Ok(agent) = serde_json::from_str::<crate::agent::Agent>(&data) {
+                    agents.push(agent);
+                }
+            }
+        }
+        Ok(agents)
+    }
+
+    /// Get agent by name from Redis.
+    pub async fn get_agent_by_name(&self, name: &str) -> Result<Option<crate::agent::Agent>> {
+        let agents = self.list_agents().await?;
+        Ok(agents.into_iter().find(|a| a.name == name))
+    }
+
+    /// Delete an agent from Redis.
+    pub async fn delete_agent(&self, agent_id: AgentId) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let key = format!("{}{}", STATE_PREFIX, agent_id);
+        let _: () = conn.del(&key).await?;
+        // Also clean up related keys
+        let inbox_key = format!("{}{}", INBOX_PREFIX, agent_id);
+        let urgent_key = format!("{}{}", URGENT_PREFIX, agent_id);
+        let activity_key = format!("{}{}", ACTIVITY_PREFIX, agent_id);
+        let stop_key = format!("{}{}", STOP_PREFIX, agent_id);
+        let _: () = conn.del(&inbox_key).await?;
+        let _: () = conn.del(&urgent_key).await?;
+        let _: () = conn.del(&activity_key).await?;
+        let _: () = conn.del(&stop_key).await?;
+        Ok(())
     }
 
     /// Store a task in Redis.

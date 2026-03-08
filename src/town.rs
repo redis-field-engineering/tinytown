@@ -7,12 +7,12 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Stdio;
+
 use std::sync::Arc;
 
 use redis::Client;
 use redis::aio::ConnectionManager;
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -38,8 +38,10 @@ pub struct Town {
     agents: Arc<RwLock<HashMap<AgentId, Agent>>>,
     #[expect(dead_code)]
     processes: Arc<RwLock<HashMap<AgentId, Child>>>,
-    redis_process: Option<Child>,
 }
+
+/// PID file name for tracking Redis process
+const REDIS_PID_FILE: &str = "redis.pid";
 
 /// Find the redis-server binary, preferring ~/.tt/bin over PATH.
 fn find_redis_server() -> std::path::PathBuf {
@@ -132,8 +134,8 @@ impl Town {
         let config = Config::new(&name, path);
         config.save()?;
 
-        // Start Redis and connect
-        let redis_process = Self::start_redis(&config).await?;
+        // Start Redis (daemonized - stays running after we exit) and connect
+        Self::start_redis(&config).await?;
         let channel = Self::connect_redis(&config).await?;
 
         Ok(Self {
@@ -141,7 +143,6 @@ impl Town {
             channel,
             agents: Arc::new(RwLock::new(HashMap::new())),
             processes: Arc::new(RwLock::new(HashMap::new())),
-            redis_process: Some(redis_process),
         })
     }
 
@@ -152,15 +153,26 @@ impl Town {
 
         let config = Config::load(&path)?;
 
+        // Check if socket exists - if not, skip connection attempt and start Redis directly
+        let socket_path = config.socket_path();
+        let socket_exists = socket_path.exists();
+
         // Try to connect to Redis, start if needed
-        let (channel, redis_process) = match Self::connect_redis(&config).await {
-            Ok(ch) => (ch, None),
-            Err(_) => {
-                warn!("Redis not running, starting...");
-                let proc = Self::start_redis(&config).await?;
-                let ch = Self::connect_redis(&config).await?;
-                (ch, Some(proc))
+        let channel = if socket_exists {
+            // Socket exists - try to connect (with timeout for stale sockets)
+            match Self::connect_redis(&config).await {
+                Ok(ch) => ch,
+                Err(_) => {
+                    warn!("Redis not responding, restarting...");
+                    Self::start_redis(&config).await?;
+                    Self::connect_redis(&config).await?
+                }
             }
+        } else {
+            // No socket - start Redis directly (fast path)
+            debug!("No Redis socket found, starting Redis...");
+            Self::start_redis(&config).await?;
+            Self::connect_redis(&config).await?
         };
 
         Ok(Self {
@@ -168,13 +180,14 @@ impl Town {
             channel,
             agents: Arc::new(RwLock::new(HashMap::new())),
             processes: Arc::new(RwLock::new(HashMap::new())),
-            redis_process,
         })
     }
 
-    /// Start a local Redis server with Unix socket.
-    async fn start_redis(config: &Config) -> Result<Child> {
+    /// Start a local Redis server with Unix socket (daemonized).
+    /// Redis will continue running after tinytown exits.
+    async fn start_redis(config: &Config) -> Result<()> {
         let socket_path = config.socket_path();
+        let pid_file = config.root.join(REDIS_PID_FILE);
         let redis_bin = find_redis_server();
 
         // Remove stale socket if exists
@@ -185,7 +198,8 @@ impl Town {
         info!("Starting Redis with socket: {}", socket_path.display());
         debug!("Using Redis binary: {}", redis_bin.display());
 
-        let child = Command::new(&redis_bin)
+        // Start Redis daemonized - it will fork into background and stay running
+        let status = std::process::Command::new(&redis_bin)
             .args([
                 "--unixsocket",
                 socket_path.to_str().unwrap(),
@@ -194,19 +208,24 @@ impl Town {
                 "--port",
                 "0", // Disable TCP
                 "--daemonize",
-                "no",
+                "yes", // Fork into background - stays running after we exit
+                "--pidfile",
+                pid_file.to_str().unwrap(),
                 "--loglevel",
                 "warning",
             ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()?;
+            .current_dir(&config.root)
+            .status()?;
+
+        if !status.success() {
+            return Err(Error::Timeout("Redis failed to start".into()));
+        }
 
         // Wait for socket to be ready
         for _ in 0..50 {
             if socket_path.exists() {
                 debug!("Redis socket ready");
-                return Ok(child);
+                return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
@@ -220,7 +239,15 @@ impl Town {
         debug!("Connecting to Redis: {}", url);
 
         let client = Client::open(url)?;
-        let conn = ConnectionManager::new(client).await?;
+
+        // Short timeout - Redis should connect in milliseconds if healthy
+        // Stale sockets can hang indefinitely, so fail fast and restart Redis
+        let conn = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            ConnectionManager::new(client),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis connection timed out".into()))??;
 
         Ok(Channel::new(conn))
     }
@@ -244,21 +271,20 @@ impl Town {
 
     /// Get a handle to an existing agent.
     pub async fn agent(&self, name: &str) -> Result<AgentHandle> {
-        let agents = self.agents.read().await;
-        for (id, agent) in agents.iter() {
-            if agent.name == name {
-                return Ok(AgentHandle {
-                    id: *id,
-                    channel: self.channel.clone(),
-                });
-            }
+        // Look up agent in Redis (persisted across process restarts)
+        if let Some(agent) = self.channel.get_agent_by_name(name).await? {
+            return Ok(AgentHandle {
+                id: agent.id,
+                channel: self.channel.clone(),
+            });
         }
         Err(Error::AgentNotFound(name.to_string()))
     }
 
     /// List all agents.
     pub async fn list_agents(&self) -> Vec<Agent> {
-        self.agents.read().await.values().cloned().collect()
+        // Get agents from Redis (persisted across process restarts)
+        self.channel.list_agents().await.unwrap_or_default()
     }
 
     /// Get the communication channel.
@@ -277,14 +303,8 @@ impl Town {
     }
 }
 
-impl Drop for Town {
-    fn drop(&mut self) {
-        // Clean up Redis process if we started it
-        if let Some(mut proc) = self.redis_process.take() {
-            let _ = proc.start_kill();
-        }
-    }
-}
+// Note: Redis runs daemonized and persists after Town is dropped.
+// Use `tt stop` to explicitly stop Redis if needed.
 
 /// Handle for interacting with an agent.
 #[derive(Clone)]
