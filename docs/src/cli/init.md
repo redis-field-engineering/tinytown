@@ -12,7 +12,7 @@ tt init [OPTIONS]
 
 Creates a new Tinytown workspace in the current directory. This:
 1. Creates the directory structure (`agents/`, `logs/`, `tasks/`)
-2. Generates `tinytown.json` configuration
+2. Generates `tinytown.toml` configuration
 3. Starts a Redis server with Unix socket
 4. Verifies Redis 8.0+ is installed
 
@@ -69,7 +69,7 @@ tt init --town ./projects/new-project --name new-project
 
 ```
 my-project/
-├── tinytown.json     # Configuration
+├── tinytown.toml     # Configuration
 ├── agents/           # Agent working directories
 ├── logs/             # Activity logs
 └── tasks/            # Task storage
@@ -77,23 +77,28 @@ my-project/
 
 ## Configuration
 
-The generated `tinytown.json`:
+The generated `tinytown.toml`:
 
-```json
-{
-  "name": "my-project",
-  "redis": {
-    "use_socket": true,
-    "socket_path": "redis.sock"
-  },
-  "models": {
-    "claude": { "name": "claude", "command": "claude --print" },
-    "auggie": { "name": "auggie", "command": "augment" },
-    "codex": { "name": "codex", "command": "codex" }
-  },
-  "default_model": "claude",
-  "max_agents": 10
-}
+```toml
+name = "my-project"
+default_cli = "claude"
+max_agents = 10
+
+[redis]
+use_socket = true
+socket_path = "redis.sock"
+
+[agent_clis.claude]
+name = "claude"
+command = "claude --print"
+
+[agent_clis.auggie]
+name = "auggie"
+command = "augment"
+
+[agent_clis.codex]
+name = "codex"
+command = "codex"
 ```
 
 ## Errors
@@ -118,7 +123,7 @@ See: https://redis.io/downloads/
 
 ### Directory Already Initialized
 
-If `tinytown.json` already exists, `init` will fail. Use `tt start` to connect to an existing town.
+If `tinytown.toml` already exists, `init` will fail. Use `tt start` to connect to an existing town.
 
 ## See Also
 

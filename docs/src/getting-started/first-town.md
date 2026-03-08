@@ -24,23 +24,21 @@ tt init --name feature-builder
 
 ## Understanding the Config
 
-Open `tinytown.json`:
+Open `tinytown.toml`:
 
-```json
-{
-  "name": "feature-builder",
-  "redis": {
-    "use_socket": true,
-    "socket_path": "redis.sock"
-  },
-  "default_model": "claude",
-  "max_agents": 10
-}
+```toml
+name = "feature-builder"
+default_cli = "claude"
+max_agents = 10
+
+[redis]
+use_socket = true
+socket_path = "redis.sock"
 ```
 
 Key settings:
-- **`use_socket: true`** — Uses Unix socket for ~10x faster communication than TCP
-- **`default_model`** — Agent model when `--model` isn't specified
+- **`use_socket = true`** — Uses Unix socket for ~10x faster communication than TCP
+- **`default_cli`** — Agent CLI when `--model` isn't specified
 - **`max_agents`** — Prevents accidentally spawning too many
 
 ## Create Your Team

@@ -16,7 +16,7 @@ Triggers Redis to compact and save its state to an AOF (Append Only File). This 
 
 1. Sends `BGREWRITEAOF` command to Redis
 2. Redis compacts all operations into a single AOF file
-3. File is saved to `redis.aof` (configurable in `tinytown.json`)
+3. File is saved to `redis.aof` (configurable in `tinytown.toml`)
 
 ## Example
 
@@ -62,14 +62,11 @@ The AOF file contains Redis commands to recreate state:
 
 ## Config Options
 
-In `tinytown.json`:
-```json
-{
-  "redis": {
-    "persist": true,
-    "aof_path": "redis.aof"
-  }
-}
+In `tinytown.toml`:
+```toml
+[redis]
+persist = true
+aof_path = "redis.aof"
 ```
 
 ## See Also

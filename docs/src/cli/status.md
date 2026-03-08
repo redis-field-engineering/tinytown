@@ -79,7 +79,7 @@ Output:
 
 | Field | Description |
 |-------|-------------|
-| Town | Name from `tinytown.json` |
+| Town | Name from `tinytown.toml` |
 | Root | Absolute path to town directory |
 | Redis | Connection URL (socket or TCP) |
 | Agents | Count and details |
