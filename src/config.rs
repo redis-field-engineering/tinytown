@@ -116,6 +116,26 @@ impl Config {
             "gemini".to_string(),
             AgentModel::new("gemini", "gemini"),
         );
+        models.insert(
+            "auggie".to_string(),
+            AgentModel::new("auggie", "augment"),
+        );
+        models.insert(
+            "codex".to_string(),
+            AgentModel::new("codex", "codex"),
+        );
+        models.insert(
+            "copilot".to_string(),
+            AgentModel::new("copilot", "gh copilot"),
+        );
+        models.insert(
+            "aider".to_string(),
+            AgentModel::new("aider", "aider"),
+        );
+        models.insert(
+            "cursor".to_string(),
+            AgentModel::new("cursor", "cursor"),
+        );
 
         Self {
             name: name.into(),

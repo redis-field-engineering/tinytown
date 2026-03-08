@@ -74,7 +74,7 @@ Tinytown is built on **5 core types**:
 | Type | Purpose |
 |------|---------|
 | **Town** 🏘️ | Central orchestration hub, manages Redis & agents |
-| **Agent** 🤖 | Workers that execute tasks (Claude, Gemini, custom) |
+| **Agent** 🤖 | Workers that execute tasks (Claude, Auggie, Codex, Gemini, Copilot, Aider, Cursor, or custom) |
 | **Task** 📋 | Units of work with state tracking |
 | **Message** 💬 | Inter-agent communication with priorities |
 | **Channel** 📡 | Redis-based message passing (<1ms latency) |
@@ -110,6 +110,27 @@ Tinytown is built on **5 core types**:
 | `tt status` | Show town status |
 | `tt start` | Start the town |
 | `tt stop` | Stop the town |
+
+## 🤖 Supported Models
+
+Built-in presets for popular AI coding agents:
+
+| Model | Command |
+|-------|---------|
+| `claude` | `claude --print` |
+| `auggie` | `augment` |
+| `codex` | `codex` |
+| `gemini` | `gemini` |
+| `copilot` | `gh copilot` |
+| `aider` | `aider` |
+| `cursor` | `cursor` |
+
+```bash
+# Use any built-in model
+tt spawn worker-1 --model claude
+tt spawn worker-2 --model auggie
+tt spawn worker-3 --model codex
+```
 
 ## ⚙️ Configuration
 
