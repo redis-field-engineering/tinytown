@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/jeremyplichta/tinytown/compare/v0.3.0...v0.4.0) (2026-03-08)
+
+
+### Features
+
+* add RedisManager for centralized Redis instance ([bbca6a1](https://github.com/jeremyplichta/tinytown/commit/bbca6a151c78d202163e94019fd1c099faa13829))
+* **cli:** add 'tt recover' command for orphaned agents ([cc18c70](https://github.com/jeremyplichta/tinytown/commit/cc18c70f445a08d074e50290d969d937533b78bd))
+* **cli:** add global town registry in ~/.tt/towns.toml ([c5ab161](https://github.com/jeremyplichta/tinytown/commit/c5ab1615d78b4ac36d10695aaeaa4840798d2606))
+* **cli:** add task backlog queue commands ([87030b6](https://github.com/jeremyplichta/tinytown/commit/87030b667fc28a0d3dfd09c8e76daa8bd72b77c2))
+* **redis:** add TCP support with password authentication ([7538924](https://github.com/jeremyplichta/tinytown/commit/75389242512a9f6df8d43e268b0f266c27d4f877))
+
+
+### Bug Fixes
+
+* **tests:** add Redis cleanup to prevent process leaks ([d51d096](https://github.com/jeremyplichta/tinytown/commit/d51d0967e243d5bc42d72c5b1b55d0240aec1ed6))
+
 ## [0.3.0](https://github.com/jeremyplichta/tinytown/compare/v0.2.0...v0.3.0) (2026-03-08)
 
 
