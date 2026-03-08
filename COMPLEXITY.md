@@ -6,11 +6,14 @@ This document compares the complexity of **Tinytown** (simple multi-agent orches
 
 | Metric | Tinytown | Gastown | Ratio |
 |--------|----------|---------|-------|
-| **Total Lines of Code** | 1,435 | 317,898 | **221x smaller** |
-| **Files** | 12 | 1,133 | **94x fewer** |
+| **Total Lines of Code** | 1,448 | 317,898 | **220x smaller** |
+| **Total Functions** | 69 | 9,575 | **139x fewer** |
+| **Files** | 13 | 1,133 | **87x fewer** |
 | **Languages** | 1 (Rust) | 16 | **16x simpler** |
 | **Core Types** | 5 | 50+ | **10x fewer concepts** |
 | **Config Files** | 1 JSON | 10+ YAML/TOML/JSON | **10x simpler config** |
+| **Avg Cyclomatic Complexity** | Low | 5.44 | ✅ |
+| **Avg Cognitive Complexity** | Low | 6.1 | ✅ |
 
 ## Lines of Code Comparison
 
@@ -42,28 +45,47 @@ This document compares the complexity of **Tinytown** (simple multi-agent orches
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ```
 
-## MFCQI Score Comparison
+## Go Complexity Analysis (Gastown)
 
-Gastown Python components (via mfcqi):
+Gastown is 99% Go (263,004 lines). Here's the Go-specific analysis:
+
+### Cyclomatic Complexity (gocyclo)
 ```
-❌ MFCQI Score: 0.526
+Average cyclomatic complexity: 5.44
+Functions with complexity > 10: 29 functions
 
-📊 Metrics Breakdown:
- Metric                  Score     Rating
- Cyclomatic Complexity    0.59  ⚠️ Needs Work
- Cognitive Complexity     0.84  ⭐ Excellent
- Halstead Volume          0.65    ✅ Good
- Maintainability Index    0.61    ✅ Good
- Code Duplication         1.00  ⭐ Excellent
- Documentation Coverage   0.82  ⭐ Excellent
- Security Score           0.06    ❌ Poor
- Secrets Exposure         0.00    ❌ Poor
- Code Smell Density       1.00  ⭐ Excellent
+Highest complexity functions:
+- runDashboard: 11
+- parseTranscriptUsage: 11
+- detectOrphans: 11
+- buildCollisionReport: 11
 ```
 
-**Note:** mfcqi is designed for Python. Tinytown is pure Rust with zero Python dependencies.
+### Cognitive Complexity (gocognit)
+```
+Average cognitive complexity: 6.1
+Functions with complexity > 15: 29 functions
 
-## Rust Code Quality (Tinytown)
+Highest complexity functions:
+- runDashboard: 16
+- cleanupOrphanPolecatState: 16
+- reconcilePoolInternal: 16
+- runStartCrew: 16
+```
+
+### Function Count
+```
+Total Go functions: 9,575
+```
+
+## Tinytown Code Quality (Rust)
+
+### Function Count
+```
+Total Rust functions: 69
+```
+
+That's **139x fewer functions** than Gastown (69 vs 9,575).
 
 ### Clippy Analysis
 ```
@@ -146,5 +168,5 @@ For most multi-agent orchestration needs, Tinytown's simplicity is a feature, no
 
 ---
 
-*Generated with tokei v14.0.0 and mfcqi v0.0.4*
+*Generated with tokei v14.0.0, gocyclo v0.6.0, and gocognit v1.2.1*
 
