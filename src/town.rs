@@ -226,10 +226,7 @@ impl Town {
         let (pid_file, work_dir) = if is_central {
             let global_dir = GlobalConfig::config_dir()?;
             std::fs::create_dir_all(&global_dir)?;
-            (
-                GlobalConfig::redis_pid_path()?,
-                global_dir,
-            )
+            (GlobalConfig::redis_pid_path()?, global_dir)
         } else {
             (config.root.join(REDIS_PID_FILE), config.root.clone())
         };

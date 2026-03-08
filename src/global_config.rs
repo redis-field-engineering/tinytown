@@ -163,12 +163,12 @@ impl GlobalConfig {
         }
 
         // Read PID and check if process is running
-        if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
-            if let Ok(pid) = pid_str.trim().parse::<i32>() {
-                // Check if process is running (kill -0 doesn't send signal, just checks)
-                unsafe {
-                    return libc::kill(pid, 0) == 0;
-                }
+        if let Ok(pid_str) = std::fs::read_to_string(&pid_path)
+            && let Ok(pid) = pid_str.trim().parse::<i32>()
+        {
+            // Check if process is running (kill -0 doesn't send signal, just checks)
+            unsafe {
+                return libc::kill(pid, 0) == 0;
             }
         }
 
