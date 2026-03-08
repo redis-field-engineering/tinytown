@@ -2,11 +2,14 @@
 
 > **Simple multi-agent orchestration using Redis** — All the power of complex systems, none of the complexity.
 
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.85+-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Redis](https://img.shields.io/badge/Redis-8.0+-red?logo=redis)](https://redis.io/downloads/)
+[![Docs](https://img.shields.io/badge/docs-mdBook-blue)](https://jeremyplichta.github.io/tinytown/)
 
 *Named after [Tinytown, Colorado](https://en.wikipedia.org/wiki/Tiny_Town,_Colorado) — a miniature village with big charm.*
+
+📚 **[Read the Documentation](https://jeremyplichta.github.io/tinytown/)** | 🚀 **[Getting Started Guide](https://jeremyplichta.github.io/tinytown/getting-started/quickstart.html)** | 🔄 **[Coming from Gastown?](https://jeremyplichta.github.io/tinytown/gastown/migration.html)**
 
 ## What is Tinytown?
 
