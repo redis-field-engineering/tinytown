@@ -38,10 +38,12 @@ impl GlobalConfig {
     pub fn config_dir() -> Result<PathBuf> {
         dirs::home_dir()
             .map(|h| h.join(GLOBAL_CONFIG_DIR))
-            .ok_or_else(|| Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Could not find home directory",
-            )))
+            .ok_or_else(|| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "Could not find home directory",
+                ))
+            })
     }
 
     /// Get the global config file path (~/.tt/config.toml)
@@ -73,8 +75,12 @@ impl GlobalConfig {
         // Create ~/.tt if it doesn't exist
         std::fs::create_dir_all(&config_dir)?;
 
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to serialize config: {}", e))))?;
+        let content = toml::to_string_pretty(self).map_err(|e| {
+            Error::Io(std::io::Error::other(format!(
+                "Failed to serialize config: {}",
+                e
+            )))
+        })?;
 
         std::fs::write(&config_path, content)?;
         Ok(())
@@ -89,7 +95,8 @@ impl GlobalConfig {
             }
             _ if key.starts_with("agent_clis.") => {
                 let cli_name = key.strip_prefix("agent_clis.").unwrap();
-                self.agent_clis.insert(cli_name.to_string(), value.to_string());
+                self.agent_clis
+                    .insert(cli_name.to_string(), value.to_string());
                 Ok(())
             }
             _ => Err(Error::Io(std::io::Error::new(
@@ -111,4 +118,3 @@ impl GlobalConfig {
         }
     }
 }
-
