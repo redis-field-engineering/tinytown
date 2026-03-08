@@ -31,6 +31,14 @@ Think of it as:
 | **Message latency** | <1ms (Unix socket) | 10-100ms |
 | **Lines of code** | ~2,600 | 50,000+ |
 
+## 📦 Install
+
+```bash
+cargo install tinytown
+```
+
+**Prerequisites:** [Rust 1.85+](https://rustup.rs/) and [Redis 8.0+](https://redis.io/downloads/) (or use `tt bootstrap` below).
+
 ## 🚀 Quick Start
 
 ```bash
@@ -203,52 +211,15 @@ tt spawn frontend --model auggie   # Override for this agent
 
 If you need more, add it yourself in 10 lines.
 
-## 📦 Installation
-
-### Quick Install
-
-```bash
-cargo install tinytown
-```
-
-### Prerequisites
+## 🔧 Redis Installation
 
 **Redis 8.0+** is required. Tinytown will check your Redis version on startup.
 
-#### macOS
-```bash
-brew install redis
-```
-
-#### Linux (Ubuntu/Debian)
-```bash
-# Add Redis repository and install
-curl -fsSL https://packages.redis.io/gpg | sudo gpg --dearmor -o /usr/share/keyrings/redis-archive-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/redis-archive-keyring.gpg] https://packages.redis.io/deb $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/redis.list
-sudo apt-get update
-sudo apt-get install redis
-```
-
-#### From Source
-```bash
-# Build from source - see https://redis.io/downloads/ for details
-curl -O https://download.redis.io/redis-stable.tar.gz
-tar xzf redis-stable.tar.gz
-cd redis-stable && make && sudo make install
-```
-
-For more options, see the [official Redis downloads page](https://redis.io/downloads/).
-
-### Install Tinytown
-
-```bash
-git clone https://github.com/jeremyplichta/tinytown.git
-cd tinytown
-cargo build --release
-cargo install --path .
-```
-
-**Requirements:** Rust 1.85+, Redis 8.0+
+| Platform | Command |
+|----------|---------|
+| **macOS** | `brew install redis` |
+| **Ubuntu/Debian** | See [Redis downloads](https://redis.io/downloads/) |
+| **Any** | `tt bootstrap` (uses AI to build from source) |
 
 ## 🔧 Development
 
