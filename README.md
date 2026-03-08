@@ -4,7 +4,7 @@
 
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Redis](https://img.shields.io/badge/Redis-7.0+-red?logo=redis)](https://redis.io/)
+[![Redis](https://img.shields.io/badge/Redis-8.0+-red?logo=redis)](https://redis.io/downloads/)
 
 *Named after [Tinytown, Colorado](https://en.wikipedia.org/wiki/Tiny_Town,_Colorado) — a miniature village with big charm.*
 
@@ -184,13 +184,13 @@ sudo apt-get install redis
 
 #### From Source
 ```bash
-# See https://redis.io/docs/latest/operate/oss_and_stack/install/install-redis/install-redis-from-source/
+# Build from source - see https://redis.io/downloads/ for details
 curl -O https://download.redis.io/redis-stable.tar.gz
 tar xzf redis-stable.tar.gz
 cd redis-stable && make && sudo make install
 ```
 
-For more options, see the [official Redis installation guide](https://redis.io/docs/latest/operate/oss_and_stack/install/).
+For more options, see the [official Redis downloads page](https://redis.io/downloads/).
 
 ### Install Tinytown
 
