@@ -34,8 +34,9 @@ Think of it as:
 ## 🚀 Quick Start
 
 ```bash
-# 1. Initialize a new town
-tt init --name my-town
+# 1. Initialize a new town (auto-names from git repo+branch)
+tt init
+# Creates town "my-repo-feature-branch"
 
 # 2. Spawn an agent (uses default_model from config)
 tt spawn worker-1

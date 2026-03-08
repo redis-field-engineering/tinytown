@@ -20,17 +20,29 @@ Creates a new Tinytown workspace in the current directory. This:
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--name <NAME>` | `-n` | Town name (defaults to directory name) |
+| `--name <NAME>` | `-n` | Town name (defaults to `<repo>-<branch>`) |
 | `--town <PATH>` | `-t` | Town directory (defaults to `.`) |
 | `--verbose` | `-v` | Enable verbose logging |
 
+## Default Name
+
+If `--name` is not provided, the town name is automatically derived from:
+
+1. **Git repo + branch**: `<repo-name>-<branch-name>` (e.g., `redisearch-feature-auth`)
+2. **Git repo only**: If no branch is available
+3. **Directory name**: Fallback if not in a git repo
+
+This makes it easy to have unique town names per feature branch.
+
 ## Examples
 
-### Basic Initialization
+### Basic Initialization (Auto-Named)
 
 ```bash
-mkdir my-project && cd my-project
+cd ~/git/my-project
+git checkout feature-auth
 tt init
+# Town name: my-project-feature-auth
 ```
 
 ### With Custom Name

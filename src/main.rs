@@ -143,6 +143,69 @@ enum Commands {
     Restore,
 }
 
+/// Derive a town name from git repo and branch, or fall back to directory name.
+///
+/// Format: `<repo>-<branch>` (e.g., `redisearch-feature-auth`)
+fn derive_town_name(town_path: &std::path::Path) -> String {
+    use std::process::Command;
+
+    // Try to get git repo name and branch
+    let repo_name = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(town_path)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
+        .and_then(|path| {
+            std::path::Path::new(path.trim())
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+        });
+
+    let branch_name = Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(town_path)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        });
+
+    match (repo_name, branch_name) {
+        (Some(repo), Some(branch)) => {
+            // Sanitize branch name (replace / with -)
+            let branch = branch.replace('/', "-");
+            format!("{}-{}", repo, branch)
+        }
+        (Some(repo), None) => repo,
+        _ => {
+            // Fall back to directory name
+            town_path
+                .canonicalize()
+                .ok()
+                .and_then(|p| {
+                    p.file_name()
+                        .and_then(|s| s.to_str())
+                        .map(|s| s.to_string())
+                })
+                .unwrap_or_else(|| "tinytown".to_string())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -157,13 +220,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { name } => {
-            let name = name.unwrap_or_else(|| {
-                cli.town
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("tinytown")
-                    .to_string()
-            });
+            let name = name.unwrap_or_else(|| derive_town_name(&cli.town));
 
             let town = Town::init(&cli.town, &name).await?;
             info!("✨ Initialized town '{}' at {}", name, cli.town.display());
