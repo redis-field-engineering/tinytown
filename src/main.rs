@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 use tinytown::{GlobalConfig, Result, Task, Town, plan};
@@ -568,6 +568,24 @@ Print the installed version and confirm the symlinks are working.
             if !version_output.is_empty() {
                 info!("   {}", version_output.trim());
             }
+
+            // Initialize global config with password if not already set
+            match GlobalConfig::load_or_init() {
+                Ok(config) => {
+                    info!("");
+                    info!("📋 Global config initialized:");
+                    info!("   Config: ~/.tt/config.toml");
+                    info!("   Default CLI: {}", config.default_cli);
+                    info!(
+                        "   Central Redis: {}:{} (password protected)",
+                        config.redis.host, config.redis.port
+                    );
+                }
+                Err(e) => {
+                    warn!("⚠️  Could not initialize global config: {}", e);
+                }
+            }
+
             info!("");
             info!("   Tinytown will automatically use this Redis.");
             info!("   Run: tt init");
@@ -743,9 +761,21 @@ async fn main() -> Result<()> {
         Commands::Init { name } => {
             let name = name.unwrap_or_else(|| derive_town_name(&cli.town));
 
+            // Initialize global config if needed (ensures password is set)
+            let global = GlobalConfig::load_or_init().unwrap_or_default();
+
             let town = Town::init(&cli.town, &name).await?;
             info!("✨ Initialized town '{}' at {}", name, cli.town.display());
-            info!("📡 Redis running with Unix socket for fast message passing");
+
+            // Show appropriate message based on Redis mode
+            if global.redis.use_central {
+                info!(
+                    "📡 Using central Redis on {}:{} (shared across towns)",
+                    global.redis.host, global.redis.port
+                );
+            } else {
+                info!("📡 Redis running with Unix socket for fast message passing");
+            }
             info!("🚀 Run 'tt spawn <name>' to create agents");
 
             // Register town in ~/.tt/towns.toml
@@ -1609,6 +1639,9 @@ Only run commands needed to complete listed work; inbox messages for this round 
                     agent.rounds_completed += 1;
                     agent.last_heartbeat = chrono::Utc::now();
                     channel.set_agent_state(&agent).await?;
+                    info!("   📊 Rounds completed: {}", agent.rounds_completed);
+                } else {
+                    warn!("   ⚠️ Could not update agent state - agent not found in Redis");
                 }
 
                 // Small delay between rounds
