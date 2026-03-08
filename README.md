@@ -56,6 +56,10 @@ tt spawn worker-1
 # 3. Assign a task
 tt assign worker-1 "Fix the bug in auth.rs"
 
+# 3b. Add unassigned work to backlog (optional)
+tt backlog add "Review auth error messages" --tags backend,review
+tt backlog list
+
 # 4. Or use the conductor - an AI that orchestrates for you
 tt conductor
 # Conductor: "I'll spawn agents and assign tasks. What do you want to build?"
@@ -106,6 +110,7 @@ Tinytown is built on **6 core concepts**:
 | `tt init` | Initialize a new town |
 | `tt spawn <name>` | Create a new agent (starts AI process!) |
 | `tt assign <agent> <task>` | Assign a task |
+| `tt backlog <subcommand>` | Manage unassigned task backlog |
 | `tt list` | List all agents |
 | `tt status [--deep]` | Show town status (--deep for activity) |
 | `tt kill <agent>` | Stop an agent gracefully |
@@ -210,4 +215,3 @@ MIT License - see [LICENSE](LICENSE) for details.
 **Made with ❤️ by [Jeremy Plichta](https://github.com/jeremyplichta)**
 
 *Tinytown: Simple multi-agent orchestration for humans.*
-

@@ -17,6 +17,7 @@ Like the train conductor guiding the miniature train through Tiny Town, Colorado
 - Breaks down work into tasks
 - Spawns appropriate agents
 - Assigns tasks to agents
+- Keeps unassigned work in backlog
 - Monitors progress
 - Helps resolve blockers
 
@@ -134,6 +135,21 @@ This keeps it simple:
 - **Reviewer** decides if it's done
 - **Conductor** coordinates everything
 
+## Backlog Pattern
+
+Use backlog for work that should exist but should not be assigned yet:
+
+```bash
+tt backlog add "Task needing ownership decision" --tags backend,auth
+tt backlog list
+tt backlog claim <task_id> <agent>
+```
+
+A practical approach:
+- Conductor adds uncertain work to backlog
+- Idle agents review backlog
+- Agents claim role-matching tasks
+
 ## The Conductor's Context
 
 The conductor receives a markdown context file that includes:
@@ -150,6 +166,8 @@ You are the **conductor** of Tinytown "my-project"...
 ## Your Capabilities
 - tt spawn <name> - Create agents
 - tt assign <agent> "task" - Assign work
+- tt backlog list - Review unassigned tasks
+- tt backlog claim <task_id> <agent> - Claim backlog task
 - tt status - Check progress
 
 ## The Reviewer Pattern
@@ -180,4 +198,3 @@ The conductor is **transparent**: you can see exactly what context it has and wh
 - [tt status](./status.md) — Check town status
 - [tt spawn](./spawn.md) — Spawn agents manually
 - [tt plan](./plan.md) — Plan tasks in a file
-

@@ -434,6 +434,35 @@ fn truncate_summary(text: &str, max_chars: usize) -> String {
     }
 }
 
+fn backlog_role_hint(agent_name: &str) -> &'static str {
+    let role = agent_name.to_lowercase();
+    if role.contains("front")
+        || role.contains("ui")
+        || role.contains("web")
+        || role.contains("client")
+    {
+        "Prioritize tasks tagged frontend/ui/web/client."
+    } else if role.contains("back") || role.contains("api") || role.contains("server") {
+        "Prioritize tasks tagged backend/api/server/database."
+    } else if role.contains("test") || role.contains("qa") {
+        "Prioritize tasks tagged test/qa/validation/regression."
+    } else if role.contains("review") || role.contains("audit") {
+        "Prioritize review/quality/security validation tasks."
+    } else if role.contains("doc") || role.contains("writer") {
+        "Prioritize documentation/spec/readme tasks."
+    } else if role.contains("devops")
+        || role.contains("ops")
+        || role.contains("infra")
+        || role.contains("deploy")
+    {
+        "Prioritize infrastructure/ci/deploy/reliability tasks."
+    } else if role.contains("security") || role == "sec" {
+        "Prioritize security/vulnerability/hardening tasks."
+    } else {
+        "Prioritize tasks matching your current specialization and capabilities."
+    }
+}
+
 /// Bootstrap Redis by delegating to an AI coding agent.
 ///
 /// The agent fetches the release from GitHub, downloads source, and builds it.
@@ -1235,17 +1264,35 @@ async fn main() -> Result<()> {
 
                 let display_round = round + 1;
                 let urgent_messages = channel.receive_urgent(agent_id).await?;
-                let regular_messages = channel.drain_inbox(agent_id).await?;
+                let mut regular_messages = channel.drain_inbox(agent_id).await?;
 
                 if regular_messages.is_empty() && urgent_messages.is_empty() {
-                    info!("   📭 Inbox empty, waiting...");
-                    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                        agent.state = AgentState::Idle;
-                        agent.last_heartbeat = chrono::Utc::now();
-                        channel.set_agent_state(&agent).await?;
+                    let backlog_count = channel.backlog_len().await?;
+                    if backlog_count > 0 {
+                        info!(
+                            "   📋 Inbox empty, but backlog has {} task(s); prompting backlog review",
+                            backlog_count
+                        );
+                        regular_messages.push(tinytown::Message::new(
+                            AgentId::supervisor(),
+                            agent_id,
+                            tinytown::MessageType::Query {
+                                question: format!(
+                                    "Backlog has {} task(s). Review `tt backlog list` and claim one that matches your role using `tt backlog claim <task-id> {}`.",
+                                    backlog_count, name
+                                ),
+                            },
+                        ));
+                    } else {
+                        info!("   📭 Inbox empty, waiting...");
+                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            agent.state = AgentState::Idle;
+                            agent.last_heartbeat = chrono::Utc::now();
+                            channel.set_agent_state(&agent).await?;
+                        }
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
                     }
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    continue;
                 }
 
                 let mut breakdown = MessageBreakdown::default();
@@ -1300,23 +1347,44 @@ async fn main() -> Result<()> {
                 );
 
                 if actionable_messages.is_empty() {
-                    let summary = format!(
-                        "Round {}: ⏭️ auto-handled {} informational, {} confirmations",
-                        display_round,
-                        informational_summaries.len(),
-                        breakdown.confirmations
-                    );
-                    info!("   {}", summary);
-                    channel.log_agent_activity(agent_id, &summary).await?;
+                    let backlog_count = channel.backlog_len().await?;
+                    if backlog_count > 0 {
+                        info!(
+                            "   📋 No direct actionable messages; backlog has {} task(s), prompting claim review",
+                            backlog_count
+                        );
+                        actionable_messages.push((
+                            tinytown::Message::new(
+                                AgentId::supervisor(),
+                                agent_id,
+                                tinytown::MessageType::Query {
+                                    question: format!(
+                                        "No direct assignments right now. Backlog has {} task(s): review and claim one that fits your role with `tt backlog claim <task-id> {}`.",
+                                        backlog_count, name
+                                    ),
+                                },
+                            ),
+                            false,
+                        ));
+                    } else {
+                        let summary = format!(
+                            "Round {}: ⏭️ auto-handled {} informational, {} confirmations",
+                            display_round,
+                            informational_summaries.len(),
+                            breakdown.confirmations
+                        );
+                        info!("   {}", summary);
+                        channel.log_agent_activity(agent_id, &summary).await?;
 
-                    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                        agent.state = AgentState::Idle;
-                        agent.last_heartbeat = chrono::Utc::now();
-                        channel.set_agent_state(&agent).await?;
+                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            agent.state = AgentState::Idle;
+                            agent.last_heartbeat = chrono::Utc::now();
+                            channel.set_agent_state(&agent).await?;
+                        }
+
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
                     }
-
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
                 }
 
                 let urgent_actionable = actionable_messages
@@ -1365,6 +1433,49 @@ async fn main() -> Result<()> {
                     section
                 };
 
+                let backlog_ids = channel.backlog_list().await?;
+                let backlog_count = backlog_ids.len();
+                let role_hint = backlog_role_hint(&name);
+                let backlog_section = {
+                    let mut section = format!(
+                        "\n## Backlog Snapshot\n\n- Total backlog tasks: {}\n- Role match hint: {}\n",
+                        backlog_count, role_hint
+                    );
+                    if backlog_count > 0 {
+                        section.push_str("\nReview and claim role-matching items:\n");
+                        let mut shown = 0usize;
+                        for task_id in backlog_ids.iter().take(8) {
+                            if let Some(task) = channel.get_task(*task_id).await? {
+                                let tags = if task.tags.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" [{}]", task.tags.join(", "))
+                                };
+                                section.push_str(&format!(
+                                    "- {} - {}{}\n",
+                                    task_id,
+                                    truncate_summary(&task.description, 90),
+                                    tags
+                                ));
+                                shown += 1;
+                            } else {
+                                section.push_str(&format!(
+                                    "- {} - (task record not found)\n",
+                                    task_id
+                                ));
+                                shown += 1;
+                            }
+                        }
+                        if backlog_count > shown {
+                            section.push_str(&format!(
+                                "- ...and {} more backlog task(s)\n",
+                                backlog_count - shown
+                            ));
+                        }
+                    }
+                    section
+                };
+
                 let prompt = format!(
                     r#"# Agent: {name}
 
@@ -1376,12 +1487,15 @@ You are agent "{name}" in Tinytown "{town_name}".
 ```bash
 tt status                              # Check town status and all agents
 tt assign <agent> "task"               # Assign actionable work
+tt backlog list                        # Review unassigned backlog tasks
+tt backlog claim <task_id> {agent_name}   # Claim a backlog task for yourself
 tt send <agent> --query "question"     # Ask for a response
 tt send <agent> --info "update"        # Send FYI update
 tt send <agent> --ack "received"       # Send acknowledgment
 tt send <agent> --urgent --query "..." # Priority message for next round
 ```
 
+{backlog_section}
 ## Current State
 - Round: {display_round}/{max_rounds}
 - Actionable messages: {actionable_count}
@@ -1392,17 +1506,21 @@ tt send <agent> --urgent --query "..." # Priority message for next round
 ## Your Workflow
 
 1. Handle all actionable messages listed above.
-2. Delegate or ask questions using semantic message types (`--query`, `--info`, `--ack`).
-3. If blocked, send a query with specific unblock needs.
-4. When finished, send informational updates or confirmations as appropriate.
+2. If you have no direct assignment or extra capacity, review backlog and claim one role-matching task.
+3. Claim only work that matches your role hint; do not claim unrelated tasks.
+4. Delegate or ask questions using semantic message types (`--query`, `--info`, `--ack`).
+5. If blocked, send a query with specific unblock needs.
+6. When finished, send informational updates or confirmations as appropriate.
 
 Only run commands needed to complete listed work; inbox messages for this round are already provided above.
 "#,
                     name = name,
+                    agent_name = name,
                     town_name = config.name,
                     actionable_section = actionable_section,
                     informational_section = informational_section,
                     confirmation_section = confirmation_section,
+                    backlog_section = backlog_section,
                     display_round = display_round,
                     max_rounds = max_rounds,
                     actionable_count = actionable_messages.len(),
@@ -1514,6 +1632,7 @@ Only run commands needed to complete listed work; inbox messages for this round 
         Commands::Conductor => {
             let town = Town::connect(&cli.town).await?;
             let config = town.config();
+            let backlog_count = town.channel().backlog_len().await.unwrap_or(0);
 
             // Build conductor context with current state
             let agents = town.list_agents().await;
@@ -1529,7 +1648,8 @@ Only run commands needed to complete listed work; inbox messages for this round 
             // Detect if this is a fresh start or resuming
             let is_fresh_start = agents.is_empty();
             let startup_mode = if is_fresh_start {
-                r#"## 🆕 Fresh Start
+                format!(
+                    r#"## 🆕 Fresh Start
 
 This is a new town with no agents yet. Your first job is to help the user:
 
@@ -1551,6 +1671,7 @@ This is a new town with no agents yet. Your first job is to help the user:
 | `architect` | System design, code structure decisions |
 
 4. **Break down the work**: Help decompose their idea into specific, assignable tasks
+5. **Use backlog for unassigned work**: If ownership is unclear, park tasks in backlog and let role-matched agents claim them
 
 ### First Interaction Template
 
@@ -1563,8 +1684,11 @@ Ask the user:
 If they provide a design or task, analyze it and propose:
 - Which agents to spawn (always include reviewer!)
 - Task breakdown with assignments
-- Suggested order of execution"#
-                    .to_string()
+- Suggested order of execution
+
+Backlog currently has **{backlog_count}** task(s)."#,
+                    backlog_count = backlog_count
+                )
             } else {
                 format!(
                     r#"## 🔄 Resuming Session
@@ -1572,12 +1696,15 @@ If they provide a design or task, analyze it and propose:
 You have existing agents running:
 {agent_status}
 Check their status with `tt status --deep` to see progress, then continue coordinating.
+Backlog currently has **{backlog_count}** task(s).
 
 If work is stalled or you need to pivot, you can:
 - `tt kill <agent>` to stop agents
 - Spawn new agents for different roles
-- Reassign tasks as needed"#,
-                    agent_status = agent_status
+- Reassign tasks as needed
+- Use `tt backlog list` and `tt backlog claim <task-id> <agent>` for unassigned tasks"#,
+                    agent_status = agent_status,
+                    backlog_count = backlog_count
                 )
             };
 
@@ -1596,6 +1723,7 @@ You are the **conductor** of Tinytown "{name}" - like the train conductor guidin
 **Location:** {root}
 **Agents ({agent_count}):**
 {agent_status}
+**Backlog tasks:** {backlog_count}
 
 {startup_mode}
 
@@ -1613,6 +1741,14 @@ tt spawn <name> --max-rounds 5     # Limit iterations (default: 10)
 ### Assign tasks
 ```bash
 tt assign <agent> "<task description>"
+```
+
+### Manage backlog (unassigned tasks)
+```bash
+tt backlog add "<task description>" --tags backend,api
+tt backlog list
+tt backlog claim <task_id> <agent>
+tt backlog assign-all <agent>
 ```
 
 ### Send messages between agents
@@ -1652,10 +1788,11 @@ tt save                     # Save Redis AOF snapshot (for version control)
 2. **Break down** complex requests into discrete tasks
 3. **Spawn** appropriate agents including a **reviewer** for quality control
 4. **Assign** tasks to agents with clear, actionable descriptions
-5. **Monitor** progress with `tt status --deep` (shows rounds, uptime, activity)
-6. **Coordinate** handoffs between agents
-7. **Check with reviewer** to decide when work is complete
-8. **Cleanup**: When done, stop agents with `tt kill <agent>`
+5. **Use backlog** for unassigned work and role-based claiming
+6. **Monitor** progress with `tt status --deep` (shows rounds, uptime, activity)
+7. **Coordinate** handoffs between agents
+8. **Check with reviewer** to decide when work is complete
+9. **Cleanup**: When done, stop agents with `tt kill <agent>`
 
 ## The Reviewer Pattern
 
@@ -1674,6 +1811,7 @@ This keeps decisions simple: workers work, reviewer approves, you coordinate.
 - Be specific: task descriptions should be clear and actionable
 - Be efficient: parallelize independent work across multiple agents
 - Check `tt status` frequently to monitor progress
+- Keep backlog flowing: if an agent goes idle, have it review backlog and claim role-matching work
 - **Save state to git**: Run `tt sync pull` periodically to save task state to tasks.toml, then suggest committing it
 
 ## Example Workflow
@@ -1698,6 +1836,7 @@ Now, help the user orchestrate their project!
                 root = cli.town.display(),
                 agent_count = agents.len(),
                 agent_status = agent_status,
+                backlog_count = backlog_count,
                 startup_mode = startup_mode,
             );
 
