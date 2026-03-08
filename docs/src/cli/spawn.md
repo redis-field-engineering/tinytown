@@ -29,7 +29,7 @@ The agent:
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--model <MODEL>` | `-m` | AI CLI to use (default: from `tinytown.json`) |
+| `--model <MODEL>` | `-m` | AI CLI to use (default: from `tinytown.toml`) |
 | `--max-rounds <N>` | | Maximum iterations before stopping (default: 10) |
 | `--foreground` | | Run in foreground instead of background |
 | `--town <PATH>` | `-t` | Town directory (default: `.`) |
@@ -37,13 +37,11 @@ The agent:
 
 ## Setting the Default CLI
 
-Edit `tinytown.json` to change which AI CLI is used by default:
+Edit `tinytown.toml` to change which AI CLI is used by default:
 
-```json
-{
-  "name": "my-town",
-  "default_model": "auggie"
-}
+```toml
+name = "my-town"
+default_cli = "auggie"
 ```
 
 Then all `tt spawn` commands use that CLI:

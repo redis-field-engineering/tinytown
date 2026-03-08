@@ -148,29 +148,45 @@ impl Town {
 
     /// Connect to an existing town.
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
-        // Check Redis version first
-        Self::check_redis_version()?;
-
+        // Check Redis version first (skip for remote Redis)
         let config = Config::load(&path)?;
 
-        // Check if socket exists - if not, skip connection attempt and start Redis directly
-        let socket_path = config.socket_path();
-        let socket_exists = socket_path.exists();
+        if !config.is_remote_redis() {
+            Self::check_redis_version()?;
+        }
+
+        // Determine if Redis appears to be running
+        let redis_appears_ready = if config.is_remote_redis() {
+            // For remote Redis, always try to connect first
+            true
+        } else if config.redis.use_socket {
+            // Unix socket mode - check if socket file exists
+            config.socket_path().exists()
+        } else {
+            // Local TCP mode - try to connect to the port
+            std::net::TcpStream::connect(format!("{}:{}", config.redis.bind, config.redis.port))
+                .is_ok()
+        };
 
         // Try to connect to Redis, start if needed
-        let channel = if socket_exists {
-            // Socket exists - try to connect (with timeout for stale sockets)
+        let channel = if redis_appears_ready {
+            // Redis appears to be running - try to connect
             match Self::connect_redis(&config).await {
                 Ok(ch) => ch,
-                Err(_) => {
+                Err(_) if !config.is_remote_redis() => {
+                    // Local Redis not responding - restart it
                     warn!("Redis not responding, restarting...");
                     Self::start_redis(&config).await?;
                     Self::connect_redis(&config).await?
                 }
+                Err(e) => {
+                    // Remote Redis failed - can't restart, propagate error
+                    return Err(e);
+                }
             }
         } else {
-            // No socket - start Redis directly (fast path)
-            debug!("No Redis socket found, starting Redis...");
+            // Redis not running - start it (only for local Redis)
+            debug!("Redis not found, starting...");
             Self::start_redis(&config).await?;
             Self::connect_redis(&config).await?
         };
@@ -183,37 +199,103 @@ impl Town {
         })
     }
 
-    /// Start a local Redis server with Unix socket (daemonized).
+    /// Start a local Redis server (daemonized).
+    /// Supports both Unix socket (default) and TCP modes with security options.
     /// Redis will continue running after tinytown exits.
     async fn start_redis(config: &Config) -> Result<()> {
-        let socket_path = config.socket_path();
+        // Skip starting local server for external/remote Redis
+        if config.is_remote_redis() {
+            info!(
+                "Using external Redis at {}:{}",
+                config.redis.host, config.redis.port
+            );
+            return Ok(());
+        }
+
         let pid_file = config.root.join(REDIS_PID_FILE);
         let redis_bin = find_redis_server();
 
-        // Remove stale socket if exists
-        if socket_path.exists() {
-            std::fs::remove_file(&socket_path)?;
-        }
-
-        info!("Starting Redis with socket: {}", socket_path.display());
         debug!("Using Redis binary: {}", redis_bin.display());
 
-        // Start Redis daemonized - it will fork into background and stay running
+        // Build args dynamically based on config
+        let mut args: Vec<String> = vec![
+            "--daemonize".to_string(),
+            "yes".to_string(),
+            "--pidfile".to_string(),
+            pid_file.to_str().unwrap().to_string(),
+            "--loglevel".to_string(),
+            "warning".to_string(),
+        ];
+
+        if config.redis.use_socket {
+            // Unix socket mode (default, current behavior)
+            let socket_path = config.socket_path();
+
+            // Remove stale socket if exists
+            if socket_path.exists() {
+                std::fs::remove_file(&socket_path)?;
+            }
+
+            info!("Starting Redis with socket: {}", socket_path.display());
+            args.extend([
+                "--unixsocket".to_string(),
+                socket_path.to_str().unwrap().to_string(),
+                "--unixsocketperm".to_string(),
+                "700".to_string(),
+                "--port".to_string(),
+                "0".to_string(), // Disable TCP
+            ]);
+        } else {
+            // TCP mode with security
+            info!(
+                "Starting Redis with TCP on {}:{}",
+                config.redis.bind, config.redis.port
+            );
+
+            // TLS configuration
+            if config.redis.tls_enabled {
+                args.extend([
+                    "--tls-port".to_string(),
+                    config.redis.port.to_string(),
+                    "--port".to_string(),
+                    "0".to_string(), // Disable non-TLS port when TLS is enabled
+                ]);
+
+                if let Some(ref cert) = config.redis.tls_cert {
+                    args.extend(["--tls-cert-file".to_string(), cert.clone()]);
+                }
+                if let Some(ref key) = config.redis.tls_key {
+                    args.extend(["--tls-key-file".to_string(), key.clone()]);
+                }
+                if let Some(ref ca_cert) = config.redis.tls_ca_cert {
+                    args.extend(["--tls-ca-cert-file".to_string(), ca_cert.clone()]);
+                }
+            } else {
+                // Plain TCP
+                args.extend(["--port".to_string(), config.redis.port.to_string()]);
+            }
+
+            // Bind address
+            args.extend(["--bind".to_string(), config.redis.bind.clone()]);
+
+            // Password authentication (check env var first via redis_password())
+            if let Some(ref password) = config.redis_password() {
+                args.extend(["--requirepass".to_string(), password.clone()]);
+            }
+
+            // Protected mode: Redis requires this when binding to non-localhost without password
+            if config.redis.bind != "127.0.0.1" && config.redis_password().is_none() {
+                warn!(
+                    "Binding to {} without password - enabling protected mode",
+                    config.redis.bind
+                );
+                args.extend(["--protected-mode".to_string(), "yes".to_string()]);
+            }
+        }
+
+        // Start Redis daemonized
         let status = std::process::Command::new(&redis_bin)
-            .args([
-                "--unixsocket",
-                socket_path.to_str().unwrap(),
-                "--unixsocketperm",
-                "700",
-                "--port",
-                "0", // Disable TCP
-                "--daemonize",
-                "yes", // Fork into background - stays running after we exit
-                "--pidfile",
-                pid_file.to_str().unwrap(),
-                "--loglevel",
-                "warning",
-            ])
+            .args(&args)
             .current_dir(&config.root)
             .status()?;
 
@@ -221,13 +303,31 @@ impl Town {
             return Err(Error::Timeout("Redis failed to start".into()));
         }
 
-        // Wait for socket to be ready
-        for _ in 0..50 {
-            if socket_path.exists() {
-                debug!("Redis socket ready");
-                return Ok(());
+        // Wait for Redis to be ready
+        if config.redis.use_socket {
+            // Wait for socket file
+            let socket_path = config.socket_path();
+            for _ in 0..50 {
+                if socket_path.exists() {
+                    debug!("Redis socket ready");
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        } else {
+            // Wait for TCP port to be ready
+            for _ in 0..50 {
+                if std::net::TcpStream::connect(format!(
+                    "{}:{}",
+                    config.redis.bind, config.redis.port
+                ))
+                .is_ok()
+                {
+                    debug!("Redis TCP port ready");
+                    return Ok(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
         }
 
         Err(Error::Timeout("Redis failed to start".into()))
@@ -236,7 +336,8 @@ impl Town {
     /// Connect to Redis.
     async fn connect_redis(config: &Config) -> Result<Channel> {
         let url = config.redis_url();
-        debug!("Connecting to Redis: {}", url);
+        // Use redacted URL for logging to avoid exposing password
+        debug!("Connecting to Redis: {}", config.redis_url_redacted());
 
         let client = Client::open(url)?;
 

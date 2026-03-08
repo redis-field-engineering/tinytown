@@ -20,7 +20,7 @@ let town = Town::init("./path", "name").await?;
 let town = Town::connect("./path").await?;
 
 // Operations
-let agent = town.spawn_agent("name", "model").await?;
+let agent = town.spawn_agent("name", "cli").await?;
 let agent = town.agent("name").await?;
 let agents = town.list_agents().await;
 let channel = town.channel();
@@ -34,7 +34,7 @@ let root = town.root();
 use tinytown::{Agent, AgentId, AgentType, AgentState};
 
 // Create agent
-let agent = Agent::new("name", "model", AgentType::Worker);
+let agent = Agent::new("name", "cli", AgentType::Worker);
 
 // Supervisor (well-known ID)
 let supervisor = Agent::supervisor("coordinator");

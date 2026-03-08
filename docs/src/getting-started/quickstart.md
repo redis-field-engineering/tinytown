@@ -24,7 +24,7 @@ You'll see:
 ```
 
 This creates:
-- `tinytown.json` — Configuration file
+- `tinytown.toml` — Configuration file
 - `agents/` — Agent working directories
 - `logs/` — Activity logs
 - `tasks/` — Task storage
@@ -112,6 +112,40 @@ Town → spawns → Agents
        ↓
      Messages → contain → Tasks
 ```
+
+## Bonus: Planning with tasks.toml
+
+For larger projects, define tasks in a file instead of CLI commands:
+
+```bash
+# Initialize a task plan
+tt plan --init
+```
+
+Edit `tasks.toml`:
+
+```toml
+[[tasks]]
+id = "login-api"
+description = "Implement the user login API endpoint"
+agent = "worker-1"
+status = "pending"
+
+[[tasks]]
+id = "login-tests"
+description = "Write tests for the login API"
+agent = "worker-2"
+status = "pending"
+parent = "login-api"
+```
+
+Sync to Redis:
+
+```bash
+tt sync push
+```
+
+Now your tasks are version-controlled and can be reviewed in PRs. See [tt plan](../cli/plan.md) for more.
 
 ## Next Steps
 

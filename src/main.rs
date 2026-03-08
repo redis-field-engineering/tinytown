@@ -185,6 +185,78 @@ enum Commands {
         /// Value to set (if omitted, shows current value)
         value: Option<String>,
     },
+
+    /// Detect and clean up crashed/orphaned agents
+    Recover,
+
+    /// List all registered towns
+    Towns,
+
+    /// Manage the global task backlog
+    Backlog {
+        #[command(subcommand)]
+        action: BacklogAction,
+    },
+
+    /// Recover orphaned tasks from dead agents
+    Reclaim {
+        /// Move orphaned tasks to the backlog
+        #[arg(long)]
+        to_backlog: bool,
+
+        /// Move orphaned tasks to a specific agent
+        #[arg(long, value_name = "AGENT")]
+        to: Option<String>,
+
+        /// Reclaim only from a specific dead agent
+        #[arg(long, value_name = "AGENT")]
+        from: Option<String>,
+    },
+
+    /// Restart a stopped agent with fresh rounds
+    Restart {
+        /// Agent name to restart
+        agent: String,
+
+        /// Maximum rounds for restarted agent
+        #[arg(long, default_value = "10")]
+        rounds: u32,
+
+        /// Run in foreground (don't background the process)
+        #[arg(long)]
+        foreground: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BacklogAction {
+    /// Add a task to the backlog
+    Add {
+        /// Task description
+        description: String,
+
+        /// Optional tags (comma-separated)
+        #[arg(long)]
+        tags: Option<String>,
+    },
+
+    /// List all tasks in the backlog
+    List,
+
+    /// Claim a task from the backlog and assign to an agent
+    Claim {
+        /// Task ID to claim
+        task_id: String,
+
+        /// Agent name to assign the task to
+        agent: String,
+    },
+
+    /// Assign all backlog tasks to an agent
+    AssignAll {
+        /// Agent name to assign all tasks to
+        agent: String,
+    },
 }
 
 /// Bootstrap Redis by delegating to an AI coding agent.
@@ -299,7 +371,10 @@ Print the installed version and confirm the symlinks are working.
             info!("");
             info!("⚠️  Agent finished but redis-server not found at expected location.");
             info!("   Expected: {}", redis_bin.display());
-            info!("   Check {}/versions/ for build artifacts.", tt_dir.display());
+            info!(
+                "   Check {}/versions/ for build artifacts.",
+                tt_dir.display()
+            );
             info!("   You may need to run 'tt bootstrap' again or build manually.");
         }
     } else {
@@ -377,6 +452,64 @@ fn derive_town_name(town_path: &std::path::Path) -> String {
     }
 }
 
+/// Register a town in ~/.tt/towns.toml
+fn register_town(town_path: &std::path::Path, name: &str) -> Result<()> {
+    use tinytown::global_config::GLOBAL_CONFIG_DIR;
+
+    let tt_dir = dirs::home_dir()
+        .map(|h| h.join(GLOBAL_CONFIG_DIR))
+        .ok_or_else(|| {
+            tinytown::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not find home directory",
+            ))
+        })?;
+
+    // Ensure ~/.tt exists
+    std::fs::create_dir_all(&tt_dir)?;
+
+    let towns_path = tt_dir.join("towns.toml");
+    let abs_path = town_path
+        .canonicalize()
+        .unwrap_or_else(|_| town_path.to_path_buf());
+    let path_str = abs_path.to_string_lossy().to_string();
+
+    // Load existing towns or create new
+    let mut towns_file: TownsFile = if towns_path.exists() {
+        let content = std::fs::read_to_string(&towns_path)?;
+        toml::from_str(&content).unwrap_or_default()
+    } else {
+        TownsFile::default()
+    };
+
+    // Check if already registered (by path)
+    if towns_file.towns.iter().any(|t| t.path == path_str) {
+        // Update name if different
+        for town in &mut towns_file.towns {
+            if town.path == path_str && town.name != name {
+                town.name = name.to_string();
+            }
+        }
+    } else {
+        // Add new entry
+        towns_file.towns.push(TownEntry {
+            path: path_str,
+            name: name.to_string(),
+        });
+    }
+
+    // Save
+    let content = toml::to_string_pretty(&towns_file).map_err(|e| {
+        tinytown::Error::Io(std::io::Error::other(format!(
+            "Failed to serialize towns.toml: {}",
+            e
+        )))
+    })?;
+    std::fs::write(&towns_path, content)?;
+
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -390,7 +523,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 
     match cli.command {
-        Commands::Bootstrap { version, cli: cli_arg } => {
+        Commands::Bootstrap {
+            version,
+            cli: cli_arg,
+        } => {
             // Use CLI arg, or fall back to global config default_cli
             let cli_name = cli_arg.unwrap_or_else(|| {
                 GlobalConfig::load()
@@ -407,6 +543,11 @@ async fn main() -> Result<()> {
             info!("✨ Initialized town '{}' at {}", name, cli.town.display());
             info!("📡 Redis running with Unix socket for fast message passing");
             info!("🚀 Run 'tt spawn <name>' to create agents");
+
+            // Register town in ~/.tt/towns.toml
+            if let Err(e) = register_town(&cli.town, &name) {
+                info!("⚠️  Could not register town in ~/.tt/towns.toml: {}", e);
+            }
 
             // Keep town alive briefly to show it's working
             drop(town);
@@ -518,7 +659,7 @@ async fn main() -> Result<()> {
 
             info!("🏘️  Town: {}", config.name);
             info!("📂 Root: {}", town.root().display());
-            info!("📡 Redis: {}", config.redis_url());
+            info!("📡 Redis: {}", config.redis_url_redacted());
 
             let agents = town.list_agents().await;
             info!("🤖 Agents: {}", agents.len());
@@ -617,10 +758,14 @@ async fn main() -> Result<()> {
 
             let mut removed = 0;
             for agent in agents {
-                let should_remove = all || matches!(agent.state, AgentState::Stopped | AgentState::Error);
+                let should_remove =
+                    all || matches!(agent.state, AgentState::Stopped | AgentState::Error);
                 if should_remove {
                     town.channel().delete_agent(agent.id).await?;
-                    info!("🗑️  Removed {} ({}) - {:?}", agent.name, agent.id, agent.state);
+                    info!(
+                        "🗑️  Removed {} ({}) - {:?}",
+                        agent.name, agent.id, agent.state
+                    );
                     removed += 1;
                 }
             }
@@ -646,7 +791,11 @@ async fn main() -> Result<()> {
 
                 let mut total_tasks = 0;
                 for agent in &agents {
-                    let messages = town.channel().peek_inbox(agent.id, 20).await.unwrap_or_default();
+                    let messages = town
+                        .channel()
+                        .peek_inbox(agent.id, 20)
+                        .await
+                        .unwrap_or_default();
                     if messages.is_empty() {
                         continue;
                     }
@@ -659,7 +808,11 @@ async fn main() -> Result<()> {
                                 // Look up the actual task to get description
                                 if let Ok(tid) = task_id.parse::<TaskId>() {
                                     if let Ok(Some(task)) = town.channel().get_task(tid).await {
-                                        let first_line = task.description.lines().next().unwrap_or(&task.description);
+                                        let first_line = task
+                                            .description
+                                            .lines()
+                                            .next()
+                                            .unwrap_or(&task.description);
                                         if first_line.len() > 80 {
                                             format!("{}...", &first_line[..77])
                                         } else {
@@ -798,8 +951,16 @@ async fn main() -> Result<()> {
             );
             info!("   CLI: {} ({})", cli_name, cli_cmd);
 
-            for round in 1..=max_rounds {
-                info!("\n📍 Round {}/{}", round, max_rounds);
+            // Use manual counter - only increment AFTER CLI execution (fixes round-burning bug)
+            let mut round: u32 = 0;
+
+            loop {
+                // Check if we've hit max rounds
+                if round >= max_rounds {
+                    break;
+                }
+
+                info!("\n📍 Round {}/{}", round + 1, max_rounds);
 
                 // Check if stop has been requested
                 if channel.should_stop(agent_id).await? {
@@ -807,7 +968,7 @@ async fn main() -> Result<()> {
                     channel
                         .log_agent_activity(
                             agent_id,
-                            &format!("Round {}: 🛑 stopped by request", round),
+                            &format!("Round {}: 🛑 stopped by request", round + 1),
                         )
                         .await?;
                     channel.clear_stop(agent_id).await?;
@@ -829,7 +990,7 @@ async fn main() -> Result<()> {
                             agent_id,
                             &format!(
                                 "Round {}: 🚨 processed {} urgent",
-                                round,
+                                round + 1,
                                 urgent_messages.len()
                             ),
                         )
@@ -839,6 +1000,7 @@ async fn main() -> Result<()> {
                 // Check regular inbox for messages
                 let inbox_len = channel.inbox_len(agent_id).await?;
                 if inbox_len == 0 && urgent_messages.is_empty() {
+                    // Don't burn a round waiting - just wait and continue without incrementing
                     info!("   📭 Inbox empty, waiting...");
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
@@ -859,6 +1021,9 @@ async fn main() -> Result<()> {
                     section
                 };
 
+                // Display round (1-indexed for users)
+                let display_round = round + 1;
+
                 // Build prompt with agent context
                 let prompt = format!(
                     r#"# Agent: {name}
@@ -876,7 +1041,7 @@ tt send <agent> --urgent "!" # Send urgent message
 ```
 
 ## Current State
-- Round: {round}/{max_rounds}
+- Round: {display_round}/{max_rounds}
 - Messages waiting: {inbox_len}
 - Urgent messages: {urgent_count}
 
@@ -909,7 +1074,7 @@ Begin work. Check your inbox and keep working until it's empty.
                     name = name,
                     town_name = config.name,
                     urgent_section = urgent_section,
-                    round = round,
+                    display_round = display_round,
                     max_rounds = max_rounds,
                     inbox_len = inbox_len,
                     urgent_count = urgent_messages.len(),
@@ -927,7 +1092,9 @@ Begin work. Check your inbox and keep working until it's empty.
 
                 // Run the agent CLI
                 info!("   🤖 Running {}...", cli_name);
-                let output_file = cli.town.join(format!("logs/{}_round_{}.log", name, round));
+                let output_file = cli
+                    .town
+                    .join(format!("logs/{}_round_{}.log", name, display_round));
                 let output = std::fs::File::create(&output_file)?;
 
                 let shell_cmd = build_cli_command(&cli_name, &cli_cmd, &prompt_file);
@@ -946,16 +1113,16 @@ Begin work. Check your inbox and keep working until it's empty.
                 // Log activity and result
                 let activity_msg = match &status {
                     Ok(s) if s.success() => {
-                        info!("   ✅ Round {} complete", round);
-                        format!("Round {}: ✅ completed", round)
+                        info!("   ✅ Round {} complete", display_round);
+                        format!("Round {}: ✅ completed", display_round)
                     }
                     Ok(_) => {
                         info!("   ⚠️ CLI exited with error");
-                        format!("Round {}: ⚠️ CLI error", round)
+                        format!("Round {}: ⚠️ CLI error", display_round)
                     }
                     Err(e) => {
                         info!("   ❌ Failed to run CLI: {}", e);
-                        format!("Round {}: ❌ failed: {}", round, e)
+                        format!("Round {}: ❌ failed: {}", display_round, e)
                     }
                 };
 
@@ -965,6 +1132,9 @@ Begin work. Check your inbox and keep working until it's empty.
                 if status.is_err() {
                     break;
                 }
+
+                // Increment round counter AFTER successful CLI execution (fixes round-burning bug)
+                round += 1;
 
                 // Update agent state back to idle and increment stats
                 if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
@@ -1197,21 +1367,11 @@ Now, help the user orchestrate their project!
                     "exec auggie --instruction-file '{}'",
                     context_file.display()
                 ),
-                "claude" => format!(
-                    "exec claude --resume '{}'",
-                    context_file.display()
-                ),
-                "aider" => format!(
-                    "exec aider --message-file '{}'",
-                    context_file.display()
-                ),
+                "claude" => format!("exec claude --resume '{}'", context_file.display()),
+                "aider" => format!("exec aider --message-file '{}'", context_file.display()),
                 _ => {
                     // For unknown CLIs, try piping the context
-                    format!(
-                        "cat '{}' | exec {}",
-                        context_file.display(),
-                        cli_name
-                    )
+                    format!("cat '{}' | exec {}", context_file.display(), cli_name)
                 }
             };
 
@@ -1370,7 +1530,460 @@ Now, help the user orchestrate their project!
                 }
             }
         }
+
+        Commands::Recover => {
+            use tinytown::AgentState;
+
+            let town = Town::connect(&cli.town).await?;
+            let agents = town.list_agents().await;
+
+            let mut recovered = 0;
+            let mut checked = 0;
+
+            info!("🔍 Scanning for orphaned agents...");
+
+            for agent in agents {
+                checked += 1;
+
+                // Check if agent is in a "working" or "starting" state (should be active)
+                let is_active_state =
+                    matches!(agent.state, AgentState::Working | AgentState::Starting);
+
+                if !is_active_state {
+                    continue;
+                }
+
+                // Check if the agent's process is still running by looking for its log file
+                // and checking if it was recently modified (within last 2 minutes)
+                let log_file = cli.town.join(format!("logs/{}.log", agent.name));
+                let is_stale = if log_file.exists() {
+                    if let Ok(metadata) = std::fs::metadata(&log_file) {
+                        if let Ok(modified) = metadata.modified() {
+                            let elapsed = std::time::SystemTime::now()
+                                .duration_since(modified)
+                                .unwrap_or_default();
+                            // If log hasn't been modified in 2 minutes, consider stale
+                            elapsed.as_secs() > 120
+                        } else {
+                            // Can't get modified time, assume stale if old heartbeat
+                            let heartbeat_age = chrono::Utc::now() - agent.last_heartbeat;
+                            heartbeat_age.num_seconds() > 120
+                        }
+                    } else {
+                        true
+                    }
+                } else {
+                    // No log file and agent claims to be working - likely orphaned
+                    let heartbeat_age = chrono::Utc::now() - agent.last_heartbeat;
+                    heartbeat_age.num_seconds() > 120
+                };
+
+                if is_stale {
+                    // Update agent state to stopped
+                    if let Some(mut agent_state) = town.channel().get_agent_state(agent.id).await? {
+                        agent_state.state = AgentState::Stopped;
+                        town.channel().set_agent_state(&agent_state).await?;
+                    }
+
+                    // Log activity
+                    town.channel()
+                        .log_agent_activity(agent.id, "🔄 Recovered by tt recover (orphaned)")
+                        .await?;
+
+                    info!(
+                        "   🔄 Recovered '{}' ({:?}) - last heartbeat {:?} ago",
+                        agent.name,
+                        agent.state,
+                        chrono::Utc::now() - agent.last_heartbeat
+                    );
+                    recovered += 1;
+                }
+            }
+
+            info!("");
+            if recovered == 0 {
+                info!("✨ No orphaned agents found ({} agents checked)", checked);
+            } else {
+                info!(
+                    "✨ Recovered {} orphaned agent(s) ({} total checked)",
+                    recovered, checked
+                );
+                info!("   Run 'tt prune' to remove them from Redis");
+            }
+        }
+
+        Commands::Towns => {
+            use tinytown::global_config::GLOBAL_CONFIG_DIR;
+
+            let towns_path = dirs::home_dir()
+                .map(|h| h.join(GLOBAL_CONFIG_DIR).join("towns.toml"))
+                .ok_or_else(|| {
+                    tinytown::Error::Io(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        "Could not find home directory",
+                    ))
+                })?;
+
+            if !towns_path.exists() {
+                info!("📍 No towns registered yet.");
+                info!("   Run 'tt init' in a directory to register a town.");
+                return Ok(());
+            }
+
+            // Parse towns.toml
+            let content = std::fs::read_to_string(&towns_path)?;
+            let towns_file: TownsFile = toml::from_str(&content).map_err(|e| {
+                tinytown::Error::Io(std::io::Error::other(format!("Invalid towns.toml: {}", e)))
+            })?;
+
+            info!("🏘️  Registered Towns ({}):", towns_file.towns.len());
+            info!("");
+
+            for town_entry in &towns_file.towns {
+                let path = std::path::Path::new(&town_entry.path);
+
+                // Try to connect to the town's Redis
+                let status = if path.exists() {
+                    // Check if tinytown.toml exists
+                    let config_file = path.join("tinytown.toml");
+                    if !config_file.exists() {
+                        "⚠️  (no config)".to_string()
+                    } else {
+                        // Try to connect
+                        match Town::connect(path).await {
+                            Ok(t) => {
+                                let agents = t.list_agents().await;
+                                let active = agents
+                                    .iter()
+                                    .filter(|a| {
+                                        matches!(
+                                            a.state,
+                                            tinytown::AgentState::Working
+                                                | tinytown::AgentState::Starting
+                                                | tinytown::AgentState::Idle
+                                        )
+                                    })
+                                    .count();
+                                format!("✅ {} agents ({} active)", agents.len(), active)
+                            }
+                            Err(_) => "🔴 offline".to_string(),
+                        }
+                    }
+                } else {
+                    "❌ (path not found)".to_string()
+                };
+
+                info!("   {} - {}", town_entry.name, status);
+                info!("      📂 {}", town_entry.path);
+            }
+        }
+
+        Commands::Backlog { action } => {
+            let town = Town::connect(&cli.town).await?;
+
+            match action {
+                BacklogAction::Add { description, tags } => {
+                    let mut task = Task::new(&description);
+                    if let Some(tag_str) = tags {
+                        let tag_list: Vec<String> =
+                            tag_str.split(',').map(|s| s.trim().to_string()).collect();
+                        task = task.with_tags(tag_list);
+                    }
+
+                    // Store task and add to backlog
+                    town.channel().set_task(&task).await?;
+                    town.channel().backlog_push(task.id).await?;
+
+                    info!("📋 Added task to backlog: {}", task.id);
+                    info!("   Description: {}", description);
+                }
+
+                BacklogAction::List => {
+                    let task_ids = town.channel().backlog_list().await?;
+
+                    if task_ids.is_empty() {
+                        info!("📋 Backlog is empty");
+                    } else {
+                        info!("📋 Backlog ({} tasks):", task_ids.len());
+                        info!("");
+                        for task_id in task_ids {
+                            if let Ok(Some(task)) = town.channel().get_task(task_id).await {
+                                let tags = if task.tags.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" [{}]", task.tags.join(", "))
+                                };
+                                info!(
+                                    "   {} - {}{}",
+                                    task_id,
+                                    task.description.chars().take(60).collect::<String>(),
+                                    tags
+                                );
+                            } else {
+                                info!("   {} - (task not found)", task_id);
+                            }
+                        }
+                    }
+                }
+
+                BacklogAction::Claim { task_id, agent } => {
+                    // Parse task ID
+                    let tid: tinytown::TaskId = task_id.parse().map_err(|e| {
+                        tinytown::Error::TaskNotFound(format!("Invalid task ID: {}", e))
+                    })?;
+
+                    // Check task exists in backlog
+                    let removed = town.channel().backlog_remove(tid).await?;
+                    if !removed {
+                        info!("❌ Task {} not found in backlog", task_id);
+                        return Ok(());
+                    }
+
+                    // Get agent
+                    let agent_handle = town.agent(&agent).await?;
+
+                    // Assign the task
+                    if let Some(mut task) = town.channel().get_task(tid).await? {
+                        task.assign(agent_handle.id());
+                        town.channel().set_task(&task).await?;
+
+                        // Send assignment message
+                        use tinytown::agent::AgentId;
+                        use tinytown::message::{Message, MessageType};
+                        let msg = Message::new(
+                            AgentId::supervisor(),
+                            agent_handle.id(),
+                            MessageType::TaskAssign {
+                                task_id: tid.to_string(),
+                            },
+                        );
+                        town.channel().send(&msg).await?;
+
+                        info!("✅ Claimed task {} and assigned to '{}'", task_id, agent);
+                    } else {
+                        info!("❌ Task {} not found", task_id);
+                    }
+                }
+
+                BacklogAction::AssignAll { agent } => {
+                    let agent_handle = town.agent(&agent).await?;
+                    let mut count = 0;
+
+                    while let Some(tid) = town.channel().backlog_pop().await? {
+                        if let Some(mut task) = town.channel().get_task(tid).await? {
+                            task.assign(agent_handle.id());
+                            town.channel().set_task(&task).await?;
+
+                            use tinytown::agent::AgentId;
+                            use tinytown::message::{Message, MessageType};
+                            let msg = Message::new(
+                                AgentId::supervisor(),
+                                agent_handle.id(),
+                                MessageType::TaskAssign {
+                                    task_id: tid.to_string(),
+                                },
+                            );
+                            town.channel().send(&msg).await?;
+                            count += 1;
+                        }
+                    }
+
+                    if count == 0 {
+                        info!("📋 Backlog is empty, no tasks to assign");
+                    } else {
+                        info!("✅ Assigned {} task(s) from backlog to '{}'", count, agent);
+                    }
+                }
+            }
+        }
+
+        Commands::Reclaim {
+            to_backlog,
+            to,
+            from,
+        } => {
+            let town = Town::connect(&cli.town).await?;
+            let agents = town.list_agents().await;
+
+            // Find dead agents (stopped or error state)
+            let dead_agents: Vec<_> = agents
+                .iter()
+                .filter(|a| a.state.is_terminal())
+                .filter(|a| from.as_ref().is_none_or(|f| &a.name == f))
+                .collect();
+
+            if dead_agents.is_empty() {
+                if let Some(f) = &from {
+                    info!("❌ Agent '{}' not found or not in terminal state", f);
+                } else {
+                    info!("✨ No dead agents found with tasks to reclaim");
+                }
+                return Ok(());
+            }
+
+            let mut total_reclaimed = 0;
+
+            // Get target agent if specified
+            let target_agent = if let Some(target_name) = &to {
+                Some(town.agent(target_name).await?)
+            } else {
+                None
+            };
+
+            info!("🔄 Reclaiming orphaned tasks...");
+
+            for agent in dead_agents {
+                let messages = town.channel().drain_inbox(agent.id).await?;
+
+                if messages.is_empty() {
+                    continue;
+                }
+
+                info!(
+                    "   {} ({:?}): {} message(s)",
+                    agent.name,
+                    agent.state,
+                    messages.len()
+                );
+
+                for msg in messages {
+                    // Check if it's a task assignment message
+                    if let tinytown::message::MessageType::TaskAssign { task_id } = &msg.msg_type {
+                        if let Ok(tid) = task_id.parse::<tinytown::TaskId>() {
+                            if to_backlog {
+                                // Move to backlog
+                                town.channel().backlog_push(tid).await?;
+                                info!("      → backlog: {}", task_id);
+                            } else if let Some(ref target) = target_agent {
+                                // Move to target agent
+                                town.channel()
+                                    .move_message_to_inbox(&msg, target.id())
+                                    .await?;
+                                info!("      → {}: {}", to.as_ref().unwrap(), task_id);
+                            } else {
+                                // Just list what we found (no destination specified)
+                                info!("      task: {}", task_id);
+                            }
+                            total_reclaimed += 1;
+                        }
+                    } else {
+                        // Non-task message - move to target or discard
+                        if let Some(ref target) = target_agent {
+                            town.channel()
+                                .move_message_to_inbox(&msg, target.id())
+                                .await?;
+                        }
+                    }
+                }
+            }
+
+            info!("");
+            if total_reclaimed == 0 {
+                info!("📋 No tasks found in dead agent inboxes");
+            } else if to_backlog {
+                info!("✅ Moved {} task(s) to backlog", total_reclaimed);
+            } else if let Some(target_name) = &to {
+                info!("✅ Moved {} task(s) to '{}'", total_reclaimed, target_name);
+            } else {
+                info!("📋 Found {} orphaned task(s)", total_reclaimed);
+                info!("   Use --to-backlog or --to <agent> to reclaim them");
+            }
+        }
+
+        Commands::Restart {
+            agent,
+            rounds,
+            foreground,
+        } => {
+            use tinytown::AgentState;
+
+            let town = Town::connect(&cli.town).await?;
+
+            // Get the agent
+            let Some(mut agent_state) = town.channel().get_agent_by_name(&agent).await? else {
+                info!("❌ Agent '{}' not found", agent);
+                return Ok(());
+            };
+
+            // Check if agent is in terminal state
+            if !agent_state.state.is_terminal() {
+                info!(
+                    "❌ Agent '{}' is still active ({:?})",
+                    agent, agent_state.state
+                );
+                info!("   Use 'tt kill {}' to stop it first", agent);
+                return Ok(());
+            }
+
+            // Reset agent state
+            agent_state.state = AgentState::Idle;
+            agent_state.rounds_completed = 0;
+            agent_state.last_heartbeat = chrono::Utc::now();
+            town.channel().set_agent_state(&agent_state).await?;
+
+            // Clear any stop flags
+            town.channel().clear_stop(agent_state.id).await?;
+
+            // Log activity
+            town.channel()
+                .log_agent_activity(
+                    agent_state.id,
+                    &format!("🔄 Restarted with {} rounds", rounds),
+                )
+                .await?;
+
+            info!("🔄 Restarting agent '{}'...", agent);
+            info!("   Rounds: {}", rounds);
+
+            // Spawn the agent loop process
+            let logs_dir = cli.town.join("logs");
+            std::fs::create_dir_all(&logs_dir)?;
+            let log_file = logs_dir.join(format!("{}.log", agent));
+
+            let agent_loop_cmd = format!(
+                "tt -t '{}' agent-loop '{}' '{}' {}",
+                cli.town.display(),
+                agent,
+                agent_state.id,
+                rounds
+            );
+
+            if foreground {
+                // Run in foreground
+                std::process::Command::new("sh")
+                    .args(["-c", &agent_loop_cmd])
+                    .status()?;
+            } else {
+                // Run in background with logging
+                let full_cmd = format!(
+                    "nohup {} >> '{}' 2>&1 &",
+                    agent_loop_cmd,
+                    log_file.display()
+                );
+                std::process::Command::new("sh")
+                    .args(["-c", &full_cmd])
+                    .spawn()?;
+
+                info!("   Log: {}", log_file.display());
+                info!("");
+                info!("✅ Agent '{}' restarted", agent);
+            }
+        }
     }
 
     Ok(())
+}
+
+/// Town registry entry for ~/.tt/towns.toml
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct TownEntry {
+    path: String,
+    name: String,
+}
+
+/// Towns file format
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct TownsFile {
+    #[serde(default)]
+    towns: Vec<TownEntry>,
 }

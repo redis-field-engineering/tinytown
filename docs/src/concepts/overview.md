@@ -44,8 +44,9 @@ The **Town** is your control center. It:
 - Spawns and tracks agents
 - Provides the API for coordination
 
-```rust
-let town = Town::init("./mytown", "my-project").await?;
+```bash
+tt init my-project
+tt status
 ```
 
 ### 2. Agents Execute
@@ -56,8 +57,9 @@ let town = Town::init("./mytown", "my-project").await?;
 - A model (claude, auggie, codex, etc.)
 - A state (starting, idle, working, stopped)
 
-```rust
-let agent = town.spawn_agent("worker-1", "claude").await?;
+```bash
+tt spawn worker-1 --model claude
+tt list
 ```
 
 ### 3. Tasks Represent Work
@@ -67,9 +69,9 @@ let agent = town.spawn_agent("worker-1", "claude").await?;
 - A state (pending → assigned → running → completed/failed)
 - An assigned agent
 
-```rust
-let task = Task::new("Implement the login API");
-agent.assign(task).await?;
+```bash
+tt assign worker-1 "Implement the login API"
+tt tasks
 ```
 
 ### 4. Messages Coordinate
@@ -79,9 +81,9 @@ agent.assign(task).await?;
 - Message type (TaskAssign, TaskDone, StatusRequest, etc.)
 - Priority (Low, Normal, High, Urgent)
 
-```rust
-let msg = Message::new(from, to, MessageType::TaskAssign { task_id });
-channel.send(&msg).await?;
+```bash
+tt send worker-1 "Please update the README"
+tt send worker-1 --urgent "Critical bug in production!"
 ```
 
 ### 5. Channel Transports

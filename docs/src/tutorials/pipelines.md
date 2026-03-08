@@ -11,196 +11,138 @@ A code review pipeline:
 4. Reviewer approves
 5. Merger deploys
 
-## Pipeline with Parent Tasks
+## Pipeline with tasks.toml
 
-```rust
-use tinytown::{Town, Task, Result};
+Define your pipeline in `tasks.toml`:
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let town = Town::connect(".").await?;
-    let channel = town.channel();
-    
-    // Create the epic (parent task)
-    let epic = Task::new("Implement user profile feature")
-        .with_tags(["epic", "q1-2024"]);
-    channel.set_task(&epic).await?;
-    
-    // Create subtasks
-    let design = Task::new("Design profile API schema")
-        .with_parent(epic.id)
-        .with_tags(["design"]);
-    
-    let implement = Task::new("Implement profile endpoints")
-        .with_parent(epic.id)
-        .with_tags(["backend"]);
-    
-    let test = Task::new("Write profile API tests")
-        .with_parent(epic.id)
-        .with_tags(["testing"]);
-    
-    let review = Task::new("Review profile implementation")
-        .with_parent(epic.id)
-        .with_tags(["review"]);
-    
-    // Store all tasks
-    for task in [&design, &implement, &test, &review] {
-        channel.set_task(task).await?;
-    }
-    
-    println!("📋 Created pipeline with {} subtasks", 4);
-    println!("   Epic: {}", epic.id);
-    
-    Ok(())
-}
+```toml
+[meta]
+description = "User Profile Feature Pipeline"
+
+# Epic (parent task)
+[[tasks]]
+id = "profile-epic"
+description = "Implement user profile feature"
+status = "pending"
+tags = ["epic", "q1-2024"]
+
+# Subtasks under the epic
+[[tasks]]
+id = "design"
+description = "Design profile API schema"
+agent = "architect"
+status = "pending"
+parent = "profile-epic"
+tags = ["design"]
+
+[[tasks]]
+id = "implement"
+description = "Implement profile endpoints"
+agent = "developer"
+status = "pending"
+parent = "profile-epic"
+tags = ["backend"]
+
+[[tasks]]
+id = "test"
+description = "Write profile API tests"
+agent = "tester"
+status = "pending"
+parent = "profile-epic"
+tags = ["testing"]
+
+[[tasks]]
+id = "review"
+description = "Review profile implementation"
+agent = "reviewer"
+status = "pending"
+parent = "profile-epic"
+tags = ["review"]
 ```
 
-## Stateful Pipeline Manager
+Run the pipeline:
+```bash
+# Initialize the plan
+tt plan --init
 
-A reusable pipeline structure:
+# Spawn the team
+tt spawn architect --model claude
+tt spawn developer --model auggie
+tt spawn tester --model codex
+tt spawn reviewer --model claude
 
-```rust
-use tinytown::{Town, Task, TaskId, TaskState, AgentHandle, Result};
-use std::collections::HashMap;
+# Push tasks to Redis
+tt sync push
 
-struct Pipeline {
-    name: String,
-    stages: Vec<Stage>,
-    current_stage: usize,
-}
-
-struct Stage {
-    name: String,
-    task: Task,
-    agent: String,
-    completed: bool,
-}
-
-impl Pipeline {
-    fn new(name: &str) -> Self {
-        Self {
-            name: name.to_string(),
-            stages: vec![],
-            current_stage: 0,
-        }
-    }
-    
-    fn add_stage(&mut self, name: &str, description: &str, agent: &str) {
-        self.stages.push(Stage {
-            name: name.to_string(),
-            task: Task::new(description),
-            agent: agent.to_string(),
-            completed: false,
-        });
-    }
-    
-    async fn run(&mut self, town: &Town) -> Result<()> {
-        println!("🚀 Starting pipeline: {}", self.name);
-        
-        for i in 0..self.stages.len() {
-            let stage = &self.stages[i];
-            println!("\n📍 Stage {}: {}", i + 1, stage.name);
-            
-            // Get or spawn agent
-            let agent = match town.agent(&stage.agent).await {
-                Ok(a) => a,
-                Err(_) => town.spawn_agent(&stage.agent, "claude").await?,
-            };
-            
-            // Assign task
-            let task = Task::new(&stage.task.description);
-            agent.assign(task).await?;
-            
-            // Wait for completion
-            wait_for_idle(&agent).await?;
-            
-            println!("   ✅ Stage {} complete", stage.name);
-        }
-        
-        println!("\n🎉 Pipeline '{}' completed!", self.name);
-        Ok(())
-    }
-}
-
-// Usage
-#[tokio::main]
-async fn main() -> Result<()> {
-    let town = Town::connect(".").await?;
-    
-    let mut pipeline = Pipeline::new("Feature Development");
-    pipeline.add_stage("Design", "Design the feature architecture", "architect");
-    pipeline.add_stage("Implement", "Implement the feature", "developer");
-    pipeline.add_stage("Test", "Write tests for the feature", "tester");
-    pipeline.add_stage("Review", "Review the implementation", "reviewer");
-    
-    pipeline.run(&town).await?;
-    
-    Ok(())
-}
+# Start the conductor to orchestrate
+tt conductor
 ```
 
-## Conditional Pipelines
+## Sequential Pipeline via CLI
 
-Branch based on results:
+For simple sequential workflows:
 
-```rust
-async fn conditional_pipeline(town: &Town) -> Result<()> {
-    let linter = town.spawn_agent("linter", "claude").await?;
-    let developer = town.spawn_agent("developer", "claude").await?;
-    
-    // First: lint check
-    linter.assign(Task::new("Run linting on src/")).await?;
-    wait_for_idle(&linter).await?;
-    
-    // Check lint result
-    let lint_passed = check_lint_result(town).await?;
-    
-    if lint_passed {
-        // Continue to tests
-        developer.assign(Task::new("Run test suite")).await?;
-    } else {
-        // Fix lint errors first
-        developer.assign(Task::new("Fix linting errors in src/")).await?;
-        wait_for_idle(&developer).await?;
-        
-        // Re-run linter
-        linter.assign(Task::new("Re-run linting on src/")).await?;
-    }
-    
-    Ok(())
-}
+```bash
+# Stage 1: Design
+tt assign architect "Design the feature architecture"
+# Wait for completion, then...
+
+# Stage 2: Implement
+tt assign developer "Implement the feature"
+# Wait for completion, then...
+
+# Stage 3: Test
+tt assign tester "Write tests for the feature"
+# Wait for completion, then...
+
+# Stage 4: Review
+tt assign reviewer "Review the implementation"
 ```
 
-## Retry Logic
+Use `tt status` to monitor progress between stages.
 
-Handle transient failures:
+## Multi-Stage Pipeline Example
 
-```rust
-async fn with_retry<F, Fut, T>(mut f: F, max_attempts: u32) -> Result<T>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T>>,
-{
-    let mut attempts = 0;
-    loop {
-        attempts += 1;
-        match f().await {
-            Ok(result) => return Ok(result),
-            Err(e) if attempts < max_attempts => {
-                println!("⚠️  Attempt {} failed: {}, retrying...", attempts, e);
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-}
+A complete `tasks.toml` for a CI/CD-like pipeline:
 
-// Usage
-with_retry(|| async {
-    let agent = town.spawn_agent("worker", "claude").await?;
-    agent.assign(Task::new("Flaky operation")).await?;
-    wait_for_idle(&agent).await
-}, 3).await?;
+```toml
+[meta]
+description = "Code Review Pipeline"
+default_agent = "developer"
+
+[[tasks]]
+id = "lint"
+description = "Run linting on src/"
+agent = "linter"
+status = "pending"
+
+[[tasks]]
+id = "build"
+description = "Build the project"
+agent = "builder"
+status = "pending"
+parent = "lint"
+
+[[tasks]]
+id = "test"
+description = "Run test suite"
+agent = "tester"
+status = "pending"
+parent = "build"
+
+[[tasks]]
+id = "review"
+description = "Code review"
+agent = "reviewer"
+status = "pending"
+parent = "test"
+
+[[tasks]]
+id = "deploy"
+description = "Deploy to staging"
+agent = "deployer"
+status = "pending"
+parent = "review"
 ```
 
 ## Best Practices

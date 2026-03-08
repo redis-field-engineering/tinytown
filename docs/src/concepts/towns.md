@@ -6,7 +6,7 @@ A **Town** is your orchestration workspace. It's the top-level container that ma
 
 ```
 my-project/           # Town root
-├── tinytown.json     # Configuration
+├── tinytown.toml     # Configuration
 ├── redis.sock        # Unix socket (when running)
 ├── agents/           # Agent working directories
 ├── logs/             # Activity logs
@@ -45,24 +45,26 @@ let town = Town::connect("./my-project").await?;
 
 ## Town Configuration
 
-The `tinytown.json` file:
+The `tinytown.toml` file:
 
-```json
-{
-  "name": "my-project",
-  "redis": {
-    "use_socket": true,
-    "socket_path": "redis.sock",
-    "host": "127.0.0.1",
-    "port": 6379
-  },
-  "models": {
-    "claude": { "name": "claude", "command": "claude --print" },
-    "auggie": { "name": "auggie", "command": "augment" }
-  },
-  "default_model": "claude",
-  "max_agents": 10
-}
+```toml
+name = "my-project"
+default_cli = "claude"
+max_agents = 10
+
+[redis]
+use_socket = true
+socket_path = "redis.sock"
+host = "127.0.0.1"
+port = 6379
+
+[agent_clis.claude]
+name = "claude"
+command = "claude --print"
+
+[agent_clis.auggie]
+name = "auggie"
+command = "augment"
 ```
 
 ### Configuration Options
@@ -74,7 +76,7 @@ The `tinytown.json` file:
 | `redis.socket_path` | `redis.sock` | Socket file path |
 | `redis.host` | `127.0.0.1` | TCP host (if not using socket) |
 | `redis.port` | `6379` | TCP port (if not using socket) |
-| `default_model` | `claude` | Default model for new agents |
+| `default_cli` | `claude` | Default CLI for new agents |
 | `max_agents` | `10` | Maximum concurrent agents |
 
 ## Town Lifecycle
@@ -135,13 +137,10 @@ Unix sockets are **~10x faster** for local communication:
 | TCP | ~1ms | Remote Redis, Docker |
 
 To use TCP instead:
-```json
-{
-  "redis": {
-    "use_socket": false,
-    "host": "redis.example.com",
-    "port": 6379
-  }
-}
+```toml
+[redis]
+use_socket = false
+host = "redis.example.com"
+port = 6379
 ```
 

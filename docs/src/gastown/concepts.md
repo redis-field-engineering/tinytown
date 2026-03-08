@@ -62,23 +62,26 @@ Features:
 
 ### Tinytown Tasks
 
-Tasks are simpler JSON objects:
+Tasks are defined in `tasks.toml`:
 
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "description": "Implement login API",
-  "state": "running",
-  "assigned_to": "6ba7b810-...",
-  "created_at": "2024-03-01T10:00:00Z",
-  "parent_id": null,
-  "tags": ["auth", "api"]
-}
+```toml
+[[tasks]]
+id = "login-api"
+description = "Implement login API"
+agent = "backend"
+status = "pending"
+tags = ["auth", "api"]
+```
+
+Or assigned via CLI:
+
+```bash
+tt assign backend "Implement login API"
 ```
 
 Features:
 - Stored in Redis
-- Simple JSON
+- Defined in TOML (version-controlled)
 - Single level
 - Minimal schema
 - Tags for organization
@@ -112,25 +115,36 @@ Features:
 
 ### Tinytown: Manual Grouping
 
-Use parent tasks or your own tracking:
+Use parent tasks or tags in `tasks.toml`:
 
-```rust
-// Option 1: Parent tasks
-let feature = Task::new("User Auth Feature");
-let login = Task::new("Login flow").with_parent(feature.id);
-let signup = Task::new("Signup flow").with_parent(feature.id);
+```toml
+# Option 1: Parent tasks
+[[tasks]]
+id = "auth-feature"
+description = "User Auth Feature"
+status = "pending"
 
-// Option 2: Tags
-let tasks = vec![
-    Task::new("Login").with_tags(["auth-feature"]),
-    Task::new("Signup").with_tags(["auth-feature"]),
-];
+[[tasks]]
+id = "login"
+description = "Login flow"
+parent = "auth-feature"
+agent = "backend"
+status = "pending"
 
-// Option 3: Your own tracking
-struct Convoy {
-    name: String,
-    tasks: Vec<TaskId>,
-}
+[[tasks]]
+id = "signup"
+description = "Signup flow"
+parent = "auth-feature"
+agent = "backend"
+status = "pending"
+
+# Option 2: Tags for grouping
+[[tasks]]
+id = "login-tagged"
+description = "Login flow"
+tags = ["auth-feature"]
+agent = "backend"
+status = "pending"
 ```
 
 ### Gastown: Hooks
@@ -170,14 +184,14 @@ Complex routing through beads system.
 
 ### Tinytown: Direct Messages
 
-Messages are transient, stored in Redis:
+Messages are transient, stored in Redis. Send via CLI:
 
-```rust
-let msg = Message::new(from, to, MessageType::TaskDone {
-    task_id: "abc".into(),
-    result: "Done!".into(),
-});
-channel.send(&msg).await?;
+```bash
+# Send a message to another agent
+tt send reviewer "Task complete. Ready for review."
+
+# Send an urgent message
+tt send reviewer --urgent "Critical issue found!"
 ```
 
 Direct, simple, explicit.
@@ -211,19 +225,19 @@ Enable Redis persistence (RDB/AOF) for durability.
 
 ### Tinytown: Manual
 
-You implement recovery:
+You implement recovery via CLI:
 
-```rust
-// Check agent health
-if agent.state == AgentState::Error {
-    // Respawn
-    town.spawn_agent(&agent.name, &agent.model).await?;
-}
+```bash
+# Check agent health
+tt status
+tt list
 
-// Retry failed tasks
-if task.state == TaskState::Failed {
-    new_agent.assign(task.clone()).await?;
-}
+# If an agent is in error state, respawn it
+tt prune
+tt spawn worker-1 --model claude
+
+# Reassign failed tasks
+tt assign worker-1 "Retry the failed operation"
 ```
 
 ## When Tinytown Falls Short

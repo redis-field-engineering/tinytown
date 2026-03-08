@@ -35,6 +35,9 @@ const URGENT_PREFIX: &str = "tt:urgent:";
 /// Key prefix for stop flags
 const STOP_PREFIX: &str = "tt:stop:";
 
+/// Key for global task backlog
+const BACKLOG_KEY: &str = "tt:backlog";
+
 /// TTL for activity logs (1 hour)
 const ACTIVITY_TTL_SECS: u64 = 3600;
 
@@ -261,10 +264,10 @@ impl Channel {
 
         let mut agents = Vec::new();
         for key in keys {
-            if let Ok(Some(data)) = conn.get::<_, Option<String>>(&key).await {
-                if let Ok(agent) = serde_json::from_str::<crate::agent::Agent>(&data) {
-                    agents.push(agent);
-                }
+            if let Ok(Some(data)) = conn.get::<_, Option<String>>(&key).await
+                && let Ok(agent) = serde_json::from_str::<crate::agent::Agent>(&data)
+            {
+                agents.push(agent);
             }
         }
         Ok(agents)
@@ -354,5 +357,101 @@ impl Channel {
         } else {
             Ok(Some(entries.join("\n")))
         }
+    }
+
+    // ==================== Backlog Methods ====================
+
+    /// Add a task ID to the global backlog queue.
+    pub async fn backlog_push(&self, task_id: crate::task::TaskId) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let _: () = conn.rpush(BACKLOG_KEY, task_id.to_string()).await?;
+        debug!("Added task {} to backlog", task_id);
+        Ok(())
+    }
+
+    /// List all task IDs in the backlog.
+    pub async fn backlog_list(&self) -> Result<Vec<crate::task::TaskId>> {
+        let mut conn = self.conn.clone();
+        let items: Vec<String> = conn.lrange(BACKLOG_KEY, 0, -1).await?;
+
+        let mut task_ids = Vec::new();
+        for item in items {
+            if let Ok(task_id) = item.parse() {
+                task_ids.push(task_id);
+            }
+        }
+        Ok(task_ids)
+    }
+
+    /// Get the number of tasks in the backlog.
+    pub async fn backlog_len(&self) -> Result<usize> {
+        let mut conn = self.conn.clone();
+        let len: usize = conn.llen(BACKLOG_KEY).await?;
+        Ok(len)
+    }
+
+    /// Pop a task from the front of the backlog (FIFO).
+    pub async fn backlog_pop(&self) -> Result<Option<crate::task::TaskId>> {
+        let mut conn = self.conn.clone();
+        let result: Option<String> = conn.lpop(BACKLOG_KEY, None).await?;
+
+        match result {
+            Some(id) => {
+                let task_id = id.parse().map_err(|e| {
+                    crate::error::Error::TaskNotFound(format!("Invalid task ID: {}", e))
+                })?;
+                debug!("Popped task {} from backlog", task_id);
+                Ok(Some(task_id))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Remove a specific task from the backlog.
+    pub async fn backlog_remove(&self, task_id: crate::task::TaskId) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let removed: i64 = conn.lrem(BACKLOG_KEY, 1, task_id.to_string()).await?;
+        if removed > 0 {
+            debug!("Removed task {} from backlog", task_id);
+        }
+        Ok(removed > 0)
+    }
+
+    // ==================== Reclaim Methods ====================
+
+    /// Drain all messages from an agent's inbox (non-blocking).
+    ///
+    /// Returns all messages that were in the inbox.
+    pub async fn drain_inbox(&self, agent_id: AgentId) -> Result<Vec<Message>> {
+        let mut conn = self.conn.clone();
+        let inbox_key = format!("{}{}", INBOX_PREFIX, agent_id);
+
+        let mut messages = Vec::new();
+        loop {
+            let result: Option<String> = conn.lpop(&inbox_key, None).await?;
+            match result {
+                Some(data) => {
+                    if let Ok(msg) = serde_json::from_str::<Message>(&data) {
+                        messages.push(msg);
+                    }
+                }
+                None => break,
+            }
+        }
+
+        debug!(
+            "Drained {} messages from agent {}",
+            messages.len(),
+            agent_id
+        );
+        Ok(messages)
+    }
+
+    /// Move a message to another agent's inbox.
+    pub async fn move_message_to_inbox(&self, message: &Message, to_agent: AgentId) -> Result<()> {
+        // Create a new message with updated recipient
+        let mut new_msg = message.clone();
+        new_msg.to = to_agent;
+        self.send(&new_msg).await
     }
 }

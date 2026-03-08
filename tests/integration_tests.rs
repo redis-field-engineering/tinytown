@@ -18,11 +18,44 @@ use tinytown::{
     Agent, AgentId, AgentState, AgentType, Message, Priority, Task, TaskId, TaskState, Town,
 };
 
+/// Wrapper that holds both Town and TempDir, cleaning up Redis on drop
+struct TownGuard {
+    town: Town,
+    temp_dir: TempDir,
+}
+
+impl Drop for TownGuard {
+    fn drop(&mut self) {
+        cleanup_redis(&self.temp_dir);
+    }
+}
+
+impl std::ops::Deref for TownGuard {
+    type Target = Town;
+    fn deref(&self) -> &Self::Target {
+        &self.town
+    }
+}
+
 /// Helper function to create a temporary town for testing.
-async fn create_test_town(name: &str) -> Result<(Town, TempDir), Box<dyn std::error::Error>> {
+/// Returns a TownGuard that cleans up Redis when dropped.
+async fn create_test_town(name: &str) -> Result<TownGuard, Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let town = Town::init(temp_dir.path(), name).await?;
-    Ok((town, temp_dir))
+    Ok(TownGuard { town, temp_dir })
+}
+
+/// Helper to kill Redis when test ends
+fn cleanup_redis(temp_dir: &TempDir) {
+    let pid_file = temp_dir.path().join("redis.pid");
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+    {
+        unsafe {
+            // Use SIGKILL to ensure Redis dies immediately
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
 }
 
 // ============================================================================
@@ -39,12 +72,14 @@ async fn test_town_initialization() -> Result<(), Box<dyn std::error::Error>> {
     assert!(town_path.join("agents").exists());
     assert!(town_path.join("logs").exists());
     assert!(town_path.join("tasks").exists());
-    assert!(town_path.join("tinytown.json").exists());
+    assert!(town_path.join("tinytown.toml").exists());
 
     let config = town.config();
     assert_eq!(config.name, "test-town");
     assert_eq!(config.root, town_path);
 
+    drop(town);
+    cleanup_redis(&temp_dir);
     Ok(())
 }
 
@@ -60,6 +95,9 @@ async fn test_town_connect() -> Result<(), Box<dyn std::error::Error>> {
     let config = town2.config();
     assert_eq!(config.name, "connect-test");
 
+    drop(town2);
+    drop(_town1);
+    cleanup_redis(&temp_dir);
     Ok(())
 }
 
@@ -70,7 +108,7 @@ async fn test_town_connect() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that an agent can be spawned and has correct initial state.
 #[tokio::test]
 async fn test_agent_spawn() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("agent-spawn-test").await?;
+    let town = create_test_town("agent-spawn-test").await?;
 
     let agent_handle = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent_handle.id();
@@ -81,7 +119,7 @@ async fn test_agent_spawn() -> Result<(), Box<dyn std::error::Error>> {
 
     let agent = agent_state.unwrap();
     assert_eq!(agent.name, "worker-1");
-    assert_eq!(agent.model, "claude");
+    assert_eq!(agent.cli, "claude");
     assert_eq!(agent.agent_type, AgentType::Worker);
     assert_eq!(agent.state, AgentState::Starting);
     assert_eq!(agent.tasks_completed, 0);
@@ -92,7 +130,7 @@ async fn test_agent_spawn() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that multiple agents can be spawned independently.
 #[tokio::test]
 async fn test_multiple_agents_spawn() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("multi-agent-test").await?;
+    let town = create_test_town("multi-agent-test").await?;
 
     let agent1 = town.spawn_agent("worker-1", "claude").await?;
     let agent2 = town.spawn_agent("worker-2", "gemini").await?;
@@ -116,7 +154,7 @@ async fn test_multiple_agents_spawn() -> Result<(), Box<dyn std::error::Error>> 
 /// Test that agent state can be updated and persisted.
 #[tokio::test]
 async fn test_agent_state_update() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("agent-state-test").await?;
+    let town = create_test_town("agent-state-test").await?;
 
     let _agent_handle = town.spawn_agent("worker-1", "claude").await?;
 
@@ -143,7 +181,7 @@ async fn test_agent_state_update() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that a message can be sent to an agent's inbox.
 #[tokio::test]
 async fn test_message_send() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("message-send-test").await?;
+    let town = create_test_town("message-send-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent.id();
@@ -161,7 +199,7 @@ async fn test_message_send() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that messages can be received from an agent's inbox.
 #[tokio::test]
 async fn test_message_receive() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("message-receive-test").await?;
+    let town = create_test_town("message-receive-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent.id();
@@ -184,7 +222,7 @@ async fn test_message_receive() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that message priority affects queue ordering.
 #[tokio::test]
 async fn test_message_priority() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("message-priority-test").await?;
+    let town = create_test_town("message-priority-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent.id();
@@ -209,7 +247,7 @@ async fn test_message_priority() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that non-blocking message receive works correctly.
 #[tokio::test]
 async fn test_message_try_receive() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("message-try-receive-test").await?;
+    let town = create_test_town("message-try-receive-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent.id();
@@ -230,7 +268,7 @@ async fn test_message_try_receive() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that message correlation IDs work for request/response patterns.
 #[tokio::test]
 async fn test_message_correlation() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("message-correlation-test").await?;
+    let town = create_test_town("message-correlation-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent.id();
@@ -274,7 +312,7 @@ async fn test_task_creation() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that a task can be assigned to an agent.
 #[tokio::test]
 async fn test_task_assignment() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("task-assignment-test").await?;
+    let town = create_test_town("task-assignment-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let mut task = Task::new("Implement feature X");
@@ -296,7 +334,7 @@ async fn test_task_assignment() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that multiple tasks can be assigned to an agent.
 #[tokio::test]
 async fn test_multiple_task_assignment() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("multi-task-test").await?;
+    let town = create_test_town("multi-task-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
 
@@ -326,7 +364,7 @@ async fn test_multiple_task_assignment() -> Result<(), Box<dyn std::error::Error
 /// Test that task state transitions work correctly.
 #[tokio::test]
 async fn test_task_state_transitions() -> Result<(), Box<dyn std::error::Error>> {
-    let (_town, _temp_dir) = create_test_town("task-state-test").await?;
+    let _town = create_test_town("task-state-test").await?;
 
     let mut task = Task::new("Test task");
 
@@ -391,7 +429,7 @@ async fn test_task_hierarchy() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that task state is persisted in Redis.
 #[tokio::test]
 async fn test_task_persistence() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("task-persistence-test").await?;
+    let town = create_test_town("task-persistence-test").await?;
 
     let mut task = Task::new("Persistent task");
     let agent_id = AgentId::new();
@@ -417,7 +455,7 @@ async fn test_task_persistence() -> Result<(), Box<dyn std::error::Error>> {
 /// Test a complete workflow: spawn agent, assign task, send messages.
 #[tokio::test]
 async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("complete-workflow-test").await?;
+    let town = create_test_town("complete-workflow-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
 
@@ -441,7 +479,7 @@ async fn test_complete_workflow() -> Result<(), Box<dyn std::error::Error>> {
 /// Test agent state transitions through message handling.
 #[tokio::test]
 async fn test_agent_state_transitions() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("agent-transitions-test").await?;
+    let town = create_test_town("agent-transitions-test").await?;
 
     let agent_handle = town.spawn_agent("worker-1", "claude").await?;
 
@@ -468,7 +506,7 @@ async fn test_agent_state_transitions() -> Result<(), Box<dyn std::error::Error>
 /// Test task lifecycle with agent interaction.
 #[tokio::test]
 async fn test_task_lifecycle_with_agent() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("task-lifecycle-test").await?;
+    let town = create_test_town("task-lifecycle-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
 
@@ -503,7 +541,7 @@ async fn test_task_lifecycle_with_agent() -> Result<(), Box<dyn std::error::Erro
 /// Test message inbox behavior with multiple messages.
 #[tokio::test]
 async fn test_message_inbox_ordering() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("inbox-ordering-test").await?;
+    let town = create_test_town("inbox-ordering-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent.id();
@@ -536,7 +574,7 @@ async fn test_message_inbox_ordering() -> Result<(), Box<dyn std::error::Error>>
 /// Test that agent wait functionality works (with timeout).
 #[tokio::test]
 async fn test_agent_wait_timeout() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("agent-wait-test").await?;
+    let town = create_test_town("agent-wait-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
 
@@ -561,7 +599,7 @@ async fn test_agent_wait_timeout() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that invalid task retrieval returns None.
 #[tokio::test]
 async fn test_task_not_found() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("task-not-found-test").await?;
+    let town = create_test_town("task-not-found-test").await?;
 
     let fake_id = TaskId::new();
     let result = town.channel().get_task(fake_id).await?;
@@ -574,7 +612,7 @@ async fn test_task_not_found() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that invalid agent retrieval returns None.
 #[tokio::test]
 async fn test_agent_state_not_found() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("agent-state-not-found-test").await?;
+    let town = create_test_town("agent-state-not-found-test").await?;
 
     let fake_id = AgentId::new();
     let result = town.channel().get_agent_state(fake_id).await?;
@@ -587,7 +625,7 @@ async fn test_agent_state_not_found() -> Result<(), Box<dyn std::error::Error>> 
 /// Test that message receive timeout works correctly.
 #[tokio::test]
 async fn test_message_receive_timeout() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("message-timeout-test").await?;
+    let town = create_test_town("message-timeout-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
 
@@ -650,7 +688,7 @@ async fn test_agent_terminal_states() -> Result<(), Box<dyn std::error::Error>> 
 /// Test creating many agents in sequence.
 #[tokio::test]
 async fn test_many_agents() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("many-agents-test").await?;
+    let town = create_test_town("many-agents-test").await?;
 
     let mut agent_ids = Vec::new();
 
@@ -671,7 +709,7 @@ async fn test_many_agents() -> Result<(), Box<dyn std::error::Error>> {
 /// Test creating many tasks in sequence.
 #[tokio::test]
 async fn test_many_tasks() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("many-tasks-test").await?;
+    let town = create_test_town("many-tasks-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
 
@@ -695,7 +733,7 @@ async fn test_many_tasks() -> Result<(), Box<dyn std::error::Error>> {
 /// Test sending many messages in sequence.
 #[tokio::test]
 async fn test_many_messages() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("many-messages-test").await?;
+    let town = create_test_town("many-messages-test").await?;
 
     let agent = town.spawn_agent("worker-1", "claude").await?;
     let agent_id = agent.id();
@@ -796,10 +834,11 @@ async fn test_plan_load_save_tasks_file() -> Result<(), Box<dyn std::error::Erro
 /// Test pushing tasks from file to Redis.
 #[tokio::test]
 async fn test_plan_push_to_redis() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, temp_dir) = create_test_town("plan-push-test").await?;
+    let town = create_test_town("plan-push-test").await?;
+    let town_path = town.config().root.clone();
 
     // Initialize and modify tasks file
-    tinytown::plan::init_tasks_file(temp_dir.path())?;
+    tinytown::plan::init_tasks_file(&town_path)?;
 
     let tasks = tinytown::plan::TasksFile {
         meta: tinytown::plan::TasksMeta {
@@ -815,29 +854,981 @@ async fn test_plan_push_to_redis() -> Result<(), Box<dyn std::error::Error>> {
             parent: None,
         }],
     };
-    tinytown::plan::save_tasks_file(temp_dir.path(), &tasks)?;
+    tinytown::plan::save_tasks_file(&town_path, &tasks)?;
 
     // Push to Redis
-    let count = tinytown::plan::push_tasks_to_redis(temp_dir.path(), town.channel()).await?;
+    let count = tinytown::plan::push_tasks_to_redis(&town_path, town.channel()).await?;
     assert_eq!(count, 1);
 
     Ok(())
 }
 
-/// Test that default_model is used when spawning without --model.
+/// Test that default_cli is used when spawning without --cli.
 #[tokio::test]
-async fn test_default_model_config() -> Result<(), Box<dyn std::error::Error>> {
-    let (town, _temp_dir) = create_test_town("default-model-test").await?;
+async fn test_default_cli_config() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("default-cli-test").await?;
 
-    // Config should have a default_model
+    // Config should have a default_cli
     let config = town.config();
-    assert!(!config.default_model.is_empty());
-    assert_eq!(config.default_model, "claude"); // Default is claude
+    assert!(!config.default_cli.is_empty());
+    assert_eq!(config.default_cli, "claude"); // Default is claude
 
-    // Models should include built-in presets
-    assert!(config.models.contains_key("claude"));
-    assert!(config.models.contains_key("auggie"));
-    assert!(config.models.contains_key("codex"));
+    // Agent CLIs should include built-in presets
+    assert!(config.agent_clis.contains_key("claude"));
+    assert!(config.agent_clis.contains_key("auggie"));
+    assert!(config.agent_clis.contains_key("codex"));
+
+    Ok(())
+}
+
+// ============================================================================
+// RECOVERY FEATURE TESTS (tt recover)
+// ============================================================================
+
+/// Test that orphaned agents (in Working state with old heartbeat) can be detected.
+#[tokio::test]
+async fn test_detect_orphaned_agents_working_state() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("recovery-working-test").await?;
+
+    // Create an agent and set it to Working state
+    let agent_handle = town.spawn_agent("orphaned-worker", "claude").await?;
+    let agent_id = agent_handle.id();
+
+    // Get the agent and set it to Working state with old heartbeat
+    let mut agent = Agent::new("orphaned-worker", "claude", AgentType::Worker);
+    agent.id = agent_id;
+    agent.state = AgentState::Working;
+    // Set heartbeat to 3 minutes ago (stale - over 2 min threshold)
+    agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(3);
+    town.channel().set_agent_state(&agent).await?;
+
+    // Verify the agent is in Working state
+    let agents = town.list_agents().await;
+    let orphaned = agents.iter().find(|a| a.id == agent_id);
+    assert!(orphaned.is_some());
+    assert_eq!(orphaned.unwrap().state, AgentState::Working);
+
+    // The agent should be considered stale (heartbeat > 2 min ago)
+    let heartbeat_age = chrono::Utc::now() - orphaned.unwrap().last_heartbeat;
+    assert!(heartbeat_age.num_seconds() > 120);
+
+    Ok(())
+}
+
+/// Test that agents in Starting state with old heartbeat are considered orphaned.
+#[tokio::test]
+async fn test_detect_orphaned_agents_starting_state() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("recovery-starting-test").await?;
+
+    // Create an agent in Starting state with old heartbeat
+    let agent_handle = town.spawn_agent("stuck-starting", "auggie").await?;
+    let agent_id = agent_handle.id();
+
+    let mut agent = Agent::new("stuck-starting", "auggie", AgentType::Worker);
+    agent.id = agent_id;
+    agent.state = AgentState::Starting;
+    agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(5);
+    town.channel().set_agent_state(&agent).await?;
+
+    // Verify state is as expected
+    let state = agent_handle.state().await?;
+    assert!(state.is_some());
+    assert_eq!(state.unwrap().state, AgentState::Starting);
+
+    Ok(())
+}
+
+/// Test that agents in non-active states are not considered orphaned.
+#[tokio::test]
+async fn test_non_active_agents_not_orphaned() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("recovery-non-active-test").await?;
+
+    // Create agents in various non-active states
+    let idle_handle = town.spawn_agent("idle-agent", "claude").await?;
+    let stopped_handle = town.spawn_agent("stopped-agent", "claude").await?;
+    let paused_handle = town.spawn_agent("paused-agent", "claude").await?;
+
+    // Set states
+    let mut idle_agent = Agent::new("idle-agent", "claude", AgentType::Worker);
+    idle_agent.id = idle_handle.id();
+    idle_agent.state = AgentState::Idle;
+    idle_agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(10);
+    town.channel().set_agent_state(&idle_agent).await?;
+
+    let mut stopped_agent = Agent::new("stopped-agent", "claude", AgentType::Worker);
+    stopped_agent.id = stopped_handle.id();
+    stopped_agent.state = AgentState::Stopped;
+    stopped_agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(10);
+    town.channel().set_agent_state(&stopped_agent).await?;
+
+    let mut paused_agent = Agent::new("paused-agent", "claude", AgentType::Worker);
+    paused_agent.id = paused_handle.id();
+    paused_agent.state = AgentState::Paused;
+    paused_agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(10);
+    town.channel().set_agent_state(&paused_agent).await?;
+
+    // Verify states - none of these should be considered "active" (Working or Starting)
+    let agents = town.list_agents().await;
+
+    for agent in &agents {
+        let is_active_state = matches!(agent.state, AgentState::Working | AgentState::Starting);
+        assert!(
+            !is_active_state,
+            "Agent {} should not be in an active state",
+            agent.name
+        );
+    }
+
+    Ok(())
+}
+
+/// Test that agent state can be transitioned from Working to Stopped (recovery action).
+#[tokio::test]
+async fn test_recover_agent_to_stopped() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("recovery-transition-test").await?;
+
+    let agent_handle = town.spawn_agent("recoverable", "claude").await?;
+    let agent_id = agent_handle.id();
+
+    // Set to Working state
+    let mut agent = Agent::new("recoverable", "claude", AgentType::Worker);
+    agent.id = agent_id;
+    agent.state = AgentState::Working;
+    agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(3);
+    town.channel().set_agent_state(&agent).await?;
+
+    // Verify initial state
+    let state_before = agent_handle.state().await?;
+    assert_eq!(state_before.unwrap().state, AgentState::Working);
+
+    // Simulate recovery action: change state to Stopped
+    agent.state = AgentState::Stopped;
+    town.channel().set_agent_state(&agent).await?;
+
+    // Verify recovery worked
+    let state_after = agent_handle.state().await?;
+    assert_eq!(state_after.unwrap().state, AgentState::Stopped);
+
+    Ok(())
+}
+
+/// Test that no agents are orphaned when all are healthy.
+#[tokio::test]
+async fn test_no_orphans_when_healthy() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("recovery-healthy-test").await?;
+
+    // Create agents with recent heartbeats
+    let handle1 = town.spawn_agent("healthy-1", "claude").await?;
+    let handle2 = town.spawn_agent("healthy-2", "auggie").await?;
+
+    // Set to Working with recent heartbeat (within 2 min threshold)
+    let mut agent1 = Agent::new("healthy-1", "claude", AgentType::Worker);
+    agent1.id = handle1.id();
+    agent1.state = AgentState::Working;
+    agent1.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(30);
+    town.channel().set_agent_state(&agent1).await?;
+
+    let mut agent2 = Agent::new("healthy-2", "auggie", AgentType::Worker);
+    agent2.id = handle2.id();
+    agent2.state = AgentState::Idle;
+    agent2.last_heartbeat = chrono::Utc::now();
+    town.channel().set_agent_state(&agent2).await?;
+
+    // Check all agents - count orphaned (Working/Starting with stale heartbeat)
+    let agents = town.list_agents().await;
+    let mut orphan_count = 0;
+
+    for agent in &agents {
+        let is_active = matches!(agent.state, AgentState::Working | AgentState::Starting);
+        if is_active {
+            let heartbeat_age = chrono::Utc::now() - agent.last_heartbeat;
+            if heartbeat_age.num_seconds() > 120 {
+                orphan_count += 1;
+            }
+        }
+    }
+
+    assert_eq!(
+        orphan_count, 0,
+        "No agents should be orphaned when heartbeats are recent"
+    );
+
+    Ok(())
+}
+
+// ============================================================================
+// TOWNS REGISTRY TESTS (tt towns, tt init registration)
+// ============================================================================
+
+/// Test that towns.toml format is valid.
+#[tokio::test]
+async fn test_towns_toml_format() -> Result<(), Box<dyn std::error::Error>> {
+    // Verify that the towns.toml format can be parsed
+    let toml_content = r#"
+[[towns]]
+path = "/path/to/town1"
+name = "my-town"
+
+[[towns]]
+path = "/path/to/town2"
+name = "another-town"
+"#;
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    struct TownEntry {
+        path: String,
+        name: String,
+    }
+
+    #[derive(Debug, Clone, serde::Deserialize)]
+    struct TownsFile {
+        towns: Vec<TownEntry>,
+    }
+
+    let parsed: TownsFile = toml::from_str(toml_content)?;
+    assert_eq!(parsed.towns.len(), 2);
+    assert_eq!(parsed.towns[0].name, "my-town");
+    assert_eq!(parsed.towns[0].path, "/path/to/town1");
+    assert_eq!(parsed.towns[1].name, "another-town");
+    assert_eq!(parsed.towns[1].path, "/path/to/town2");
+
+    Ok(())
+}
+
+/// Test that empty towns.toml is valid.
+#[tokio::test]
+async fn test_empty_towns_toml() -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Debug, Clone, serde::Deserialize, Default)]
+    struct TownsFile {
+        #[serde(default)]
+        towns: Vec<TownEntry>,
+    }
+
+    #[allow(dead_code)]
+    #[derive(Debug, Clone, serde::Deserialize)]
+    struct TownEntry {
+        path: String,
+        name: String,
+    }
+
+    // Empty file or just whitespace should parse to default
+    let empty_content = "";
+    let parsed: TownsFile = toml::from_str(empty_content).unwrap_or_default();
+    assert_eq!(parsed.towns.len(), 0);
+
+    // File with just towns = [] should also work
+    let explicit_empty = "towns = []";
+    let parsed2: TownsFile = toml::from_str(explicit_empty)?;
+    assert_eq!(parsed2.towns.len(), 0);
+
+    Ok(())
+}
+
+/// Test that global config directory constant is accessible.
+#[tokio::test]
+async fn test_global_config_dir_constant() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::global_config::GLOBAL_CONFIG_DIR;
+
+    assert_eq!(GLOBAL_CONFIG_DIR, ".tt");
+
+    Ok(())
+}
+
+/// Test that GlobalConfig Default trait works (note: serde defaults are separate).
+#[tokio::test]
+async fn test_global_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::global_config::GlobalConfig;
+
+    // Default trait gives empty strings (Rust default)
+    let config = GlobalConfig::default();
+    assert!(config.agent_clis.is_empty());
+
+    // The load() method uses serde defaults when file doesn't exist
+    // We can test that GlobalConfig can be serialized/deserialized with defaults
+    let toml_str = r#"
+default_cli = "claude"
+"#;
+    let parsed: GlobalConfig = toml::from_str(toml_str)?;
+    assert_eq!(parsed.default_cli, "claude");
+
+    Ok(())
+}
+
+/// Test that town initialization creates expected directories.
+#[tokio::test]
+async fn test_town_init_creates_structure() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = TempDir::new()?;
+    let town_path = temp_dir.path();
+
+    let _town = Town::init(town_path, "init-structure-test").await?;
+
+    // Verify expected directories exist
+    assert!(town_path.join("agents").exists());
+    assert!(town_path.join("logs").exists());
+    assert!(town_path.join("tasks").exists());
+
+    // Verify config file exists (note: uses .toml now, not .json)
+    let toml_config = town_path.join("tinytown.toml");
+    let json_config = town_path.join("tinytown.json");
+    assert!(toml_config.exists() || json_config.exists());
+
+    drop(_town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that towns can be connected to and have proper status.
+#[tokio::test]
+async fn test_town_status_info() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("status-info-test").await?;
+
+    // Spawn some agents
+    let _agent1 = town.spawn_agent("worker-1", "claude").await?;
+    let _agent2 = town.spawn_agent("worker-2", "auggie").await?;
+
+    // List agents should return them
+    let agents = town.list_agents().await;
+    assert_eq!(agents.len(), 2);
+
+    // Config should have expected values
+    let config = town.config();
+    assert_eq!(config.name, "status-info-test");
+
+    Ok(())
+}
+
+/// Test that town can report agent activity states for recovery.
+#[tokio::test]
+async fn test_town_agent_activity_report() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("activity-report-test").await?;
+
+    // Create agents in different states
+    let active_handle = town.spawn_agent("active-worker", "claude").await?;
+    let idle_handle = town.spawn_agent("idle-worker", "claude").await?;
+
+    // Set up states
+    let mut active_agent = Agent::new("active-worker", "claude", AgentType::Worker);
+    active_agent.id = active_handle.id();
+    active_agent.state = AgentState::Working;
+    active_agent.last_heartbeat = chrono::Utc::now();
+    town.channel().set_agent_state(&active_agent).await?;
+
+    let mut idle_agent = Agent::new("idle-worker", "claude", AgentType::Worker);
+    idle_agent.id = idle_handle.id();
+    idle_agent.state = AgentState::Idle;
+    idle_agent.last_heartbeat = chrono::Utc::now();
+    town.channel().set_agent_state(&idle_agent).await?;
+
+    // Get agents and count by state
+    let agents = town.list_agents().await;
+    let working_count = agents
+        .iter()
+        .filter(|a| a.state == AgentState::Working)
+        .count();
+    let idle_count = agents
+        .iter()
+        .filter(|a| a.state == AgentState::Idle)
+        .count();
+
+    assert_eq!(working_count, 1);
+    assert_eq!(idle_count, 1);
+
+    Ok(())
+}
+
+// ============================================================================
+// BACKLOG AND RECOVERY TESTS
+// ============================================================================
+
+/// Test that tasks can be added, listed, and claimed from the backlog.
+#[tokio::test]
+async fn test_backlog_add_list_claim() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("backlog-test").await?;
+
+    let channel = town.channel();
+
+    // Initially, backlog should be empty
+    let backlog = channel.backlog_list().await?;
+    assert!(backlog.is_empty());
+    assert_eq!(channel.backlog_len().await?, 0);
+
+    // Add tasks to the backlog
+    let task1_id = TaskId::new();
+    let task2_id = TaskId::new();
+    let task3_id = TaskId::new();
+
+    channel.backlog_push(task1_id).await?;
+    channel.backlog_push(task2_id).await?;
+    channel.backlog_push(task3_id).await?;
+
+    // Verify backlog has 3 tasks
+    assert_eq!(channel.backlog_len().await?, 3);
+    let backlog = channel.backlog_list().await?;
+    assert_eq!(backlog.len(), 3);
+    assert_eq!(backlog[0], task1_id);
+    assert_eq!(backlog[1], task2_id);
+    assert_eq!(backlog[2], task3_id);
+
+    // Pop (claim) a task from the backlog (FIFO)
+    let claimed = channel.backlog_pop().await?;
+    assert!(claimed.is_some());
+    assert_eq!(claimed.unwrap(), task1_id);
+    assert_eq!(channel.backlog_len().await?, 2);
+
+    // Remove a specific task
+    let removed = channel.backlog_remove(task3_id).await?;
+    assert!(removed);
+    assert_eq!(channel.backlog_len().await?, 1);
+
+    // Verify only task2 remains
+    let backlog = channel.backlog_list().await?;
+    assert_eq!(backlog.len(), 1);
+    assert_eq!(backlog[0], task2_id);
+
+    // Pop remaining task
+    let claimed = channel.backlog_pop().await?;
+    assert_eq!(claimed, Some(task2_id));
+
+    // Backlog should be empty now
+    assert_eq!(channel.backlog_len().await?, 0);
+    let empty_pop = channel.backlog_pop().await?;
+    assert!(empty_pop.is_none());
+
+    Ok(())
+}
+
+/// Test that tasks can be reclaimed (drained) from a dead agent's inbox.
+#[tokio::test]
+async fn test_reclaim_from_dead_agent() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("reclaim-test").await?;
+
+    let channel = town.channel();
+
+    // Create an agent and send some messages to it
+    let agent_handle = town.spawn_agent("dead-worker", "claude").await?;
+    let agent_id = agent_handle.id();
+
+    // Send multiple messages to the agent
+    let msg1 = Message::new(AgentId::supervisor(), agent_id, MessageType::Ping);
+    let msg2 = Message::new(
+        AgentId::supervisor(),
+        agent_id,
+        MessageType::TaskAssign {
+            task_id: "task-1".to_string(),
+        },
+    );
+    let msg3 = Message::new(
+        AgentId::supervisor(),
+        agent_id,
+        MessageType::TaskAssign {
+            task_id: "task-2".to_string(),
+        },
+    );
+
+    channel.send(&msg1).await?;
+    channel.send(&msg2).await?;
+    channel.send(&msg3).await?;
+
+    // Verify messages are in inbox
+    let inbox_len = agent_handle.inbox_len().await?;
+    assert_eq!(inbox_len, 3);
+
+    // Simulate agent death by setting state to Stopped
+    let mut agent = Agent::new("dead-worker", "claude", AgentType::Worker);
+    agent.id = agent_id;
+    agent.state = AgentState::Stopped;
+    channel.set_agent_state(&agent).await?;
+
+    // Drain the inbox (reclaim messages)
+    let drained = channel.drain_inbox(agent_id).await?;
+    assert_eq!(drained.len(), 3);
+    assert_eq!(drained[0].id, msg1.id);
+    assert_eq!(drained[1].id, msg2.id);
+    assert_eq!(drained[2].id, msg3.id);
+
+    // Inbox should be empty after drain
+    let inbox_len = agent_handle.inbox_len().await?;
+    assert_eq!(inbox_len, 0);
+
+    Ok(())
+}
+
+/// Test that drained messages can be moved to the backlog.
+#[tokio::test]
+async fn test_reclaim_to_backlog() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("reclaim-backlog-test").await?;
+
+    let channel = town.channel();
+
+    // Create an agent and send task messages
+    let agent_handle = town.spawn_agent("failing-worker", "claude").await?;
+    let agent_id = agent_handle.id();
+
+    // Create task IDs and send as TaskAssign messages
+    let task1_id = TaskId::new();
+    let task2_id = TaskId::new();
+    let msg1 = Message::new(
+        AgentId::supervisor(),
+        agent_id,
+        MessageType::TaskAssign {
+            task_id: task1_id.to_string(),
+        },
+    );
+    let msg2 = Message::new(
+        AgentId::supervisor(),
+        agent_id,
+        MessageType::TaskAssign {
+            task_id: task2_id.to_string(),
+        },
+    );
+
+    channel.send(&msg1).await?;
+    channel.send(&msg2).await?;
+
+    // Simulate agent death
+    let mut agent = Agent::new("failing-worker", "claude", AgentType::Worker);
+    agent.id = agent_id;
+    agent.state = AgentState::Error;
+    channel.set_agent_state(&agent).await?;
+
+    // Drain inbox and move task IDs to backlog
+    let drained = channel.drain_inbox(agent_id).await?;
+    for msg in &drained {
+        if let MessageType::TaskAssign { task_id: task_str } = &msg.msg_type
+            && let Ok(task_id) = task_str.parse::<TaskId>()
+        {
+            channel.backlog_push(task_id).await?;
+        }
+    }
+
+    // Verify tasks are in backlog
+    let backlog = channel.backlog_list().await?;
+    assert_eq!(backlog.len(), 2);
+    assert_eq!(backlog[0], task1_id);
+    assert_eq!(backlog[1], task2_id);
+
+    Ok(())
+}
+
+/// Test that a message can be moved from one agent to another.
+#[tokio::test]
+async fn test_move_message_to_inbox() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("move-message-test").await?;
+
+    let channel = town.channel();
+
+    // Create two agents
+    let agent1 = town.spawn_agent("worker-1", "claude").await?;
+    let agent2 = town.spawn_agent("worker-2", "claude").await?;
+    let agent1_id = agent1.id();
+    let agent2_id = agent2.id();
+
+    // Send a message to agent1
+    let original_msg = Message::new(
+        AgentId::supervisor(),
+        agent1_id,
+        MessageType::TaskAssign {
+            task_id: "important-task".to_string(),
+        },
+    );
+    channel.send(&original_msg).await?;
+
+    // Verify message is in agent1's inbox
+    assert_eq!(agent1.inbox_len().await?, 1);
+    assert_eq!(agent2.inbox_len().await?, 0);
+
+    // Drain from agent1 and move to agent2
+    let drained = channel.drain_inbox(agent1_id).await?;
+    assert_eq!(drained.len(), 1);
+
+    // Move the message to agent2
+    channel
+        .move_message_to_inbox(&drained[0], agent2_id)
+        .await?;
+
+    // Verify message moved
+    assert_eq!(agent1.inbox_len().await?, 0);
+    assert_eq!(agent2.inbox_len().await?, 1);
+
+    // Receive from agent2 and verify content preserved
+    let received = channel.try_receive(agent2_id).await?;
+    assert!(received.is_some());
+    let msg = received.unwrap();
+    match msg.msg_type {
+        MessageType::TaskAssign { task_id } => assert_eq!(task_id, "important-task"),
+        _ => panic!("Expected TaskAssign message type"),
+    }
+
+    Ok(())
+}
+
+// ============================================================================
+// TCP REDIS CONFIGURATION TESTS
+// ============================================================================
+
+/// Test that redis_url() returns Unix socket URL when use_socket is true.
+#[tokio::test]
+async fn test_redis_url_unix_socket() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let config = Config::new("test-town", temp_dir.path());
+
+    // Default config should use Unix socket
+    assert!(config.redis.use_socket);
+    let url = config.redis_url();
+    assert!(
+        url.starts_with("unix://"),
+        "Expected unix:// URL, got: {}",
+        url
+    );
+    assert!(
+        url.contains("redis.sock"),
+        "Expected socket path in URL, got: {}",
+        url
+    );
+
+    Ok(())
+}
+
+/// Test that redis_url() returns TCP URL without password.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_redis_url_tcp_no_password() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tinytown::config::RedisConfig;
+
+    // Clean up env var first
+    // Safety: This is a serial test
+    unsafe {
+        std::env::remove_var("TINYTOWN_REDIS_PASSWORD");
+    }
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+
+    // Configure TCP mode without password
+    config.redis = RedisConfig {
+        use_socket: false,
+        host: "127.0.0.1".to_string(),
+        port: 6380,
+        password: None,
+        tls_enabled: false,
+        ..Default::default()
+    };
+
+    let url = config.redis_url();
+    assert_eq!(url, "redis://127.0.0.1:6380", "Unexpected URL: {}", url);
+
+    Ok(())
+}
+
+/// Test that redis_url() returns TCP URL with password.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_redis_url_tcp_with_password() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tinytown::config::RedisConfig;
+
+    // Clean up env var first
+    // Safety: This is a serial test
+    unsafe {
+        std::env::remove_var("TINYTOWN_REDIS_PASSWORD");
+    }
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+
+    // Configure TCP mode with password
+    config.redis = RedisConfig {
+        use_socket: false,
+        host: "localhost".to_string(),
+        port: 6379,
+        password: Some("secret123".to_string()),
+        tls_enabled: false,
+        ..Default::default()
+    };
+
+    let url = config.redis_url();
+    assert_eq!(
+        url, "redis://:secret123@localhost:6379",
+        "Unexpected URL: {}",
+        url
+    );
+
+    Ok(())
+}
+
+/// Test that redis_url() returns TLS URL (rediss scheme) when TLS is enabled.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_redis_url_tls_enabled() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tinytown::config::RedisConfig;
+
+    // Clean up env var first
+    // Safety: This is a serial test
+    unsafe {
+        std::env::remove_var("TINYTOWN_REDIS_PASSWORD");
+    }
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+
+    // Configure TLS mode
+    config.redis = RedisConfig {
+        use_socket: false,
+        host: "redis.example.com".to_string(),
+        port: 6379,
+        password: Some("tls-password".to_string()),
+        tls_enabled: true,
+        ..Default::default()
+    };
+
+    let url = config.redis_url();
+    assert!(
+        url.starts_with("rediss://"),
+        "Expected rediss:// scheme, got: {}",
+        url
+    );
+    assert_eq!(url, "rediss://:tls-password@redis.example.com:6379");
+
+    Ok(())
+}
+
+/// Test is_remote_redis() correctly identifies local vs remote Redis.
+#[tokio::test]
+async fn test_is_remote_redis() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tinytown::config::RedisConfig;
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+
+    // Unix socket is not remote
+    config.redis.use_socket = true;
+    assert!(
+        !config.is_remote_redis(),
+        "Unix socket should not be remote"
+    );
+
+    // localhost is not remote
+    config.redis = RedisConfig {
+        use_socket: false,
+        host: "localhost".to_string(),
+        port: 6379,
+        ..Default::default()
+    };
+    assert!(!config.is_remote_redis(), "localhost should not be remote");
+
+    // 127.0.0.1 is not remote
+    config.redis.host = "127.0.0.1".to_string();
+    assert!(!config.is_remote_redis(), "127.0.0.1 should not be remote");
+
+    // 127.0.1.1 is not remote (any 127.x.x.x)
+    config.redis.host = "127.0.1.1".to_string();
+    assert!(!config.is_remote_redis(), "127.x.x.x should not be remote");
+
+    // External host IS remote
+    config.redis.host = "redis.example.com".to_string();
+    assert!(
+        config.is_remote_redis(),
+        "redis.example.com should be remote"
+    );
+
+    // IP address IS remote
+    config.redis.host = "192.168.1.100".to_string();
+    assert!(config.is_remote_redis(), "192.168.1.100 should be remote");
+
+    Ok(())
+}
+
+/// Test that default RedisConfig has expected defaults.
+#[tokio::test]
+async fn test_redis_config_defaults() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::config::RedisConfig;
+
+    let config = RedisConfig::default();
+
+    // Unix socket is default
+    assert!(config.use_socket, "Default should use Unix socket");
+    assert_eq!(config.socket_path, "redis.sock");
+
+    // TCP defaults
+    assert_eq!(config.host, "127.0.0.1");
+    assert_eq!(config.port, 6379);
+
+    // Security defaults - disabled by default
+    assert!(
+        config.password.is_none(),
+        "Password should be None by default"
+    );
+    assert!(!config.tls_enabled, "TLS should be disabled by default");
+    assert!(config.tls_cert.is_none());
+    assert!(config.tls_key.is_none());
+    assert!(config.tls_ca_cert.is_none());
+
+    // Bind defaults to localhost for security
+    assert_eq!(config.bind, "127.0.0.1");
+
+    Ok(())
+}
+
+/// Test redis_url() uses env var password over config password.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_redis_password_env_var_override() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tinytown::config::RedisConfig;
+
+    // Clean up any existing env var first
+    // Safety: This is a serial test
+    unsafe {
+        std::env::remove_var("TINYTOWN_REDIS_PASSWORD");
+    }
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+
+    // Configure TCP mode with config password
+    config.redis = RedisConfig {
+        use_socket: false,
+        host: "localhost".to_string(),
+        port: 6379,
+        password: Some("config-password".to_string()),
+        tls_enabled: false,
+        ..Default::default()
+    };
+
+    // Set env var to override
+    // Safety: This is a serial test
+    unsafe {
+        std::env::set_var("TINYTOWN_REDIS_PASSWORD", "env-password");
+    }
+
+    // redis_password() should return env var
+    assert_eq!(
+        config.redis_password(),
+        Some("env-password".to_string()),
+        "Env var should override config password"
+    );
+
+    // URL should use env var password
+    let url = config.redis_url();
+    assert!(
+        url.contains("env-password"),
+        "URL should use env var password, got: {}",
+        url
+    );
+    assert!(
+        !url.contains("config-password"),
+        "URL should NOT use config password, got: {}",
+        url
+    );
+
+    // Clean up env var
+    // Safety: This is a single-threaded test
+    unsafe {
+        std::env::remove_var("TINYTOWN_REDIS_PASSWORD");
+    }
+
+    // Now it should use config password
+    assert_eq!(
+        config.redis_password(),
+        Some("config-password".to_string()),
+        "After removing env var, should use config password"
+    );
+
+    Ok(())
+}
+
+/// Test that redis_url_redacted() properly masks passwords.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_redis_url_redacted_masks_password() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tinytown::config::RedisConfig;
+
+    // Clean up any env var first to ensure test isolation
+    // Safety: This is a serial test
+    unsafe {
+        std::env::remove_var("TINYTOWN_REDIS_PASSWORD");
+    }
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+
+    // Configure TCP mode with password
+    config.redis = RedisConfig {
+        use_socket: false,
+        host: "redis.example.com".to_string(),
+        port: 6379,
+        password: Some("super-secret-password".to_string()),
+        tls_enabled: false,
+        ..Default::default()
+    };
+
+    // redis_url() contains real password
+    let real_url = config.redis_url();
+    assert!(
+        real_url.contains("super-secret-password"),
+        "Real URL should contain password"
+    );
+
+    // redis_url_redacted() should mask it
+    let redacted_url = config.redis_url_redacted();
+    assert!(
+        !redacted_url.contains("super-secret-password"),
+        "Redacted URL should NOT contain password"
+    );
+    assert!(
+        redacted_url.contains("****"),
+        "Redacted URL should contain mask: {}",
+        redacted_url
+    );
+    assert_eq!(redacted_url, "redis://:****@redis.example.com:6379");
+
+    // TLS mode should also be redacted properly
+    config.redis.tls_enabled = true;
+    let redacted_tls = config.redis_url_redacted();
+    assert!(redacted_tls.starts_with("rediss://"));
+    assert!(redacted_tls.contains("****"));
+    assert!(!redacted_tls.contains("super-secret-password"));
+
+    Ok(())
+}
+
+/// Test that redis_url_redacted() returns normal URL when no password is set.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_redis_url_redacted_no_password() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tinytown::config::RedisConfig;
+
+    // Clean up any env var first to ensure test isolation
+    // Safety: This is a serial test
+    unsafe {
+        std::env::remove_var("TINYTOWN_REDIS_PASSWORD");
+    }
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+
+    // Configure TCP mode without password
+    config.redis = RedisConfig {
+        use_socket: false,
+        host: "localhost".to_string(),
+        port: 6379,
+        password: None,
+        tls_enabled: false,
+        ..Default::default()
+    };
+
+    // Both should be the same when no password
+    let real_url = config.redis_url();
+    let redacted_url = config.redis_url_redacted();
+    assert_eq!(real_url, redacted_url, "URLs should match when no password");
+    assert_eq!(real_url, "redis://localhost:6379");
 
     Ok(())
 }

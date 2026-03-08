@@ -52,62 +52,57 @@ A **Task** is a unit of work that can be assigned to an agent.
 ### CLI
 
 ```bash
+# Assign a task directly to an agent
 tt assign worker-1 "Implement user authentication"
+
+# Check pending tasks
+tt tasks
 ```
 
-### Rust API
+### Using tasks.toml (Recommended)
 
-```rust
-use tinytown::Task;
+Define tasks in a file for version control and batch assignment:
 
-// Simple task
-let task = Task::new("Implement user authentication");
+```toml
+[[tasks]]
+id = "auth-api"
+description = "Implement user authentication"
+agent = "backend"
+status = "pending"
+tags = ["auth", "api"]
 
-// With tags
-let task = Task::new("Fix login bug")
-    .with_tags(["bug", "auth", "urgent"]);
-
-// With parent (for subtasks)
-let parent = Task::new("Build auth system");
-let subtask = Task::new("Implement password hashing")
-    .with_parent(parent.id);
+[[tasks]]
+id = "auth-tests"
+description = "Write tests for auth API"
+agent = "tester"
+status = "pending"
+parent = "auth-api"
 ```
 
-## Task Lifecycle Methods
-
-```rust
-let mut task = Task::new("Build the API");
-
-// Assign to an agent
-task.assign(agent_id);
-assert_eq!(task.state, TaskState::Assigned);
-
-// Mark as started
-task.start();
-assert_eq!(task.state, TaskState::Running);
-
-// Complete with result
-task.complete("API implemented at /api/v1/users");
-assert_eq!(task.state, TaskState::Completed);
-assert!(task.completed_at.is_some());
-
-// Or fail with error
-task.fail("Could not connect to database");
-assert_eq!(task.state, TaskState::Failed);
+Then sync to Redis:
+```bash
+tt sync push
 ```
 
-## Checking Task State
+See [tt plan](../cli/plan.md) for the full task DSL.
 
-```rust
-// Is the task finished?
-if task.state.is_terminal() {
-    match task.state {
-        TaskState::Completed => println!("Done: {}", task.result.unwrap()),
-        TaskState::Failed => println!("Error: {}", task.result.unwrap()),
-        TaskState::Cancelled => println!("Cancelled"),
-        _ => unreachable!(),
-    }
-}
+## Task Lifecycle
+
+Tasks move through states automatically as agents work on them:
+
+1. **Pending** → Created, waiting for assignment
+2. **Assigned** → Given to an agent via `tt assign`
+3. **Running** → Agent is actively working
+4. **Completed/Failed/Cancelled** → Terminal states
+
+Check task state with:
+```bash
+tt tasks
+```
+
+Or inspect directly in Redis:
+```bash
+redis-cli -s ./redis.sock GET "tt:task:<uuid>"
 ```
 
 ## Task Storage in Redis
@@ -125,26 +120,40 @@ redis-cli -s ./redis.sock GET "tt:task:550e8400-e29b-41d4-a716-446655440000"
 
 ## Hierarchical Tasks
 
-Create parent-child relationships for complex work:
+Create parent-child relationships in `tasks.toml`:
 
-```rust
-// Epic
-let epic = Task::new("User Management System");
-channel.set_task(&epic).await?;
+```toml
+[[tasks]]
+id = "user-system"
+description = "User Management System"
+agent = "architect"
+status = "pending"
 
-// Features under the epic
-let signup = Task::new("User signup flow").with_parent(epic.id);
-let login = Task::new("User login flow").with_parent(epic.id);
-let profile = Task::new("User profile page").with_parent(epic.id);
+[[tasks]]
+id = "signup"
+description = "User signup flow"
+parent = "user-system"
+agent = "backend"
+status = "pending"
+
+[[tasks]]
+id = "login"
+description = "User login flow"
+parent = "user-system"
+agent = "backend"
+status = "pending"
 ```
 
 ## Task Tags
 
 Use tags to categorize and filter:
 
-```rust
-let task = Task::new("Fix XSS vulnerability")
-    .with_tags(["security", "bug", "P0"]);
+```toml
+[[tasks]]
+id = "fix-xss"
+description = "Fix XSS vulnerability"
+status = "pending"
+tags = ["security", "bug", "P0"]
 ```
 
 ## Comparison with Gastown Beads

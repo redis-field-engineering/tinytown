@@ -10,7 +10,7 @@ An **Agent** is a worker that executes tasks. Agents can be AI models (Claude, A
 | `name` | String | Human-readable name |
 | `agent_type` | Enum | `Worker` or `Supervisor` |
 | `state` | Enum | Current lifecycle state |
-| `model` | String | Model name (claude, auggie, etc.) |
+| `cli` | String | CLI being used (claude, auggie, etc.) |
 | `current_task` | Option | Task being worked on |
 | `created_at` | DateTime | When agent was created |
 | `last_heartbeat` | DateTime | Last activity timestamp |

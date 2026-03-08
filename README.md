@@ -25,7 +25,7 @@ Think of it as:
 | Feature | Tinytown | Complex Systems |
 |---------|----------|-----------------|
 | **Setup time** | 30 seconds | Hours |
-| **Config files** | 1 JSON | 10+ YAML files |
+| **Config files** | 1 TOML | 10+ YAML files |
 | **Core concepts** | 5 types | 50+ concepts |
 | **CLI commands** | 13 | 50+ |
 | **Message latency** | <1ms (Unix socket) | 10-100ms |
@@ -140,28 +140,24 @@ tt spawn worker-3 --model codex
 
 ## ⚙️ Configuration
 
-Single `tinytown.json` file:
+Single `tinytown.toml` file:
 
-```json
-{
-  "name": "my-town",
-  "redis": {
-    "use_socket": true,
-    "socket_path": "redis.sock"
-  },
-  "default_model": "claude",
-  "max_agents": 10
-}
+```toml
+name = "my-town"
+default_cli = "claude"
+max_agents = 10
+
+[redis]
+use_socket = true
+socket_path = "redis.sock"
 ```
 
 ### Setting the Default CLI
 
-Change `default_model` in `tinytown.json` to set which AI CLI is used when spawning agents:
+Change `default_cli` in `tinytown.toml` to set which AI CLI is used when spawning agents:
 
-```json
-{
-  "default_model": "auggie"
-}
+```toml
+default_cli = "auggie"
 ```
 
 Available options: `claude`, `auggie`, `codex`, `aider`, `gemini`, `copilot`, `cursor`

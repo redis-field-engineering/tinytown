@@ -26,176 +26,98 @@ tt spawn tester --model codex
 tt spawn reviewer --model claude
 ```
 
-Or in code:
-
-```rust
-use tinytown::{Town, Task, Result};
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let town = Town::connect(".").await?;
-    
-    // Spawn all agents
-    let architect = town.spawn_agent("architect", "claude").await?;
-    let developer = town.spawn_agent("developer", "auggie").await?;
-    let tester = town.spawn_agent("tester", "codex").await?;
-    let reviewer = town.spawn_agent("reviewer", "claude").await?;
-    
-    println!("🏗️  Team assembled!");
-    Ok(())
-}
+Check your team:
+```bash
+tt list
 ```
 
-## Sequential Pipeline
+## Sequential Pipeline with tasks.toml
 
-The simplest pattern: each agent waits for the previous one.
+Define your workflow in `tasks.toml`:
 
-```rust
-use tinytown::{Town, Task, AgentState, Result};
-use std::time::Duration;
+```toml
+[meta]
+description = "Auth API Pipeline"
 
-async fn wait_for_idle(handle: &tinytown::AgentHandle) -> Result<()> {
-    loop {
-        if let Some(agent) = handle.state().await? {
-            if matches!(agent.state, AgentState::Idle | AgentState::Stopped) {
-                return Ok(());
-            }
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-    }
-}
+[[tasks]]
+id = "design"
+description = "Design a REST API for user authentication with JWT tokens"
+agent = "architect"
+status = "pending"
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let town = Town::connect(".").await?;
-    
-    let architect = town.spawn_agent("architect", "claude").await?;
-    let developer = town.spawn_agent("developer", "auggie").await?;
-    let tester = town.spawn_agent("tester", "codex").await?;
-    
-    // Step 1: Design
-    println!("📐 Phase 1: Architecture");
-    architect.assign(Task::new(
-        "Design a REST API for user authentication with JWT tokens. \
-         Output: API spec with endpoints, request/response formats."
-    )).await?;
-    wait_for_idle(&architect).await?;
-    
-    // Step 2: Implement
-    println!("💻 Phase 2: Implementation");
-    developer.assign(Task::new(
-        "Implement the auth API from the architect's design. \
-         Use the endpoints and formats specified."
-    )).await?;
-    wait_for_idle(&developer).await?;
-    
-    // Step 3: Test
-    println!("🧪 Phase 3: Testing");
-    tester.assign(Task::new(
-        "Write comprehensive tests for the auth API. \
-         Cover success cases, error handling, and edge cases."
-    )).await?;
-    wait_for_idle(&tester).await?;
-    
-    println!("✅ Pipeline complete!");
-    Ok(())
-}
+[[tasks]]
+id = "implement"
+description = "Implement the auth API from the architect's design"
+agent = "developer"
+status = "pending"
+parent = "design"
+
+[[tasks]]
+id = "test"
+description = "Write comprehensive tests for the auth API"
+agent = "tester"
+status = "pending"
+parent = "implement"
+```
+
+Then sync to Redis and let the conductor orchestrate:
+```bash
+tt sync push
+tt conductor
 ```
 
 ## Parallel Execution
 
-When tasks are independent, run them in parallel:
+When tasks are independent, assign them all at once:
 
-```rust
-use tokio::join;
+```bash
+# Spawn agents
+tt spawn frontend --model claude
+tt spawn backend --model auggie
+tt spawn docs --model codex
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let town = Town::connect(".").await?;
-    
-    let frontend = town.spawn_agent("frontend", "claude").await?;
-    let backend = town.spawn_agent("backend", "auggie").await?;
-    let docs = town.spawn_agent("docs", "codex").await?;
-    
-    // Assign all at once
-    frontend.assign(Task::new("Build the login UI")).await?;
-    backend.assign(Task::new("Build the auth API")).await?;
-    docs.assign(Task::new("Write API documentation")).await?;
-    
-    // Wait for all in parallel
-    let (r1, r2, r3) = join!(
-        wait_for_idle(&frontend),
-        wait_for_idle(&backend),
-        wait_for_idle(&docs)
-    );
-    
-    r1?; r2?; r3?;
-    println!("✅ All agents completed!");
-    Ok(())
-}
+# Assign tasks (they run in parallel)
+tt assign frontend "Build the login UI"
+tt assign backend "Build the auth API"
+tt assign docs "Write API documentation"
+
+# Monitor progress
+tt status
 ```
 
 ## Fan-Out / Fan-In
 
-Split work across agents, then aggregate:
+Use the conductor for complex workflows:
 
-```rust
-#[tokio::main]
-async fn main() -> Result<()> {
-    let town = Town::connect(".").await?;
-    
-    // Fan-out: Create workers
-    let mut workers = vec![];
-    for i in 1..=3 {
-        let worker = town.spawn_agent(&format!("worker-{}", i), "claude").await?;
-        workers.push(worker);
-    }
-    
-    // Assign chunks of work
-    let tasks = vec![
-        "Implement module A",
-        "Implement module B", 
-        "Implement module C",
-    ];
-    
-    for (worker, task) in workers.iter().zip(tasks.iter()) {
-        worker.assign(Task::new(*task)).await?;
-    }
-    
-    // Wait for all
-    for worker in &workers {
-        wait_for_idle(worker).await?;
-    }
-    
-    // Fan-in: Aggregate results
-    let reviewer = town.spawn_agent("reviewer", "claude").await?;
-    reviewer.assign(Task::new(
-        "Review modules A, B, and C for consistency and integration issues"
-    )).await?;
-    wait_for_idle(&reviewer).await?;
-    
-    println!("✅ Fan-out/fan-in complete!");
-    Ok(())
-}
+```bash
+# Spawn workers
+tt spawn worker-1 --model claude
+tt spawn worker-2 --model claude
+tt spawn worker-3 --model claude
+tt spawn reviewer --model claude
+
+# Assign work to all workers
+tt assign worker-1 "Implement module A"
+tt assign worker-2 "Implement module B"
+tt assign worker-3 "Implement module C"
+
+# Monitor until all complete
+tt status
+
+# Then aggregate with reviewer
+tt assign reviewer "Review modules A, B, and C for consistency"
 ```
 
 ## Agent-to-Agent Communication
 
-Agents can send messages directly:
+Agents can send messages to each other:
 
-```rust
-use tinytown::{Message, MessageType, AgentId};
+```bash
+# Send a message to another agent
+tt send reviewer "Auth API implementation complete. Ready for review."
 
-// Worker notifies reviewer when done
-let msg = Message::new(
-    worker_id,
-    reviewer_id,
-    MessageType::Custom {
-        kind: "ready_for_review".into(),
-        payload: r#"{"pr_url": "https://github.com/..."}"#.into()
-    }
-);
-town.channel().send(&msg).await?;
+# Send an urgent message
+tt send reviewer --urgent "Critical bug found in module A!"
 ```
 
 ## Comparison with Gastown

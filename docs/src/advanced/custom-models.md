@@ -4,26 +4,21 @@ Add your own AI model configurations to Tinytown.
 
 ## Model Configuration
 
-Models are defined in `tinytown.json`:
+Models are defined in `tinytown.toml`:
 
-```json
-{
-  "models": {
-    "claude": {
-      "name": "claude",
-      "command": "claude --print"
-    },
-    "my-custom-model": {
-      "name": "my-custom-model",
-      "command": "/path/to/my/agent --config ./agent.yaml",
-      "workdir": "/path/to/working/dir",
-      "env": {
-        "API_KEY": "secret",
-        "MODEL_VERSION": "v2"
-      }
-    }
-  }
-}
+```toml
+[agent_clis.claude]
+name = "claude"
+command = "claude --print"
+
+[agent_clis.my-custom-model]
+name = "my-custom-model"
+command = "/path/to/my/agent --config ./agent.yaml"
+workdir = "/path/to/working/dir"
+
+[agent_clis.my-custom-model.env]
+API_KEY = "secret"
+MODEL_VERSION = "v2"
 ```
 
 ## Model Properties
@@ -37,19 +32,14 @@ Models are defined in `tinytown.json`:
 
 ## Example: Local LLM
 
-```json
-{
-  "models": {
-    "local-llama": {
-      "name": "local-llama",
-      "command": "llama-cli --model llama-3-70b --prompt-file task.txt",
-      "workdir": "~/.local/share/llama",
-      "env": {
-        "CUDA_VISIBLE_DEVICES": "0"
-      }
-    }
-  }
-}
+```toml
+[agent_clis.local-llama]
+name = "local-llama"
+command = "llama-cli --model llama-3-70b --prompt-file task.txt"
+workdir = "~/.local/share/llama"
+
+[agent_clis.local-llama.env]
+CUDA_VISIBLE_DEVICES = "0"
 ```
 
 Usage:
@@ -73,28 +63,18 @@ python3 ~/agents/my_agent.py --task "$TASK"
 ```
 
 Configure:
-```json
-{
-  "models": {
-    "my-agent": {
-      "name": "my-agent",
-      "command": "~/bin/my-agent.sh"
-    }
-  }
-}
+```toml
+[agent_clis.my-agent]
+name = "my-agent"
+command = "~/bin/my-agent.sh"
 ```
 
 ## Example: Docker Container
 
-```json
-{
-  "models": {
-    "docker-agent": {
-      "name": "docker-agent",
-      "command": "docker run --rm -v $(pwd):/workspace my-agent:latest"
-    }
-  }
-}
+```toml
+[agent_clis.docker-agent]
+name = "docker-agent"
+command = "docker run --rm -v $(pwd):/workspace my-agent:latest"
 ```
 
 ## Programmatic Model Registration
@@ -140,12 +120,12 @@ town.spawn_agent("worker", "my-model").await?;
 ### Working Directory Issues
 
 Use absolute paths:
-```json
-"workdir": "/Users/you/agents"
+```toml
+workdir = "/Users/you/agents"
 ```
 
 Not:
-```json
-"workdir": "./agents"  # May not resolve correctly
+```toml
+workdir = "./agents"  # May not resolve correctly
 ```
 

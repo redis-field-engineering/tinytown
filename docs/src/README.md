@@ -14,7 +14,7 @@ If you've tried to set up complex orchestration systems like Gastown and found y
 |---------------|-----------------|----------|
 | **Get started** | Hours of setup | 30 seconds |
 | **Understand it** | 50+ concepts | 5 types |
-| **Configure it** | 10+ config files | 1 JSON file |
+| **Configure it** | 10+ config files | 1 TOML file |
 | **Debug it** | Navigate 300K+ lines | Read 1,400 lines |
 
 ## Core Philosophy
@@ -63,6 +63,40 @@ tt conductor
 ```
 
 That's it. Your agents are now coordinating via Redis.
+
+## Plan Work with tasks.toml
+
+For complex workflows, define tasks in a file:
+
+```bash
+tt plan --init   # Creates tasks.toml
+```
+
+Edit `tasks.toml` to define your pipeline:
+
+```toml
+[[tasks]]
+id = "auth-api"
+description = "Build the auth API"
+agent = "backend"
+status = "pending"
+
+[[tasks]]
+id = "auth-tests"
+description = "Write auth tests"
+agent = "tester"
+parent = "auth-api"
+status = "pending"
+```
+
+Then sync to Redis and let agents work:
+
+```bash
+tt sync push
+tt conductor
+```
+
+See [tt plan](./cli/plan.md) for the full task DSL.
 
 ## What's Next?
 

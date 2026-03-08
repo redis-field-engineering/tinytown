@@ -80,6 +80,31 @@ pub struct RedisConfig {
     /// AOF file path (relative to town root)
     #[serde(default = "default_aof_path")]
     pub aof_path: String,
+
+    // Security fields for TCP mode
+    /// Redis password (AUTH command)
+    #[serde(default)]
+    pub password: Option<String>,
+
+    /// Enable TLS encryption
+    #[serde(default)]
+    pub tls_enabled: bool,
+
+    /// Path to TLS certificate file (PEM)
+    #[serde(default)]
+    pub tls_cert: Option<String>,
+
+    /// Path to TLS private key file (PEM)
+    #[serde(default)]
+    pub tls_key: Option<String>,
+
+    /// Path to CA certificate for verification
+    #[serde(default)]
+    pub tls_ca_cert: Option<String>,
+
+    /// Bind address for managed Redis (0.0.0.0 for remote, 127.0.0.1 for local only)
+    #[serde(default = "default_bind")]
+    pub bind: String,
 }
 
 fn default_aof_path() -> String {
@@ -102,6 +127,10 @@ fn default_port() -> u16 {
     6379
 }
 
+fn default_bind() -> String {
+    "127.0.0.1".to_string()
+}
+
 impl Default for RedisConfig {
     fn default() -> Self {
         Self {
@@ -111,6 +140,12 @@ impl Default for RedisConfig {
             port: 6379,
             persist: false,
             aof_path: default_aof_path(),
+            password: None,
+            tls_enabled: false,
+            tls_cert: None,
+            tls_key: None,
+            tls_ca_cert: None,
+            bind: default_bind(),
         }
     }
 }
@@ -178,8 +213,12 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(&config_path)?;
-        let mut config: Config = toml::from_str(&content)
-            .map_err(|e| Error::Io(std::io::Error::other(format!("Invalid tinytown.toml: {}", e))))?;
+        let mut config: Config = toml::from_str(&content).map_err(|e| {
+            Error::Io(std::io::Error::other(format!(
+                "Invalid tinytown.toml: {}",
+                e
+            )))
+        })?;
         config.root = root.to_path_buf();
 
         Ok(config)
@@ -188,8 +227,12 @@ impl Config {
     /// Save configuration to the town directory.
     pub fn save(&self) -> Result<()> {
         let config_path = self.root.join(CONFIG_FILE);
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| Error::Io(std::io::Error::other(format!("Failed to serialize config: {}", e))))?;
+        let content = toml::to_string_pretty(self).map_err(|e| {
+            Error::Io(std::io::Error::other(format!(
+                "Failed to serialize config: {}",
+                e
+            )))
+        })?;
         std::fs::write(&config_path, content)?;
         Ok(())
     }
@@ -207,12 +250,78 @@ impl Config {
     }
 
     /// Get Redis connection URL.
+    ///
+    /// ⚠️ WARNING: When password is set, this URL contains credentials.
+    /// Do NOT log the full URL. Use `redis_url_redacted()` for logging.
     #[must_use]
     pub fn redis_url(&self) -> String {
         if self.redis.use_socket {
             format!("unix://{}", self.socket_path().display())
         } else {
-            format!("redis://{}:{}", self.redis.host, self.redis.port)
+            // Use rediss:// scheme for TLS, redis:// for plain TCP
+            let scheme = if self.redis.tls_enabled {
+                "rediss"
+            } else {
+                "redis"
+            };
+
+            // Check env var override for password (TINYTOWN_REDIS_PASSWORD takes precedence)
+            let password = std::env::var("TINYTOWN_REDIS_PASSWORD")
+                .ok()
+                .or_else(|| self.redis.password.clone());
+
+            // Include password in URL if configured
+            match password {
+                Some(pass) => {
+                    format!(
+                        "{}://:{}@{}:{}",
+                        scheme, pass, self.redis.host, self.redis.port
+                    )
+                }
+                None => format!("{}://{}:{}", scheme, self.redis.host, self.redis.port),
+            }
         }
+    }
+
+    /// Get the Redis password, checking env var first.
+    #[must_use]
+    pub fn redis_password(&self) -> Option<String> {
+        std::env::var("TINYTOWN_REDIS_PASSWORD")
+            .ok()
+            .or_else(|| self.redis.password.clone())
+    }
+
+    /// Get a redacted version of the Redis URL safe for logging.
+    /// Masks the password with **** if one is configured.
+    #[must_use]
+    pub fn redis_url_redacted(&self) -> String {
+        if self.redis.use_socket {
+            format!("unix://{}", self.socket_path().display())
+        } else {
+            let scheme = if self.redis.tls_enabled {
+                "rediss"
+            } else {
+                "redis"
+            };
+
+            // Check if any password is set (env var or config)
+            let has_password =
+                std::env::var("TINYTOWN_REDIS_PASSWORD").is_ok() || self.redis.password.is_some();
+
+            if has_password {
+                format!("{}://:****@{}:{}", scheme, self.redis.host, self.redis.port)
+            } else {
+                format!("{}://{}:{}", scheme, self.redis.host, self.redis.port)
+            }
+        }
+    }
+
+    /// Check if Redis host is remote (not localhost/127.0.0.1)
+    #[must_use]
+    pub fn is_remote_redis(&self) -> bool {
+        !self.redis.use_socket
+            && self.redis.host != "127.0.0.1"
+            && self.redis.host != "localhost"
+            && !self.redis.host.starts_with("127.")
     }
 }
