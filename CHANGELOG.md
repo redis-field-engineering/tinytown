@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0](https://github.com/redis-field-engineering/tinytown/compare/v0.4.0...v1.0.0) (2026-03-08)
+
+
+### ⚠ BREAKING CHANGES
+
+* **config:** tt init now uses global config defaults instead of hardcoded values
+
+### Features
+
+* **cli:** initialize global config and improve round tracking ([e2c293e](https://github.com/redis-field-engineering/tinytown/commit/e2c293eccf9f2319a1f46f539a9aa84515e2a717))
+* **config:** add central Redis configuration to GlobalConfig ([da00ab7](https://github.com/redis-field-engineering/tinytown/commit/da00ab7222485d18bf5aa837e470cd9695055519))
+* **config:** use GlobalConfig defaults for new towns ([0be06c6](https://github.com/redis-field-engineering/tinytown/commit/0be06c6776b1cab4137f1b0db11c73ce4b5b6dda))
+* **town:** support central Redis instance shared across towns ([fb74188](https://github.com/redis-field-engineering/tinytown/commit/fb74188b8614a4fa75c4c6d5b763079f162d5d5a))
+
+
+### Bug Fixes
+
+* address additional Cursor Bugbot security concerns ([d170ba6](https://github.com/redis-field-engineering/tinytown/commit/d170ba6032ffc09fc35429ad8d285138043df5c2))
+* address Cursor Bugbot review comments ([4cc6f14](https://github.com/redis-field-engineering/tinytown/commit/4cc6f141d614c21b14d7287547eaa257e930afe9))
+
 ## [0.4.0](https://github.com/redis-field-engineering/tinytown/compare/v0.3.0...v0.4.0) (2026-03-08)
 
 
