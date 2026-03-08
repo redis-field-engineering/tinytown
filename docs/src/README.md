@@ -25,6 +25,7 @@ Tinytown does less, so you can do more. We include only what you need:
 
 ✅ Spawn and manage agents  
 ✅ Assign tasks and track state  
+✅ Keep unassigned work in a shared backlog  
 ✅ Pass messages between agents  
 ✅ Persist work in Redis  
 
@@ -52,6 +53,10 @@ tt spawn reviewer
 tt assign frontend "Build the login page"
 tt assign backend "Create the auth API"
 tt assign reviewer "Review PRs when ready"
+
+# Or park unassigned tasks for role-based claiming
+tt backlog add "Harden auth error handling" --tags backend,security
+tt backlog list
 
 # Check status
 tt status
@@ -108,4 +113,3 @@ See [tt plan](./cli/plan.md) for the full task DSL.
 ## Named After
 
 [Tiny Town, Colorado](https://en.wikipedia.org/wiki/Tiny_Town,_Colorado) — a miniature village with big charm, just like this project! 🏔️
-

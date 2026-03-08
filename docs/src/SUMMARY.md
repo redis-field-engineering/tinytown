@@ -31,6 +31,7 @@
 - [tt init](./cli/init.md)
 - [tt spawn](./cli/spawn.md)
 - [tt assign](./cli/assign.md)
+- [tt backlog](./cli/backlog.md)
 - [tt list](./cli/list.md)
 - [tt status](./cli/status.md)
 - [tt inbox](./cli/inbox.md)
