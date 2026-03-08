@@ -281,11 +281,13 @@ impl GlobalConfig {
         hasher.write_u32(pid);
         let hash1 = hasher.finish();
 
-        // Generate a second hash with different seed
+        // Generate a second hash with different seed and additional entropy
         let random_state2 = RandomState::new();
         let mut hasher2 = random_state2.build_hasher();
         hasher2.write_u64(hash1);
-        hasher2.write_usize(std::ptr::null::<()>() as usize); // Stack address entropy
+        // Use address of local variable for stack address entropy (varies each call)
+        let stack_var: u64 = 0;
+        hasher2.write_usize(&stack_var as *const _ as usize);
         let hash2 = hasher2.finish();
 
         // Combine hashes for a longer, more random password

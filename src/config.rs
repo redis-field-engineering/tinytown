@@ -169,12 +169,22 @@ impl Config {
     pub fn new(name: impl Into<String>, root: impl Into<PathBuf>) -> Self {
         // Load global config for defaults, initializing with password if needed
         // This ensures central Redis always has a password even when called as library
-        let global = GlobalConfig::load_or_init().unwrap_or_default();
+        // If load fails (corrupted config, I/O error), fall back to socket mode for safety
+        let (global, global_load_failed) = match GlobalConfig::load_or_init() {
+            Ok(g) => (g, false),
+            Err(_) => {
+                // Fall back to default but mark that we should use socket mode
+                // This prevents starting passwordless central Redis on config errors
+                (GlobalConfig::default(), true)
+            }
+        };
 
         // Check for test/override mode - force Unix socket if TT_USE_SOCKET=1
-        let force_socket = std::env::var("TT_USE_SOCKET")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
+        // Also force socket if global config failed to load (safety fallback)
+        let force_socket = global_load_failed
+            || std::env::var("TT_USE_SOCKET")
+                .map(|v| v == "1" || v.to_lowercase() == "true")
+                .unwrap_or(false);
 
         let mut agent_clis = HashMap::new();
 
