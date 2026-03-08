@@ -659,7 +659,7 @@ async fn main() -> Result<()> {
 
             info!("🏘️  Town: {}", config.name);
             info!("📂 Root: {}", town.root().display());
-            info!("📡 Redis: {}", config.redis_url());
+            info!("📡 Redis: {}", config.redis_url_redacted());
 
             let agents = town.list_agents().await;
             info!("🤖 Agents: {}", agents.len());
