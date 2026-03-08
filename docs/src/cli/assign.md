@@ -10,7 +10,9 @@ tt assign <AGENT> <TASK>
 
 ## Description
 
-Creates a new task and sends it to the specified agent's inbox. The agent will receive a `TaskAssign` message with the task ID.
+Creates a new task record and sends it to the specified agent's inbox as a semantic `task` message.
+
+`tt assign` sends a semantic **task** message and is the right command for actionable work. Use [`tt send`](./send.md) for non-task communication such as queries, informational updates, or confirmations.
 
 ## Arguments
 
@@ -121,9 +123,10 @@ Accept JSON body {email, password}. Return 201 with {id, email}."
 tt assign backend "Build API"
 ```
 
+Use `tt assign` when the recipient should do concrete work, not just acknowledge or discuss.
+
 ## See Also
 
 - [tt spawn](./spawn.md) — Create agents
 - [tt status](./status.md) — Check task status
 - [Tasks Concept](../concepts/tasks.md)
-

@@ -149,6 +149,18 @@ enum Commands {
         /// Message content
         message: String,
 
+        /// Mark message as a query requiring a response
+        #[arg(long, conflicts_with_all = ["info", "ack"])]
+        query: bool,
+
+        /// Mark message as informational (FYI)
+        #[arg(long, conflicts_with_all = ["query", "ack"])]
+        info: bool,
+
+        /// Mark message as an acknowledgment
+        #[arg(long, conflicts_with_all = ["query", "info"])]
+        ack: bool,
+
         /// Send as urgent (processed before regular inbox)
         #[arg(long)]
         urgent: bool,
@@ -257,6 +269,169 @@ enum BacklogAction {
         /// Agent name to assign all tasks to
         agent: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageCategory {
+    Task,
+    Query,
+    Informational,
+    Confirmation,
+    OtherActionable,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct MessageBreakdown {
+    tasks: usize,
+    queries: usize,
+    informational: usize,
+    confirmations: usize,
+    other_actionable: usize,
+}
+
+impl MessageBreakdown {
+    fn count(&mut self, msg_type: &tinytown::MessageType) {
+        match classify_message(msg_type) {
+            MessageCategory::Task => self.tasks += 1,
+            MessageCategory::Query => self.queries += 1,
+            MessageCategory::Informational => self.informational += 1,
+            MessageCategory::Confirmation => self.confirmations += 1,
+            MessageCategory::OtherActionable => self.other_actionable += 1,
+        }
+    }
+
+    fn actionable_count(&self) -> usize {
+        self.tasks + self.queries + self.other_actionable
+    }
+}
+
+fn classify_custom_message(kind: &str, payload: &str) -> MessageCategory {
+    let kind = kind.to_lowercase();
+    let payload = payload.to_lowercase();
+    let token = format!("{} {}", kind, payload);
+
+    if token.contains("ack")
+        || token.contains("thanks")
+        || token.contains("thank you")
+        || token.contains("received")
+        || token.contains("approved")
+    {
+        return MessageCategory::Confirmation;
+    }
+
+    if token.contains("info")
+        || token.contains("fyi")
+        || token.contains("status")
+        || token.contains("update")
+    {
+        return MessageCategory::Informational;
+    }
+
+    if token.contains("query") || token.contains("question") {
+        return MessageCategory::Query;
+    }
+
+    MessageCategory::Task
+}
+
+fn classify_message(msg_type: &tinytown::MessageType) -> MessageCategory {
+    match msg_type {
+        tinytown::MessageType::TaskAssign { .. } | tinytown::MessageType::Task { .. } => {
+            MessageCategory::Task
+        }
+        tinytown::MessageType::Query { .. } | tinytown::MessageType::StatusRequest => {
+            MessageCategory::Query
+        }
+        tinytown::MessageType::Informational { .. }
+        | tinytown::MessageType::TaskDone { .. }
+        | tinytown::MessageType::TaskFailed { .. }
+        | tinytown::MessageType::StatusResponse { .. }
+        | tinytown::MessageType::Ping
+        | tinytown::MessageType::Pong => MessageCategory::Informational,
+        tinytown::MessageType::Confirmation { .. } => MessageCategory::Confirmation,
+        tinytown::MessageType::Custom { kind, payload } => classify_custom_message(kind, payload),
+        tinytown::MessageType::Shutdown => MessageCategory::OtherActionable,
+    }
+}
+
+fn parse_confirmation_type(message: &str) -> tinytown::ConfirmationType {
+    let trimmed = message.trim();
+    let lower = trimmed.to_lowercase();
+
+    if lower.starts_with("rejected:") {
+        let reason = trimmed
+            .split_once(':')
+            .map(|(_, reason)| reason.trim().to_string())
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| "No reason provided".to_string());
+        return tinytown::ConfirmationType::Rejected { reason };
+    }
+
+    if lower.starts_with("received") {
+        return tinytown::ConfirmationType::Received;
+    }
+
+    if lower.starts_with("approved") {
+        return tinytown::ConfirmationType::Approved;
+    }
+
+    if lower.contains("thanks") || lower.contains("thank you") {
+        return tinytown::ConfirmationType::Thanks;
+    }
+
+    tinytown::ConfirmationType::Acknowledged
+}
+
+fn summarize_message(msg_type: &tinytown::MessageType) -> String {
+    match msg_type {
+        tinytown::MessageType::TaskAssign { task_id } => format!("task assignment {}", task_id),
+        tinytown::MessageType::Task { description } => description.clone(),
+        tinytown::MessageType::Query { question } => format!("question: {}", question),
+        tinytown::MessageType::Informational { summary } => summary.clone(),
+        tinytown::MessageType::Confirmation { ack_type } => match ack_type {
+            tinytown::ConfirmationType::Received => "received".to_string(),
+            tinytown::ConfirmationType::Acknowledged => "acknowledged".to_string(),
+            tinytown::ConfirmationType::Thanks => "thanks".to_string(),
+            tinytown::ConfirmationType::Approved => "approved".to_string(),
+            tinytown::ConfirmationType::Rejected { reason } => {
+                format!("rejected: {}", reason)
+            }
+        },
+        tinytown::MessageType::TaskDone { task_id, result } => {
+            format!("task {} done: {}", task_id, result)
+        }
+        tinytown::MessageType::TaskFailed { task_id, error } => {
+            format!("task {} failed: {}", task_id, error)
+        }
+        tinytown::MessageType::StatusRequest => "status requested".to_string(),
+        tinytown::MessageType::StatusResponse {
+            state,
+            current_task,
+        } => {
+            if let Some(task) = current_task {
+                format!("status {} ({})", state, task)
+            } else {
+                format!("status {}", state)
+            }
+        }
+        tinytown::MessageType::Ping => "ping".to_string(),
+        tinytown::MessageType::Pong => "pong".to_string(),
+        tinytown::MessageType::Shutdown => "shutdown requested".to_string(),
+        tinytown::MessageType::Custom { kind, payload } => format!("[{}] {}", kind, payload),
+    }
+}
+
+fn truncate_summary(text: &str, max_chars: usize) -> String {
+    let first_line = text.lines().next().unwrap_or(text).trim();
+    if first_line.chars().count() <= max_chars {
+        first_line.to_string()
+    } else {
+        let truncated: String = first_line
+            .chars()
+            .take(max_chars.saturating_sub(3))
+            .collect();
+        format!("{}...", truncated)
+    }
 }
 
 /// Bootstrap Redis by delegating to an AI coding agent.
@@ -646,10 +821,25 @@ async fn main() -> Result<()> {
         }
 
         Commands::Assign { agent, task } => {
+            use tinytown::{AgentId, Message, MessageType};
+
             let town = Town::connect(&cli.town).await?;
             let handle = town.agent(&agent).await?;
-            let task = Task::new(&task);
-            let task_id = handle.assign(task).await?;
+
+            // Keep creating a persisted Task record for tracking/backlog operations.
+            let mut task_record = Task::new(&task);
+            task_record.assign(handle.id());
+            let task_id = task_record.id;
+            town.channel().set_task(&task_record).await?;
+
+            // Send semantic task message for agent processing.
+            let msg = Message::new(
+                AgentId::supervisor(),
+                handle.id(),
+                MessageType::Task { description: task },
+            );
+            town.channel().send(&msg).await?;
+
             info!("📋 Assigned task {} to agent '{}'", task_id, agent);
         }
 
@@ -666,6 +856,24 @@ async fn main() -> Result<()> {
 
             for agent in agents {
                 let inbox_len = town.channel().inbox_len(agent.id).await.unwrap_or(0);
+                let peek_count = std::cmp::min(inbox_len, 200) as isize;
+                let inbox_messages = if peek_count > 0 {
+                    town.channel()
+                        .peek_inbox(agent.id, peek_count)
+                        .await
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let mut breakdown = MessageBreakdown::default();
+                for msg in &inbox_messages {
+                    breakdown.count(&msg.msg_type);
+                }
+                let sampled_note = if inbox_len > inbox_messages.len() {
+                    format!(" (sampled first {})", inbox_messages.len())
+                } else {
+                    String::new()
+                };
 
                 // Calculate uptime
                 let uptime = chrono::Utc::now() - agent.created_at;
@@ -682,6 +890,14 @@ async fn main() -> Result<()> {
                         "   {} ({:?}) - {} pending, {} rounds, uptime {}",
                         agent.name, agent.state, inbox_len, agent.rounds_completed, uptime_str
                     );
+                    info!(
+                        "      └─ 🔴 {} task  🟡 {} query  🟢 {} info  ⚪ {} confirmations{}",
+                        breakdown.tasks + breakdown.other_actionable,
+                        breakdown.queries,
+                        breakdown.informational,
+                        breakdown.confirmations,
+                        sampled_note
+                    );
                     // Get recent activity from Redis
                     if let Ok(Some(activity)) = town.channel().get_agent_activity(agent.id).await {
                         for line in activity.lines().take(5) {
@@ -690,8 +906,14 @@ async fn main() -> Result<()> {
                     }
                 } else {
                     info!(
-                        "   {} ({:?}) - {} pending",
-                        agent.name, agent.state, inbox_len
+                        "   {} ({:?}) - {} pending (🔴 {} 🟡 {} 🟢 {} ⚪ {})",
+                        agent.name,
+                        agent.state,
+                        inbox_len,
+                        breakdown.tasks + breakdown.other_actionable,
+                        breakdown.queries,
+                        breakdown.informational,
+                        breakdown.confirmations
                     );
                 }
             }
@@ -786,38 +1008,59 @@ async fn main() -> Result<()> {
             if agents.is_empty() {
                 info!("No agents. Run 'tt spawn <name>' to create one.");
             } else {
-                info!("📋 Pending Tasks by Agent:");
+                info!("📋 Pending Messages by Agent:");
                 info!("");
 
-                let mut total_tasks = 0;
+                let mut total_actionable = 0;
                 for agent in &agents {
+                    let inbox_len = town.channel().inbox_len(agent.id).await.unwrap_or(0);
+                    if inbox_len == 0 {
+                        continue;
+                    }
+
+                    let peek_count = std::cmp::min(inbox_len, 100) as isize;
                     let messages = town
                         .channel()
-                        .peek_inbox(agent.id, 20)
+                        .peek_inbox(agent.id, peek_count)
                         .await
                         .unwrap_or_default();
                     if messages.is_empty() {
                         continue;
                     }
 
-                    info!("  {} ({:?}):", agent.name, agent.state);
+                    let mut breakdown = MessageBreakdown::default();
                     for msg in &messages {
-                        // Get a one-line summary (first 80 chars)
-                        let summary: String = match &msg.msg_type {
+                        breakdown.count(&msg.msg_type);
+                    }
+
+                    info!("  {} ({:?}):", agent.name, agent.state);
+                    info!(
+                        "    🔴 {} tasks requiring action",
+                        breakdown.tasks + breakdown.other_actionable
+                    );
+                    info!("    🟡 {} queries awaiting response", breakdown.queries);
+                    info!("    🟢 {} informational", breakdown.informational);
+                    info!("    ⚪ {} confirmations", breakdown.confirmations);
+
+                    let mut shown = 0;
+                    for msg in &messages {
+                        if !matches!(
+                            classify_message(&msg.msg_type),
+                            MessageCategory::Task
+                                | MessageCategory::Query
+                                | MessageCategory::OtherActionable
+                        ) {
+                            continue;
+                        }
+                        if shown >= 5 {
+                            break;
+                        }
+
+                        let summary = match &msg.msg_type {
                             tinytown::MessageType::TaskAssign { task_id } => {
-                                // Look up the actual task to get description
                                 if let Ok(tid) = task_id.parse::<TaskId>() {
                                     if let Ok(Some(task)) = town.channel().get_task(tid).await {
-                                        let first_line = task
-                                            .description
-                                            .lines()
-                                            .next()
-                                            .unwrap_or(&task.description);
-                                        if first_line.len() > 80 {
-                                            format!("{}...", &first_line[..77])
-                                        } else {
-                                            first_line.to_string()
-                                        }
+                                        task.description
                                     } else {
                                         format!("Task {}", task_id)
                                     }
@@ -825,27 +1068,28 @@ async fn main() -> Result<()> {
                                     format!("Task {}", task_id)
                                 }
                             }
-                            tinytown::MessageType::Custom { kind, payload } => {
-                                let first_line = payload.lines().next().unwrap_or(payload);
-                                let truncated = if first_line.len() > 70 {
-                                    format!("{}...", &first_line[..67])
-                                } else {
-                                    first_line.to_string()
-                                };
-                                format!("[{}] {}", kind, truncated)
-                            }
-                            _ => format!("{:?}", msg.msg_type),
+                            _ => summarize_message(&msg.msg_type),
                         };
-                        info!("    • {}", summary);
-                        total_tasks += 1;
+                        info!("    • {}", truncate_summary(&summary, 90));
+                        shown += 1;
                     }
+
+                    if shown == 0 {
+                        info!("    • (no actionable messages in sampled inbox)");
+                    }
+
+                    if inbox_len > messages.len() {
+                        info!("    …plus {} more message(s)", inbox_len - messages.len());
+                    }
+
+                    total_actionable += breakdown.actionable_count();
                     info!("");
                 }
 
-                if total_tasks == 0 {
-                    info!("  (no pending tasks)");
+                if total_actionable == 0 {
+                    info!("  (no actionable messages)");
                 } else {
-                    info!("Total: {} pending task(s)", total_tasks);
+                    info!("Total: {} actionable message(s)", total_actionable);
                 }
             }
         }
@@ -882,6 +1126,9 @@ async fn main() -> Result<()> {
         Commands::Send {
             to,
             message,
+            query,
+            info: informational,
+            ack,
             urgent,
         } => {
             use tinytown::{AgentId, Message, MessageType};
@@ -890,26 +1137,37 @@ async fn main() -> Result<()> {
             let to_handle = town.agent(&to).await?;
             let to_id = to_handle.id();
 
-            // Create a custom message
-            let msg = Message::new(
-                AgentId::supervisor(), // From conductor/supervisor
-                to_id,
-                MessageType::Custom {
-                    kind: if urgent {
-                        "urgent".to_string()
-                    } else {
-                        "task".to_string()
+            let (msg_type, label) = if query {
+                (MessageType::Query { question: message }, "query")
+            } else if informational {
+                (
+                    MessageType::Informational { summary: message },
+                    "informational",
+                )
+            } else if ack {
+                (
+                    MessageType::Confirmation {
+                        ack_type: parse_confirmation_type(&message),
                     },
-                    payload: message.clone(),
-                },
-            );
+                    "confirmation",
+                )
+            } else {
+                (
+                    MessageType::Task {
+                        description: message,
+                    },
+                    "task",
+                )
+            };
+
+            let msg = Message::new(AgentId::supervisor(), to_id, msg_type);
 
             if urgent {
                 town.channel().send_urgent(&msg).await?;
-                info!("🚨 Sent URGENT message to '{}': {}", to, message);
+                info!("🚨 Sent URGENT {} message to '{}'", label, to);
             } else {
                 town.channel().send(&msg).await?;
-                info!("📤 Sent message to '{}': {}", to, message);
+                info!("📤 Sent {} message to '{}'", label, to);
             }
         }
 
@@ -975,109 +1233,182 @@ async fn main() -> Result<()> {
                     break;
                 }
 
-                // Check URGENT inbox first (priority messages)
+                let display_round = round + 1;
                 let urgent_messages = channel.receive_urgent(agent_id).await?;
-                if !urgent_messages.is_empty() {
-                    info!("   🚨 {} URGENT messages!", urgent_messages.len());
-                    for msg in &urgent_messages {
-                        if let tinytown::MessageType::Custom { kind, payload } = &msg.msg_type {
-                            info!("      └─ [{}] {}", kind, payload);
-                        }
-                    }
-                    // Log that we processed urgent messages
-                    channel
-                        .log_agent_activity(
-                            agent_id,
-                            &format!(
-                                "Round {}: 🚨 processed {} urgent",
-                                round + 1,
-                                urgent_messages.len()
-                            ),
-                        )
-                        .await?;
-                }
+                let regular_messages = channel.drain_inbox(agent_id).await?;
 
-                // Check regular inbox for messages
-                let inbox_len = channel.inbox_len(agent_id).await?;
-                if inbox_len == 0 && urgent_messages.is_empty() {
-                    // Don't burn a round waiting - just wait and continue without incrementing
+                if regular_messages.is_empty() && urgent_messages.is_empty() {
                     info!("   📭 Inbox empty, waiting...");
+                    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                        agent.state = AgentState::Idle;
+                        agent.last_heartbeat = chrono::Utc::now();
+                        channel.set_agent_state(&agent).await?;
+                    }
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     continue;
                 }
 
-                info!("   📬 {} messages in inbox", inbox_len);
+                let mut breakdown = MessageBreakdown::default();
+                let mut actionable_messages: Vec<(tinytown::Message, bool)> = Vec::new();
+                let mut informational_summaries: Vec<String> = Vec::new();
+                let mut confirmation_counts: std::collections::BTreeMap<String, usize> =
+                    std::collections::BTreeMap::new();
 
-                // Build urgent messages section
-                let urgent_section = if urgent_messages.is_empty() {
-                    String::new()
-                } else {
-                    let mut section = String::from("\n## 🚨 URGENT MESSAGES (handle first!)\n\n");
-                    for msg in &urgent_messages {
-                        if let tinytown::MessageType::Custom { payload, .. } = &msg.msg_type {
-                            section.push_str(&format!("- {}\n", payload));
+                for msg in urgent_messages {
+                    breakdown.count(&msg.msg_type);
+                    match classify_message(&msg.msg_type) {
+                        MessageCategory::Task
+                        | MessageCategory::Query
+                        | MessageCategory::OtherActionable => {
+                            actionable_messages.push((msg, true));
                         }
+                        MessageCategory::Informational => {
+                            informational_summaries
+                                .push(truncate_summary(&summarize_message(&msg.msg_type), 100));
+                        }
+                        MessageCategory::Confirmation => {
+                            let key = truncate_summary(&summarize_message(&msg.msg_type), 60);
+                            *confirmation_counts.entry(key).or_insert(0) += 1;
+                        }
+                    }
+                }
+
+                for msg in regular_messages {
+                    breakdown.count(&msg.msg_type);
+                    match classify_message(&msg.msg_type) {
+                        MessageCategory::Task
+                        | MessageCategory::Query
+                        | MessageCategory::OtherActionable => {
+                            actionable_messages.push((msg, false));
+                        }
+                        MessageCategory::Informational => {
+                            informational_summaries
+                                .push(truncate_summary(&summarize_message(&msg.msg_type), 100));
+                        }
+                        MessageCategory::Confirmation => {
+                            let key = truncate_summary(&summarize_message(&msg.msg_type), 60);
+                            *confirmation_counts.entry(key).or_insert(0) += 1;
+                        }
+                    }
+                }
+
+                info!(
+                    "   📬 batched: {} actionable, {} informational, {} confirmations",
+                    actionable_messages.len(),
+                    informational_summaries.len(),
+                    breakdown.confirmations
+                );
+
+                if actionable_messages.is_empty() {
+                    let summary = format!(
+                        "Round {}: ⏭️ auto-handled {} informational, {} confirmations",
+                        display_round,
+                        informational_summaries.len(),
+                        breakdown.confirmations
+                    );
+                    info!("   {}", summary);
+                    channel.log_agent_activity(agent_id, &summary).await?;
+
+                    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                        agent.state = AgentState::Idle;
+                        agent.last_heartbeat = chrono::Utc::now();
+                        channel.set_agent_state(&agent).await?;
+                    }
+
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
+                let urgent_actionable = actionable_messages
+                    .iter()
+                    .filter(|(_, urgent)| *urgent)
+                    .count();
+                let actionable_section = {
+                    let mut section = String::from("## Actionable Messages (already popped)\n\n");
+                    for (idx, (msg, urgent)) in actionable_messages.iter().enumerate() {
+                        let summary = truncate_summary(&summarize_message(&msg.msg_type), 120);
+                        let priority = if *urgent { "URGENT" } else { "normal" };
+                        section.push_str(&format!(
+                            "{}. [{}] from {}: {}\n",
+                            idx + 1,
+                            priority,
+                            msg.from,
+                            summary
+                        ));
                     }
                     section
                 };
 
-                // Display round (1-indexed for users)
-                let display_round = round + 1;
+                let informational_section = if informational_summaries.is_empty() {
+                    String::new()
+                } else {
+                    let mut section = String::from("\n## Informational (batched summary)\n\n");
+                    for summary in informational_summaries.iter().take(8) {
+                        section.push_str(&format!("- {}\n", summary));
+                    }
+                    if informational_summaries.len() > 8 {
+                        section.push_str(&format!(
+                            "- ...and {} more informational message(s)\n",
+                            informational_summaries.len() - 8
+                        ));
+                    }
+                    section
+                };
 
-                // Build prompt with agent context
+                let confirmation_section = if confirmation_counts.is_empty() {
+                    String::new()
+                } else {
+                    let mut section = String::from("\n## Confirmations (auto-dismissed)\n\n");
+                    for (kind, count) in &confirmation_counts {
+                        section.push_str(&format!("- {} x{}\n", kind, count));
+                    }
+                    section
+                };
+
                 let prompt = format!(
                     r#"# Agent: {name}
 
 You are agent "{name}" in Tinytown "{town_name}".
-{urgent_section}
+
+{actionable_section}{informational_section}{confirmation_section}
 ## Available Commands
 
 ```bash
-tt status                    # Check town status and all agents
-tt inbox {name}              # Check YOUR inbox for messages
-tt assign <agent> "task"     # Send task to another agent
-tt send <agent> "message"    # Send message to another agent
-tt send <agent> --urgent "!" # Send urgent message
+tt status                              # Check town status and all agents
+tt assign <agent> "task"               # Assign actionable work
+tt send <agent> --query "question"     # Ask for a response
+tt send <agent> --info "update"        # Send FYI update
+tt send <agent> --ack "received"       # Send acknowledgment
+tt send <agent> --urgent --query "..." # Priority message for next round
 ```
 
 ## Current State
 - Round: {display_round}/{max_rounds}
-- Messages waiting: {inbox_len}
-- Urgent messages: {urgent_count}
+- Actionable messages: {actionable_count}
+- Urgent actionable: {urgent_actionable}
+- Batched informational: {info_count}
+- Auto-dismissed confirmations: {confirmation_count}
 
 ## Your Workflow
 
-1. **Handle URGENT messages first** (if any above)
-2. **Check your inbox**: `tt inbox {name}`
-3. **Do the work** requested in messages
-4. **Check for more work**: `tt inbox {name}` again
-5. **If more messages**, continue working on them
-6. **If inbox empty**, you can finish this round
-7. **If blocked**, send message to conductor or another agent
+1. Handle all actionable messages listed above.
+2. Delegate or ask questions using semantic message types (`--query`, `--info`, `--ack`).
+3. If blocked, send a query with specific unblock needs.
+4. When finished, send informational updates or confirmations as appropriate.
 
-**Don't just exit** - keep checking `tt inbox {name}` and working until your inbox is empty!
-
-## Hand-offs
-
-If you need another agent to do something:
-```bash
-tt assign reviewer "Please review src/auth.rs for security issues"
-```
-
-If you're done and want to notify someone:
-```bash
-tt send conductor "Auth API complete. Ready for review."
-```
-
-Begin work. Check your inbox and keep working until it's empty.
+Only run commands needed to complete listed work; inbox messages for this round are already provided above.
 "#,
                     name = name,
                     town_name = config.name,
-                    urgent_section = urgent_section,
+                    actionable_section = actionable_section,
+                    informational_section = informational_section,
+                    confirmation_section = confirmation_section,
                     display_round = display_round,
                     max_rounds = max_rounds,
-                    inbox_len = inbox_len,
-                    urgent_count = urgent_messages.len(),
+                    actionable_count = actionable_messages.len(),
+                    urgent_actionable = urgent_actionable,
+                    info_count = informational_summaries.len(),
+                    confirmation_count = breakdown.confirmations,
                 );
 
                 // Write prompt to temp file
@@ -1128,6 +1459,24 @@ Begin work. Check your inbox and keep working until it's empty.
 
                 // Store activity in Redis (bounded, TTL'd)
                 channel.log_agent_activity(agent_id, &activity_msg).await?;
+
+                let should_requeue = match &status {
+                    Ok(s) => !s.success(),
+                    Err(_) => true,
+                };
+                if should_requeue {
+                    info!(
+                        "   ↩️ Re-queueing {} actionable message(s)",
+                        actionable_messages.len()
+                    );
+                    for (msg, was_urgent) in &actionable_messages {
+                        if *was_urgent {
+                            channel.send_urgent(msg).await?;
+                        } else {
+                            channel.send(msg).await?;
+                        }
+                    }
+                }
 
                 if status.is_err() {
                     break;
@@ -1268,8 +1617,11 @@ tt assign <agent> "<task description>"
 
 ### Send messages between agents
 ```bash
-tt send <agent> "message"          # Send message to agent's inbox
-tt send <agent> --urgent "msg"     # URGENT: processed first next round
+tt send <agent> "task"             # Send actionable task message
+tt send <agent> --query "question" # Ask for a response
+tt send <agent> --info "update"    # Send FYI update
+tt send <agent> --ack "received"   # Send acknowledgment
+tt send <agent> --urgent --query "msg" # URGENT: processed first next round
 tt inbox <agent>                   # Check agent's inbox
 ```
 
@@ -1866,6 +2218,28 @@ Now, help the user orchestrate their project!
                             }
                             total_reclaimed += 1;
                         }
+                    } else if let tinytown::message::MessageType::Task { description } =
+                        &msg.msg_type
+                    {
+                        if to_backlog {
+                            let task = tinytown::Task::new(description.clone());
+                            let task_id = task.id;
+                            town.channel().set_task(&task).await?;
+                            town.channel().backlog_push(task_id).await?;
+                            info!("      → backlog: {}", task_id);
+                        } else if let Some(ref target) = target_agent {
+                            town.channel()
+                                .move_message_to_inbox(&msg, target.id())
+                                .await?;
+                            info!(
+                                "      → {}: {}",
+                                to.as_ref().unwrap(),
+                                truncate_summary(description, 60)
+                            );
+                        } else {
+                            info!("      task: {}", truncate_summary(description, 60));
+                        }
+                        total_reclaimed += 1;
                     } else {
                         // Non-task message - move to target or discard
                         if let Some(ref target) = target_agent {

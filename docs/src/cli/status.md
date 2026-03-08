@@ -14,6 +14,7 @@ Displays comprehensive status of the town including:
 - Town name and location
 - Redis connection info
 - All agents with their states and pending messages
+- Message type breakdown for pending inbox items (tasks, queries, informational, confirmations)
 - **With `--deep`**: Recent activity from each agent
 
 ## Options
@@ -39,8 +40,8 @@ Output:
 📡 Redis: unix:///Users/you/projects/my-project/redis.sock
 🤖 Agents: 3
    backend (Working) - 0 messages pending
-   frontend (Idle) - 2 messages pending
-   reviewer (Idle) - 1 messages pending
+   frontend (Idle) - 2 messages pending (tasks: 1, queries: 1, informational: 0, confirmations: 0)
+   reviewer (Idle) - 1 messages pending (tasks: 0, queries: 0, informational: 1, confirmations: 0)
 ```
 
 ### Deep Status (with stats and activity)
@@ -58,9 +59,9 @@ Output:
    backend (Working) - 0 pending, 12 rounds, uptime 1h 23m
       └─ Round 12: ✅ completed
       └─ Round 11: ✅ completed
-   frontend (Idle) - 2 pending, 5 rounds, uptime 45m 12s
+   frontend (Idle) - 2 pending (tasks: 1, queries: 1, informational: 0, confirmations: 0), 5 rounds, uptime 45m 12s
       └─ Round 5: ✅ completed
-   reviewer (Idle) - 1 pending, 2 rounds, uptime 30m 5s
+   reviewer (Idle) - 1 pending (tasks: 0, queries: 0, informational: 1, confirmations: 0), 2 rounds, uptime 30m 5s
       └─ Round 2: ⚠️ model error
 
 📊 Stats: rounds completed, uptime since spawn
@@ -73,6 +74,7 @@ Output:
 | **Rounds** | Number of agent loop iterations completed |
 | **Uptime** | Time since agent was spawned |
 | **Pending** | Messages waiting in inbox |
+| **Message Types** | Pending breakdown: tasks, queries, informational, confirmations |
 | **Activity** | Recent round results (last 5) |
 
 ## Output Fields
@@ -90,6 +92,7 @@ For each agent:
 - **Name** — Human-readable identifier
 - **State** — Current lifecycle state
 - **Messages** — Number of pending inbox messages
+- **Type Breakdown** — Pending messages grouped as tasks, queries, informational, confirmations
 
 ## Interpreting Status
 
@@ -130,4 +133,3 @@ GET tt:agent:550e8400-e29b-41d4-a716-446655440000
 - [tt list](./list.md) — Simple agent list
 - [tt start](./status.md) — Keep town running
 - [Towns Concept](../concepts/towns.md)
-

@@ -10,7 +10,13 @@ tt send <TO> <MESSAGE> [OPTIONS]
 
 ## Description
 
-Sends a custom message to an agent's inbox. The agent will receive it on their next inbox check.
+Sends a semantic message to an agent's inbox. The agent will receive it on their next inbox check.
+
+Message semantics:
+- Default (no semantic flag): Task-style/actionable message
+- `--query`: Question that expects a response or decision
+- `--info`: Informational update (context only)
+- `--ack`: Confirmation/receipt message
 
 **With `--urgent`**: Message goes to priority inbox, processed before regular messages!
 
@@ -31,6 +37,9 @@ Use this for:
 
 | Option | Description |
 |--------|-------------|
+| `--query` | Mark message as a query (`query` semantic type) |
+| `--info` | Mark message as informational (`info` semantic type) |
+| `--ack` | Mark message as confirmation (`ack` semantic type) |
 | `--urgent` | Send as urgent (processed first at start of next round) |
 
 ## Examples
@@ -43,7 +52,25 @@ tt send backend "The API spec is ready in docs/api.md"
 
 Output:
 ```
-📤 Sent message to 'backend': The API spec is ready in docs/api.md
+📤 Sent task message to 'backend'
+```
+
+### Send a Query
+
+```bash
+tt send backend --query "Can you take auth token refresh next?"
+```
+
+### Send Informational Context
+
+```bash
+tt send reviewer --info "CI is green on commit a1b2c3d"
+```
+
+### Send a Confirmation
+
+```bash
+tt send conductor --ack "Received. I'll start after current task."
 ```
 
 ### Send an URGENT Message
@@ -54,7 +81,7 @@ tt send backend --urgent "STOP! Security vulnerability found. Do not merge."
 
 Output:
 ```
-🚨 Sent URGENT message to 'backend': STOP! Security vulnerability found. Do not merge.
+🚨 Sent URGENT task message to 'backend'
 ```
 
 The agent will see this at the start of their next round, before processing regular inbox.
@@ -75,16 +102,17 @@ tt send developer --urgent "Critical: SQL injection in login. Fix immediately."
 1. Goes to `tt:inbox:<id>` (Redis list)
 2. Processed in order with other messages
 3. Agent sees it when they check inbox
+4. Semantic type is attached as `task`, `query`, `info`, or `ack`
 
 ### Urgent Messages
 1. Goes to `tt:urgent:<id>` (separate priority queue)
 2. Agent checks urgent queue FIRST at start of each round
 3. Urgent messages injected into agent's prompt with 🚨 marker
 4. Processed before regular inbox
+5. Keeps its semantic type (`task`, `query`, `info`, or `ack`)
 
 ## See Also
 
 - [tt inbox](./inbox.md) — Check agent's inbox
 - [tt assign](./assign.md) — Assign tasks (more structured)
 - [Coordination](../concepts/coordination.md)
-

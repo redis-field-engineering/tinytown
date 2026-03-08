@@ -58,7 +58,7 @@ pub use channel::Channel;
 pub use config::Config;
 pub use error::{Error, Result};
 pub use global_config::GlobalConfig;
-pub use message::{Message, MessageId, MessageType, Priority};
+pub use message::{ConfirmationType, Message, MessageId, MessageType, Priority};
 pub use plan::{TaskEntry, TasksFile, TasksMeta};
 pub use redis_manager::RedisManager;
 pub use task::{Task, TaskId, TaskState};
