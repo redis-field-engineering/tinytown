@@ -48,12 +48,12 @@ async fn create_test_town(name: &str) -> Result<TownGuard, Box<dyn std::error::E
 /// Helper to kill Redis when test ends
 fn cleanup_redis(temp_dir: &TempDir) {
     let pid_file = temp_dir.path().join("redis.pid");
-    if let Ok(pid_str) = std::fs::read_to_string(&pid_file) {
-        if let Ok(pid) = pid_str.trim().parse::<i32>() {
-            unsafe {
-                // Use SIGKILL to ensure Redis dies immediately
-                libc::kill(pid, libc::SIGKILL);
-            }
+    if let Ok(pid_str) = std::fs::read_to_string(&pid_file)
+        && let Ok(pid) = pid_str.trim().parse::<i32>()
+    {
+        unsafe {
+            // Use SIGKILL to ensure Redis dies immediately
+            libc::kill(pid, libc::SIGKILL);
         }
     }
 }
