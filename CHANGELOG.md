@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0](https://github.com/redis-field-engineering/tinytown/compare/v0.6.0...v0.7.0) (2026-03-09)
+
+
+### Features
+
+* implement issues [#18](https://github.com/redis-field-engineering/tinytown/issues/18), [#19](https://github.com/redis-field-engineering/tinytown/issues/19), [#21](https://github.com/redis-field-engineering/tinytown/issues/21) - CLI improvements ([#29](https://github.com/redis-field-engineering/tinytown/issues/29)) ([4ee5ad4](https://github.com/redis-field-engineering/tinytown/commit/4ee5ad4456bf8ccc146d461f000f59290a8b855e))
+
 ## [0.6.0](https://github.com/redis-field-engineering/tinytown/compare/v0.5.0...v0.6.0) (2026-03-09)
 
 
