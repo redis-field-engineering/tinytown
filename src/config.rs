@@ -109,6 +109,10 @@ pub struct AuthConfig {
     #[serde(default)]
     pub api_key_hash: Option<String>,
 
+    /// Scopes granted to API key authentication (defaults to all scopes if empty)
+    #[serde(default)]
+    pub api_key_scopes: Vec<Scope>,
+
     // --- OIDC mode settings ---
     /// OIDC issuer URL (e.g., "https://issuer.example.com")
     #[serde(default)]
@@ -140,6 +144,7 @@ impl Default for AuthConfig {
         Self {
             mode: AuthMode::None,
             api_key_hash: None,
+            api_key_scopes: Vec::new(),
             issuer: None,
             audience: None,
             jwks_url: None,

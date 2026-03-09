@@ -53,6 +53,27 @@ impl Principal {
         }
     }
 
+    /// Create a new principal with specific scopes.
+    /// If scopes is empty, grants all scopes (admin).
+    #[must_use]
+    pub fn with_scopes(id: impl Into<String>, scopes: &[Scope]) -> Self {
+        let scopes = if scopes.is_empty() {
+            // Default to full access if no scopes specified
+            HashSet::from([
+                Scope::TownRead,
+                Scope::TownWrite,
+                Scope::AgentManage,
+                Scope::Admin,
+            ])
+        } else {
+            scopes.iter().copied().collect()
+        };
+        Self {
+            id: id.into(),
+            scopes,
+        }
+    }
+
     /// Check if principal has a specific scope.
     #[must_use]
     pub fn has_scope(&self, scope: Scope) -> bool {
@@ -149,7 +170,8 @@ pub async fn auth_middleware(
             if !verify_api_key(&key, hash) {
                 return Err(AuthError::INVALID_CREDENTIALS);
             }
-            Principal::local_admin()
+            // Use configured scopes for API key auth (defaults to admin if empty)
+            Principal::with_scopes("api_key", &config.api_key_scopes)
         }
         AuthMode::Oidc => return Err(AuthError::UNAUTHORIZED), // TODO: Implement OIDC
     };

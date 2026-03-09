@@ -108,17 +108,29 @@ impl RateLimiter {
     }
 
     /// Check if a request should be allowed.
+    ///
+    /// Uses separate buckets for read vs mutating operations to ensure
+    /// mutating requests always use the stricter rate limit regardless of
+    /// which type of request came first.
     pub async fn check(&self, key: &str, is_mutating: bool) -> bool {
         let mut buckets = self.buckets.write().await;
 
-        let bucket = buckets.entry(key.to_string()).or_insert_with(|| {
-            let rate = if is_mutating {
-                self.config.mutating_requests_per_minute as f64 / 60.0
-            } else {
-                self.config.requests_per_minute as f64 / 60.0
-            };
-            TokenBucket::new(self.config.burst_size as f64, rate)
-        });
+        // Use separate bucket keys for read vs write operations
+        let bucket_key = if is_mutating {
+            format!("{key}:write")
+        } else {
+            format!("{key}:read")
+        };
+
+        let rate = if is_mutating {
+            self.config.mutating_requests_per_minute as f64 / 60.0
+        } else {
+            self.config.requests_per_minute as f64 / 60.0
+        };
+
+        let bucket = buckets
+            .entry(bucket_key)
+            .or_insert_with(|| TokenBucket::new(self.config.burst_size as f64, rate));
 
         bucket.try_consume(1.0)
     }
