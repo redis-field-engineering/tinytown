@@ -69,7 +69,9 @@ pub use config::{AuthConfig, AuthMode, Config, MtlsConfig, Scope, TlsConfig, Tow
 pub use error::{Error, Result};
 pub use global_config::GlobalConfig;
 pub use message::{ConfirmationType, Message, MessageId, MessageType, Priority};
-pub use migration::{MigrationStats, migrate_to_town_isolation, needs_migration, preview_migration};
+pub use migration::{
+    MigrationStats, migrate_to_town_isolation, needs_migration, preview_migration,
+};
 pub use plan::{TaskEntry, TasksFile, TasksMeta};
 pub use redis_manager::RedisManager;
 pub use task::{Task, TaskId, TaskState};

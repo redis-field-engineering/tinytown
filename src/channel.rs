@@ -383,13 +383,9 @@ impl Channel {
 
         let id: AgentId = fields
             .get("id")
-            .ok_or_else(|| {
-                crate::error::Error::AgentNotFound("Missing id field".to_string())
-            })?
+            .ok_or_else(|| crate::error::Error::AgentNotFound("Missing id field".to_string()))?
             .parse()
-            .map_err(|e| {
-                crate::error::Error::AgentNotFound(format!("Invalid agent id: {}", e))
-            })?;
+            .map_err(|e| crate::error::Error::AgentNotFound(format!("Invalid agent id: {}", e)))?;
 
         let name = fields.get("name").cloned().unwrap_or_default();
 
@@ -405,9 +401,7 @@ impl Channel {
 
         let cli = fields.get("cli").cloned().unwrap_or_default();
 
-        let current_task = fields
-            .get("current_task")
-            .and_then(|s| s.parse().ok());
+        let current_task = fields.get("current_task").and_then(|s| s.parse().ok());
 
         let created_at = fields
             .get("created_at")
@@ -501,7 +495,10 @@ impl Channel {
         let mut conn = self.conn.clone();
         let key = self.state_key(agent_id);
         let new_value: i64 = conn.hincr(&key, "rounds_completed", 1).await?;
-        debug!("Agent {} rounds_completed incremented to {}", agent_id, new_value);
+        debug!(
+            "Agent {} rounds_completed incremented to {}",
+            agent_id, new_value
+        );
         Ok(new_value as u64)
     }
 
@@ -516,7 +513,10 @@ impl Channel {
         let mut conn = self.conn.clone();
         let key = self.state_key(agent_id);
         let new_value: i64 = conn.hincr(&key, "tasks_completed", 1).await?;
-        debug!("Agent {} tasks_completed incremented to {}", agent_id, new_value);
+        debug!(
+            "Agent {} tasks_completed incremented to {}",
+            agent_id, new_value
+        );
         Ok(new_value as u64)
     }
 
@@ -549,20 +549,13 @@ impl Channel {
             ("description".to_string(), task.description.clone()),
             (
                 "state".to_string(),
-                serde_json::to_string(&task.state)?.trim_matches('"').to_string(),
+                serde_json::to_string(&task.state)?
+                    .trim_matches('"')
+                    .to_string(),
             ),
-            (
-                "created_at".to_string(),
-                task.created_at.to_rfc3339(),
-            ),
-            (
-                "updated_at".to_string(),
-                task.updated_at.to_rfc3339(),
-            ),
-            (
-                "tags".to_string(),
-                serde_json::to_string(&task.tags)?,
-            ),
+            ("created_at".to_string(), task.created_at.to_rfc3339()),
+            ("updated_at".to_string(), task.updated_at.to_rfc3339()),
+            ("tags".to_string(), serde_json::to_string(&task.tags)?),
         ];
 
         // Handle optional fields - use HDEL to clear stale values when None
@@ -643,14 +636,9 @@ impl Channel {
             .get("id")
             .ok_or_else(|| crate::error::Error::TaskNotFound("Missing id field".to_string()))?
             .parse()
-            .map_err(|e| {
-                crate::error::Error::TaskNotFound(format!("Invalid task id: {}", e))
-            })?;
+            .map_err(|e| crate::error::Error::TaskNotFound(format!("Invalid task id: {}", e)))?;
 
-        let description = fields
-            .get("description")
-            .cloned()
-            .unwrap_or_default();
+        let description = fields.get("description").cloned().unwrap_or_default();
 
         let state: crate::task::TaskState = fields
             .get("state")
@@ -672,9 +660,7 @@ impl Channel {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or_else(chrono::Utc::now);
 
-        let assigned_to = fields
-            .get("assigned_to")
-            .and_then(|s| s.parse().ok());
+        let assigned_to = fields.get("assigned_to").and_then(|s| s.parse().ok());
 
         let started_at = fields
             .get("started_at")
@@ -688,9 +674,7 @@ impl Channel {
 
         let result = fields.get("result").cloned();
 
-        let parent_id = fields
-            .get("parent_id")
-            .and_then(|s| s.parse().ok());
+        let parent_id = fields.get("parent_id").and_then(|s| s.parse().ok());
 
         let tags: Vec<String> = fields
             .get("tags")
@@ -930,12 +914,12 @@ impl Channel {
         let count = keys.len();
 
         // Delete all keys
-        let _: () = redis::cmd("DEL")
-            .arg(&keys)
-            .query_async(&mut conn)
-            .await?;
+        let _: () = redis::cmd("DEL").arg(&keys).query_async(&mut conn).await?;
 
-        debug!("Reset: deleted {} keys for town '{}'", count, self.town_name);
+        debug!(
+            "Reset: deleted {} keys for town '{}'",
+            count, self.town_name
+        );
         Ok(count)
     }
 
@@ -965,12 +949,12 @@ impl Channel {
         let count = keys.len();
 
         // Delete all agent-related keys
-        let _: () = redis::cmd("DEL")
-            .arg(&keys)
-            .query_async(&mut conn)
-            .await?;
+        let _: () = redis::cmd("DEL").arg(&keys).query_async(&mut conn).await?;
 
-        debug!("Reset agents only: deleted {} keys for town '{}'", count, self.town_name);
+        debug!(
+            "Reset agents only: deleted {} keys for town '{}'",
+            count, self.town_name
+        );
         Ok(count)
     }
 }

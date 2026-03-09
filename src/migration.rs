@@ -74,10 +74,7 @@ pub async fn needs_migration(conn: &mut ConnectionManager) -> Result<bool> {
     ];
 
     for pattern in old_patterns {
-        let keys: Vec<String> = redis::cmd("KEYS")
-            .arg(pattern)
-            .query_async(conn)
-            .await?;
+        let keys: Vec<String> = redis::cmd("KEYS").arg(pattern).query_async(conn).await?;
 
         // Filter out keys that are already namespaced (have 4 parts)
         for key in keys {
@@ -301,4 +298,3 @@ pub async fn preview_migration(conn: &mut ConnectionManager) -> Result<Vec<(Stri
 
     Ok(preview)
 }
-
