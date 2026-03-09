@@ -41,4 +41,3 @@ pub mod router;
 pub mod tools;
 
 pub use router::{McpState, create_mcp_router};
-

@@ -120,7 +120,8 @@ async fn test_mcp_service_agent_operations() -> Result<(), Box<dyn std::error::E
     assert_eq!(status.agent_count, 0);
 
     // Test spawn (used by agent.spawn tool)
-    let spawn_result = tinytown::AgentService::spawn(&ctx.town, "test-worker", Some("test-cli")).await?;
+    let spawn_result =
+        tinytown::AgentService::spawn(&ctx.town, "test-worker", Some("test-cli")).await?;
     assert_eq!(spawn_result.name, "test-worker");
     assert_eq!(spawn_result.cli, "test-cli");
 
@@ -141,7 +142,8 @@ async fn test_mcp_service_task_operations() -> Result<(), Box<dyn std::error::Er
     ctx.spawn_test_agent("worker").await?;
 
     // Test assign (used by task.assign tool)
-    let assign_result = tinytown::TaskService::assign(&ctx.town, "worker", "Implement feature").await?;
+    let assign_result =
+        tinytown::TaskService::assign(&ctx.town, "worker", "Implement feature").await?;
     assert_eq!(assign_result.agent_name, "worker");
 
     // Test list_pending
@@ -167,7 +169,8 @@ async fn test_mcp_service_message_operations() -> Result<(), Box<dyn std::error:
         "Hello from MCP!",
         tinytown::app::services::messages::MessageKind::Info,
         false,
-    ).await?;
+    )
+    .await?;
     assert!(!send_result.urgent);
 
     // Test get_inbox
@@ -187,7 +190,8 @@ async fn test_mcp_service_backlog_operations() -> Result<(), Box<dyn std::error:
         ctx.town.channel(),
         "Review the code",
         Some(vec!["review".to_string(), "code".to_string()]),
-    ).await?;
+    )
+    .await?;
     assert_eq!(add_result.description, "Review the code");
 
     // Test list (used by backlog.list tool)
@@ -198,7 +202,8 @@ async fn test_mcp_service_backlog_operations() -> Result<(), Box<dyn std::error:
 
     // Test claim (used by backlog.claim tool)
     ctx.spawn_test_agent("worker").await?;
-    let claim_result = tinytown::BacklogService::claim(&ctx.town, add_result.task_id, "worker").await?;
+    let claim_result =
+        tinytown::BacklogService::claim(&ctx.town, add_result.task_id, "worker").await?;
     assert_eq!(claim_result.agent_name, "worker");
 
     // Verify backlog is now empty
@@ -242,4 +247,3 @@ async fn test_mcp_router_is_configured() -> Result<(), Box<dyn std::error::Error
     // Full testing of MCP protocol would require an MCP client connection
     Ok(())
 }
-

@@ -76,16 +76,13 @@ async fn main() -> tinytown::Result<()> {
     let config = town.config().clone();
     info!("🏛️  Townhall starting for town: {}", config.name);
 
-    match cli.command.unwrap_or(Commands::Rest { bind: None, port: None }) {
-        Commands::Rest { bind, port } => {
-            run_rest_server(town, config, bind, port).await
-        }
-        Commands::McpStdio => {
-            run_mcp_stdio(town, config).await
-        }
-        Commands::McpHttp { bind, port } => {
-            run_mcp_http(town, config, bind, port).await
-        }
+    match cli.command.unwrap_or(Commands::Rest {
+        bind: None,
+        port: None,
+    }) {
+        Commands::Rest { bind, port } => run_rest_server(town, config, bind, port).await,
+        Commands::McpStdio => run_mcp_stdio(town, config).await,
+        Commands::McpHttp { bind, port } => run_mcp_http(town, config, bind, port).await,
     }
 }
 

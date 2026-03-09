@@ -147,36 +147,41 @@ pub fn agent_by_name_template(state: Arc<McpState>) -> ResourceTemplate {
     ResourceTemplateBuilder::new("tinytown://agents/{agent_name}")
         .name("Agent Details")
         .description("Details for a specific agent by name")
-        .handler(move |uri: String, vars: std::collections::HashMap<String, String>| {
-            let state = s.clone();
-            async move {
-                use crate::AgentService;
-                let agent_name = vars.get("agent_name").cloned().unwrap_or_default();
-                match AgentService::list(&state.town).await {
-                    Ok(agents) => {
-                        if let Some(agent) = agents.iter().find(|a| a.name == agent_name) {
-                            let json = serde_json::json!({
-                                "id": agent.id.to_string(),
-                                "name": agent.name,
-                                "cli": agent.cli,
-                                "state": format!("{:?}", agent.state),
-                                "rounds_completed": agent.rounds_completed,
-                                "tasks_completed": agent.tasks_completed,
-                                "inbox_len": agent.inbox_len,
-                                "urgent_len": agent.urgent_len
-                            });
-                            Ok(ReadResourceResult::text(
-                                uri,
-                                serde_json::to_string_pretty(&json).unwrap_or_default(),
-                            ))
-                        } else {
-                            Ok(ReadResourceResult::text(uri, format!("Agent not found: {}", agent_name)))
+        .handler(
+            move |uri: String, vars: std::collections::HashMap<String, String>| {
+                let state = s.clone();
+                async move {
+                    use crate::AgentService;
+                    let agent_name = vars.get("agent_name").cloned().unwrap_or_default();
+                    match AgentService::list(&state.town).await {
+                        Ok(agents) => {
+                            if let Some(agent) = agents.iter().find(|a| a.name == agent_name) {
+                                let json = serde_json::json!({
+                                    "id": agent.id.to_string(),
+                                    "name": agent.name,
+                                    "cli": agent.cli,
+                                    "state": format!("{:?}", agent.state),
+                                    "rounds_completed": agent.rounds_completed,
+                                    "tasks_completed": agent.tasks_completed,
+                                    "inbox_len": agent.inbox_len,
+                                    "urgent_len": agent.urgent_len
+                                });
+                                Ok(ReadResourceResult::text(
+                                    uri,
+                                    serde_json::to_string_pretty(&json).unwrap_or_default(),
+                                ))
+                            } else {
+                                Ok(ReadResourceResult::text(
+                                    uri,
+                                    format!("Agent not found: {}", agent_name),
+                                ))
+                            }
                         }
+                        Err(e) => Ok(ReadResourceResult::text(uri, format!("Error: {}", e))),
                     }
-                    Err(e) => Ok(ReadResourceResult::text(uri, format!("Error: {}", e))),
                 }
-            }
-        })
+            },
+        )
 }
 
 /// Create the tinytown://tasks/{task_id} resource template.
@@ -185,41 +190,46 @@ pub fn task_by_id_template(state: Arc<McpState>) -> ResourceTemplate {
     ResourceTemplateBuilder::new("tinytown://tasks/{task_id}")
         .name("Task Details")
         .description("Details for a specific task by ID")
-        .handler(move |uri: String, vars: std::collections::HashMap<String, String>| {
-            let state = s.clone();
-            async move {
-                use crate::BacklogService;
-                use crate::TaskId;
-                let task_id_str = vars.get("task_id").cloned().unwrap_or_default();
-                let task_id: TaskId = match task_id_str.parse() {
-                    Ok(id) => id,
-                    Err(_) => {
-                        return Ok(ReadResourceResult::text(
-                            uri,
-                            format!("Invalid task ID: {}", task_id_str),
-                        ))
-                    }
-                };
-                match BacklogService::list(state.town.channel()).await {
-                    Ok(items) => {
-                        if let Some(item) = items.iter().find(|i| i.task_id == task_id) {
-                            let json = serde_json::json!({
-                                "task_id": item.task_id.to_string(),
-                                "description": item.description,
-                                "tags": item.tags
-                            });
-                            Ok(ReadResourceResult::text(
+        .handler(
+            move |uri: String, vars: std::collections::HashMap<String, String>| {
+                let state = s.clone();
+                async move {
+                    use crate::BacklogService;
+                    use crate::TaskId;
+                    let task_id_str = vars.get("task_id").cloned().unwrap_or_default();
+                    let task_id: TaskId = match task_id_str.parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            return Ok(ReadResourceResult::text(
                                 uri,
-                                serde_json::to_string_pretty(&json).unwrap_or_default(),
-                            ))
-                        } else {
-                            Ok(ReadResourceResult::text(uri, format!("Task not found: {}", task_id_str)))
+                                format!("Invalid task ID: {}", task_id_str),
+                            ));
                         }
+                    };
+                    match BacklogService::list(state.town.channel()).await {
+                        Ok(items) => {
+                            if let Some(item) = items.iter().find(|i| i.task_id == task_id) {
+                                let json = serde_json::json!({
+                                    "task_id": item.task_id.to_string(),
+                                    "description": item.description,
+                                    "tags": item.tags
+                                });
+                                Ok(ReadResourceResult::text(
+                                    uri,
+                                    serde_json::to_string_pretty(&json).unwrap_or_default(),
+                                ))
+                            } else {
+                                Ok(ReadResourceResult::text(
+                                    uri,
+                                    format!("Task not found: {}", task_id_str),
+                                ))
+                            }
+                        }
+                        Err(e) => Ok(ReadResourceResult::text(uri, format!("Error: {}", e))),
                     }
-                    Err(e) => Ok(ReadResourceResult::text(uri, format!("Error: {}", e))),
                 }
-            }
-        })
+            },
+        )
 }
 
 // ============================================================================
@@ -242,4 +252,3 @@ pub fn all_templates(state: Arc<McpState>) -> Vec<ResourceTemplate> {
         task_by_id_template(state),
     ]
 }
-

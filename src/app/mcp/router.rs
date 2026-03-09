@@ -79,4 +79,3 @@ mod tests {
         // See tests/mcp_integration_tests.rs for full tests
     }
 }
-

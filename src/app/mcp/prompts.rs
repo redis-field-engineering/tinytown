@@ -76,7 +76,9 @@ pub fn conductor_startup_context_prompt(state: Arc<McpState>) -> Prompt {
                 context.push_str("- `recovery.*` - Recovery operations\n");
 
                 Ok(GetPromptResult::builder()
-                    .description("Conductor startup context with town state and available operations")
+                    .description(
+                        "Conductor startup context with town state and available operations",
+                    )
                     .user(context)
                     .build())
             }
@@ -92,7 +94,10 @@ pub fn agent_role_hint_prompt() -> Prompt {
         .required_arg("agent_name", "Name of the agent to generate hints for")
         .optional_arg("tags", "Comma-separated tags for role matching")
         .handler(|args: HashMap<String, String>| async move {
-            let agent_name = args.get("agent_name").map(|s| s.as_str()).unwrap_or("agent");
+            let agent_name = args
+                .get("agent_name")
+                .map(|s| s.as_str())
+                .unwrap_or("agent");
             let tags = args
                 .get("tags")
                 .map(|s| s.split(',').map(|t| t.trim()).collect::<Vec<_>>())
@@ -149,4 +154,3 @@ pub fn all_prompts(state: Arc<McpState>) -> Vec<Prompt> {
         agent_role_hint_prompt(),
     ]
 }
-

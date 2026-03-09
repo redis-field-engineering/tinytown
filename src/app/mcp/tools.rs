@@ -349,16 +349,22 @@ pub fn message_send_tool(state: Arc<McpState>) -> Tool {
         .handler(move |input: SendMessageInput| {
             let state = s.clone();
             async move {
-                use crate::app::services::messages::MessageKind;
                 use crate::MessageService;
+                use crate::app::services::messages::MessageKind;
                 let kind = match input.kind.as_str() {
                     "query" => MessageKind::Query,
                     "info" => MessageKind::Info,
                     "ack" => MessageKind::Ack,
                     _ => MessageKind::Task,
                 };
-                match MessageService::send(&state.town, &input.to, &input.message, kind, input.urgent)
-                    .await
+                match MessageService::send(
+                    &state.town,
+                    &input.to,
+                    &input.message,
+                    kind,
+                    input.urgent,
+                )
+                .await
                 {
                     Ok(r) => Ok(json_result(serde_json::json!({
                         "message_id": r.message_id.to_string(),
@@ -381,7 +387,8 @@ pub fn backlog_add_tool(state: Arc<McpState>) -> Tool {
             let state = s.clone();
             async move {
                 use crate::BacklogService;
-                match BacklogService::add(state.town.channel(), &input.description, input.tags).await
+                match BacklogService::add(state.town.channel(), &input.description, input.tags)
+                    .await
                 {
                     Ok(r) => Ok(json_result(serde_json::json!({
                         "task_id": r.task_id.to_string(),
@@ -406,7 +413,12 @@ pub fn backlog_claim_tool(state: Arc<McpState>) -> Tool {
                 use crate::TaskId;
                 let task_id: TaskId = match input.task_id.parse() {
                     Ok(id) => id,
-                    Err(_) => return Ok(error_response(format!("Invalid task ID: {}", input.task_id))),
+                    Err(_) => {
+                        return Ok(error_response(format!(
+                            "Invalid task ID: {}",
+                            input.task_id
+                        )));
+                    }
                 };
                 match BacklogService::claim(&state.town, task_id, &input.agent).await {
                     Ok(r) => Ok(json_result(serde_json::json!({
@@ -549,4 +561,3 @@ pub fn all_tools(state: Arc<McpState>) -> Vec<Tool> {
     tools.extend(agent_manage_tools(state));
     tools
 }
-
