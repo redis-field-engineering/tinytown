@@ -3491,7 +3491,9 @@ Now, help the user orchestrate their project!
                 // JSON-to-Hash migration
                 let needs_mig = needs_hash_migration(&mut conn, town_name).await?;
                 if !needs_mig {
-                    info!("✅ No JSON-to-Hash migration needed - all keys already use Hash storage");
+                    info!(
+                        "✅ No JSON-to-Hash migration needed - all keys already use Hash storage"
+                    );
                     info!("   Town: {}", town_name);
                     return Ok(());
                 }
@@ -3521,7 +3523,9 @@ Now, help the user orchestrate their project!
                         info!("⚠️  JSON-to-Hash Migration Warning");
                         info!("");
                         info!("   This will convert JSON string storage to Redis Hash format.");
-                        info!("   Benefits: atomic field updates, memory efficiency, partial reads.");
+                        info!(
+                            "   Benefits: atomic field updates, memory efficiency, partial reads."
+                        );
                         info!("");
                         info!("   This operation cannot be undone.");
                         info!("");
@@ -3588,7 +3592,9 @@ Now, help the user orchestrate their project!
                     if !force {
                         info!("⚠️  Migration Warning");
                         info!("");
-                        info!("   This will migrate old Redis keys to the new town-isolated format:");
+                        info!(
+                            "   This will migrate old Redis keys to the new town-isolated format:"
+                        );
                         info!("   tt:type:id → tt:{}:type:id", town_name);
                         info!("");
                         info!("   This operation cannot be undone.");

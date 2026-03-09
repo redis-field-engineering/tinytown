@@ -315,10 +315,7 @@ impl HashMigrationStats {
 /// Check if there are JSON string keys that need migration to Hash.
 ///
 /// Scans for agent and task keys that are stored as strings instead of hashes.
-pub async fn needs_hash_migration(
-    conn: &mut ConnectionManager,
-    town_name: &str,
-) -> Result<bool> {
+pub async fn needs_hash_migration(conn: &mut ConnectionManager, town_name: &str) -> Result<bool> {
     // Check agent keys
     let agent_pattern = format!("tt:{}:agent:*", town_name);
     let agent_keys: Vec<String> = redis::cmd("KEYS")
@@ -465,11 +462,13 @@ async fn migrate_task_to_hash(conn: &mut ConnectionManager, key: &str) -> Result
         fields.push(("parent_id".to_string(), parent_id.to_string()));
     }
     // Tags remain as JSON array string
-    if let Some(tags) = task.get("tags") {
-        if tags.is_array() {
-            fields.push(("tags".to_string(), serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string())));
+    if let Some(tags) = task.get("tags")
+        && tags.is_array() {
+            fields.push((
+                "tags".to_string(),
+                serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_string()),
+            ));
         }
-    }
 
     if fields.is_empty() {
         return Err(Error::Migration(format!(
@@ -502,10 +501,7 @@ pub async fn migrate_json_to_hash(
 ) -> Result<HashMigrationStats> {
     let mut stats = HashMigrationStats::default();
 
-    info!(
-        "Starting JSON-to-Hash migration for town '{}'",
-        town_name
-    );
+    info!("Starting JSON-to-Hash migration for town '{}'", town_name);
 
     // Migrate agent keys
     let agent_pattern = format!("tt:{}:agent:*", town_name);
@@ -656,7 +652,10 @@ pub async fn preview_migration(conn: &mut ConnectionManager) -> Result<Vec<(Stri
     }
     let broadcast_exists: bool = conn.exists("tt:broadcast").await?;
     if broadcast_exists {
-        preview.push(("tt:broadcast".to_string(), "tt:<town>:broadcast".to_string()));
+        preview.push((
+            "tt:broadcast".to_string(),
+            "tt:<town>:broadcast".to_string(),
+        ));
     }
 
     Ok(preview)
