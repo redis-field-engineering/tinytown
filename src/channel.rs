@@ -493,6 +493,9 @@ impl Channel {
     ///
     /// Uses HINCRBY for atomic increment without read-modify-write race conditions.
     /// Per Redis best practices, this avoids rewriting the entire agent object.
+    ///
+    /// Note: Reserved for future use when we optimize agent state updates.
+    #[allow(dead_code)]
     #[instrument(skip(self))]
     pub async fn increment_agent_rounds(&self, agent_id: AgentId) -> Result<u64> {
         let mut conn = self.conn.clone();
@@ -505,6 +508,9 @@ impl Channel {
     /// Atomically increment an agent's tasks_completed counter.
     ///
     /// Uses HINCRBY for atomic increment without read-modify-write race conditions.
+    ///
+    /// Note: Reserved for future use when we optimize agent state updates.
+    #[allow(dead_code)]
     #[instrument(skip(self))]
     pub async fn increment_agent_tasks_completed(&self, agent_id: AgentId) -> Result<u64> {
         let mut conn = self.conn.clone();
@@ -517,6 +523,9 @@ impl Channel {
     /// Atomically update an agent's heartbeat timestamp.
     ///
     /// Uses HSET on a single field for efficient heartbeat updates.
+    ///
+    /// Note: Reserved for future use when we optimize heartbeat updates.
+    #[allow(dead_code)]
     #[instrument(skip(self))]
     pub async fn update_agent_heartbeat(&self, agent_id: AgentId) -> Result<()> {
         let mut conn = self.conn.clone();

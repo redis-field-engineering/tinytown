@@ -3083,8 +3083,8 @@ Now, help the user orchestrate their project!
 
                     while let Some(tid) = town.channel().backlog_pop().await? {
                         if let Some(mut task) = town.channel().get_task(tid).await? {
+                            // Consistent with tt assign - agent will call start() when working
                             task.assign(agent_handle.id());
-                            task.start(); // Mark as in-flight with started_at timestamp
                             town.channel().set_task(&task).await?;
 
                             use tinytown::agent::AgentId;
