@@ -55,12 +55,15 @@ pub mod task;
 pub mod town;
 
 pub use agent::{Agent, AgentId, AgentState, AgentType};
+pub use app::audit::{AuditEvent, AuditResult, audit_middleware};
+pub use app::auth::{AuthError, AuthState, Principal, auth_middleware, generate_api_key};
+pub use app::rate_limit::{RateLimitConfig, RateLimiter, rate_limit_middleware};
 pub use app::server::{AppState, ProblemDetails, create_router};
 pub use app::services::{
     AgentService, BacklogService, MessageService, RecoveryService, TaskService,
 };
 pub use channel::Channel;
-pub use config::Config;
+pub use config::{AuthConfig, AuthMode, Config, MtlsConfig, Scope, TlsConfig, TownhallConfig};
 pub use error::{Error, Result};
 pub use global_config::GlobalConfig;
 pub use message::{ConfirmationType, Message, MessageId, MessageType, Priority};

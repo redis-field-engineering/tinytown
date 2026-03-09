@@ -43,6 +43,9 @@ libc = "0.2.183"
 axum = "0.8"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["compression-full", "cors", "timeout", "trace", "request-id"] }
+argon2 = { version = "0.5.3", features = ["password-hash"] }
+hex = "0.4.3"
+getrandom = "0.4.2"
 
 [dev-dependencies]
 tokio-test = "0.4"

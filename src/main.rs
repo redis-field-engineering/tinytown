@@ -238,6 +238,18 @@ enum Commands {
         #[arg(long)]
         foreground: bool,
     },
+
+    /// Authentication management for townhall
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    /// Generate a new API key and its hash
+    GenKey,
 }
 
 #[derive(Subcommand)]
@@ -2538,6 +2550,34 @@ Now, help the user orchestrate their project!
                 info!("✅ Agent '{}' restarted", agent);
             }
         }
+
+        Commands::Auth { action } => match action {
+            AuthAction::GenKey => {
+                use tinytown::generate_api_key;
+
+                let (raw_key, hash) = generate_api_key();
+
+                info!("🔐 Generated new API key");
+                info!("");
+                info!("API Key (store securely, shown only once):");
+                println!("{}", raw_key);
+                info!("");
+                info!("API Key Hash (add to tinytown.toml):");
+                println!("{}", hash);
+                info!("");
+                info!("Add to your tinytown.toml:");
+                info!("");
+                info!("  [townhall.auth]");
+                info!("  mode = \"api_key\"");
+                info!("  api_key_hash = \"{}\"", hash);
+                info!("");
+                info!("Then use the API key with townhall:");
+                info!(
+                    "  curl -H 'Authorization: Bearer {}' http://localhost:8080/v1/status",
+                    &raw_key[..8]
+                );
+            }
+        },
     }
 
     Ok(())

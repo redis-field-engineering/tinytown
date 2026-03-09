@@ -353,3 +353,200 @@ async fn test_services_send_message() -> Result<(), Box<dyn std::error::Error>> 
 
     Ok(())
 }
+
+// ============================================================================
+// AUTHENTICATION TESTS (Issue #16)
+// ============================================================================
+
+/// Test that auth module functions work correctly.
+#[tokio::test]
+async fn test_auth_api_key_generation_and_verification() {
+    let (raw_key, hash) = tinytown::generate_api_key();
+
+    // Key should be a long hex string
+    assert!(raw_key.len() >= 32);
+
+    // Hash should be Argon2id format
+    assert!(hash.starts_with("$argon2"));
+
+    // Verification should work
+    use argon2::{Argon2, PasswordHash, PasswordVerifier};
+    let parsed_hash = PasswordHash::new(&hash).expect("valid hash");
+    assert!(
+        Argon2::default()
+            .verify_password(raw_key.as_bytes(), &parsed_hash)
+            .is_ok()
+    );
+
+    // Wrong key should fail
+    assert!(
+        Argon2::default()
+            .verify_password(b"wrong-key", &parsed_hash)
+            .is_err()
+    );
+}
+
+/// Test principal scope checking.
+#[tokio::test]
+async fn test_principal_scopes() {
+    use std::collections::HashSet;
+    use tinytown::{Principal, Scope};
+
+    // Local admin has all scopes
+    let admin = Principal::local_admin();
+    assert!(admin.has_scope(Scope::TownRead));
+    assert!(admin.has_scope(Scope::TownWrite));
+    assert!(admin.has_scope(Scope::AgentManage));
+    assert!(admin.has_scope(Scope::Admin));
+
+    // Principal with only TownRead
+    let mut scopes = HashSet::new();
+    scopes.insert(Scope::TownRead);
+    let reader = tinytown::Principal {
+        id: "reader".to_string(),
+        scopes,
+    };
+    assert!(reader.has_scope(Scope::TownRead));
+    assert!(!reader.has_scope(Scope::TownWrite));
+    assert!(!reader.has_scope(Scope::AgentManage));
+    assert!(!reader.has_scope(Scope::Admin));
+}
+
+/// Test that health endpoint works without auth.
+#[tokio::test]
+async fn test_health_endpoint_no_auth_required() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, create_router};
+
+    let temp_dir = tempfile::TempDir::new()?;
+    unsafe {
+        std::env::set_var("TT_USE_SOCKET", "1");
+    }
+    let town = tinytown::Town::init(temp_dir.path(), "auth-health-test").await?;
+
+    // Create router with API key auth mode (but health should still work)
+    let auth_config = Arc::new(AuthConfig {
+        mode: tinytown::AuthMode::ApiKey,
+        api_key_hash: Some("$argon2id$v=19$m=19456,t=2,p=1$fake$fake".to_string()),
+        ..Default::default()
+    });
+    let state = Arc::new(AppState { town, auth_config });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    // Health endpoint should work without auth
+    test_server.get("/healthz").await.assert_status_ok();
+
+    Ok(())
+}
+
+/// Test that protected endpoints require authentication.
+#[tokio::test]
+async fn test_protected_endpoints_require_auth() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, create_router};
+
+    let temp_dir = tempfile::TempDir::new()?;
+    unsafe {
+        std::env::set_var("TT_USE_SOCKET", "1");
+    }
+    let town = tinytown::Town::init(temp_dir.path(), "auth-protected-test").await?;
+
+    // Create router with API key auth mode
+    let (raw_key, hash) = tinytown::generate_api_key();
+    let auth_config = Arc::new(AuthConfig {
+        mode: tinytown::AuthMode::ApiKey,
+        api_key_hash: Some(hash),
+        ..Default::default()
+    });
+    let state = Arc::new(AppState { town, auth_config });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    // Request without auth should return 401
+    test_server
+        .get("/v1/status")
+        .await
+        .assert_status_unauthorized();
+
+    // Request with wrong key should return 401
+    test_server
+        .get("/v1/status")
+        .add_header(axum_test::http::header::AUTHORIZATION, "Bearer wrong-key")
+        .await
+        .assert_status_unauthorized();
+
+    // Request with correct key should succeed
+    test_server
+        .get("/v1/status")
+        .add_header(
+            axum_test::http::header::AUTHORIZATION,
+            format!("Bearer {}", raw_key),
+        )
+        .await
+        .assert_status_ok();
+
+    Ok(())
+}
+
+/// Test that X-API-Key header also works for authentication.
+#[tokio::test]
+async fn test_x_api_key_header_auth() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, create_router};
+
+    let temp_dir = tempfile::TempDir::new()?;
+    unsafe {
+        std::env::set_var("TT_USE_SOCKET", "1");
+    }
+    let town = tinytown::Town::init(temp_dir.path(), "auth-x-api-key-test").await?;
+
+    let (raw_key, hash) = tinytown::generate_api_key();
+    let auth_config = Arc::new(AuthConfig {
+        mode: tinytown::AuthMode::ApiKey,
+        api_key_hash: Some(hash),
+        ..Default::default()
+    });
+    let state = Arc::new(AppState { town, auth_config });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    // Request with X-API-Key header should succeed
+    test_server
+        .get("/v1/town")
+        .add_header("x-api-key", raw_key)
+        .await
+        .assert_status_ok();
+
+    Ok(())
+}
+
+/// Test that auth.mode=none allows all requests.
+#[tokio::test]
+async fn test_auth_mode_none_allows_all() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, create_router};
+
+    let temp_dir = tempfile::TempDir::new()?;
+    unsafe {
+        std::env::set_var("TT_USE_SOCKET", "1");
+    }
+    let town = tinytown::Town::init(temp_dir.path(), "auth-none-test").await?;
+
+    // auth.mode = none (default)
+    let auth_config = Arc::new(AuthConfig::default());
+    let state = Arc::new(AppState { town, auth_config });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    // All endpoints should work without auth
+    test_server.get("/v1/status").await.assert_status_ok();
+    test_server.get("/v1/agents").await.assert_status_ok();
+    test_server.get("/v1/backlog").await.assert_status_ok();
+
+    Ok(())
+}

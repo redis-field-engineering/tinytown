@@ -28,8 +28,14 @@
 //! └─────────────────────────────────┘
 //! ```
 
+pub mod audit;
+pub mod auth;
+pub mod rate_limit;
 pub mod server;
 pub mod services;
 
+pub use audit::{AuditEvent, AuditResult, audit_middleware};
+pub use auth::{AuthError, AuthState, Principal, auth_middleware, generate_api_key, require_scope};
+pub use rate_limit::{RateLimitConfig, RateLimiter, rate_limit_middleware};
 pub use server::{AppState, ProblemDetails, create_router};
 pub use services::*;

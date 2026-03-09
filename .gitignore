@@ -12,6 +12,9 @@
 .tt
 *.rdb
 tinytown.json
+logs/
+.agent_*.md
+.conductor_context.md
 
 # OS
 .DS_Store

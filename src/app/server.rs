@@ -14,17 +14,23 @@ use axum::{
     Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
+    middleware,
     response::IntoResponse,
     routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 
+use crate::app::audit::audit_middleware;
+use crate::app::auth::{AuthState, auth_middleware, require_scope, route_scopes};
 use crate::app::services::messages::MessageKind;
+use crate::config::AuthConfig;
 use crate::{AgentService, BacklogService, MessageService, RecoveryService, TaskService, Town};
 
 /// Application state shared across all routes.
 pub struct AppState {
     pub town: Town,
+    /// Authentication configuration (optional, defaults to None mode)
+    pub auth_config: Arc<AuthConfig>,
 }
 
 /// RFC 7807 Problem Details for error responses.
@@ -75,26 +81,73 @@ impl ProblemDetails {
 
 type ApiResult<T> = std::result::Result<T, (StatusCode, Json<ProblemDetails>)>;
 
-/// Create the townhall router with all routes.
+/// Create the townhall router with all routes and authentication.
+///
+/// Routes are organized by required scope:
+/// - `/healthz` - No auth required
+/// - Read operations (town.read): GET /v1/town, /v1/status, /v1/agents, /v1/tasks/pending,
+///   /v1/backlog, /v1/agents/{agent}/inbox
+/// - Write operations (town.write): POST /v1/tasks/assign, /v1/backlog, /v1/backlog/{task_id}/claim,
+///   /v1/backlog/assign-all, /v1/messages/send
+/// - Agent management (agent.manage): POST /v1/agents, /v1/agents/{agent}/kill,
+///   /v1/agents/{agent}/restart, /v1/agents/prune, /v1/recover, /v1/reclaim
 pub fn create_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route("/healthz", get(health))
+    let auth_state = AuthState {
+        config: state.auth_config.clone(),
+    };
+
+    // Public routes (no auth required)
+    let public_routes = Router::new().route("/healthz", get(health));
+
+    // Read-only routes (town.read scope)
+    let read_routes = Router::new()
         .route("/v1/town", get(get_town))
         .route("/v1/status", get(get_status))
-        .route("/v1/agents", get(list_agents).post(spawn_agent))
-        .route("/v1/agents/{agent}/kill", post(kill_agent))
-        .route("/v1/agents/{agent}/restart", post(restart_agent))
-        .route("/v1/agents/prune", post(prune_agents))
-        .route("/v1/tasks/assign", post(assign_task))
+        .route("/v1/agents", get(list_agents))
         .route("/v1/tasks/pending", get(list_pending_tasks))
-        .route("/v1/backlog", get(list_backlog).post(add_backlog))
+        .route("/v1/backlog", get(list_backlog))
+        .route("/v1/agents/{agent}/inbox", post(get_inbox))
+        .route_layer(middleware::from_fn(move |req, next| {
+            require_scope(route_scopes::READ_OPS, req, next)
+        }));
+
+    // Write routes (town.write scope)
+    let write_routes = Router::new()
+        .route("/v1/tasks/assign", post(assign_task))
+        .route("/v1/backlog", post(add_backlog))
         .route("/v1/backlog/{task_id}/claim", post(claim_backlog))
         .route("/v1/backlog/assign-all", post(assign_all_backlog))
         .route("/v1/messages/send", post(send_message))
-        .route("/v1/agents/{agent}/inbox", post(get_inbox))
+        .route_layer(middleware::from_fn(move |req, next| {
+            require_scope(route_scopes::WRITE_OPS, req, next)
+        }));
+
+    // Agent management routes (agent.manage scope)
+    let agent_mgmt_routes = Router::new()
+        .route("/v1/agents", post(spawn_agent))
+        .route("/v1/agents/{agent}/kill", post(kill_agent))
+        .route("/v1/agents/{agent}/restart", post(restart_agent))
+        .route("/v1/agents/prune", post(prune_agents))
         .route("/v1/recover", post(recover))
         .route("/v1/reclaim", post(reclaim))
-        .with_state(state)
+        .route_layer(middleware::from_fn(move |req, next| {
+            require_scope(route_scopes::AGENT_MGMT, req, next)
+        }));
+
+    // Combine all authenticated routes with audit logging
+    let authenticated_routes = Router::new()
+        .merge(read_routes)
+        .merge(write_routes)
+        .merge(agent_mgmt_routes)
+        .route_layer(middleware::from_fn(audit_middleware))
+        .route_layer(middleware::from_fn_with_state(
+            auth_state.clone(),
+            auth_middleware,
+        ))
+        .with_state(state.clone());
+
+    // Combine public and authenticated routes
+    public_routes.merge(authenticated_routes).with_state(state)
 }
 
 async fn health() -> impl IntoResponse {

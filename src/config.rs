@@ -70,6 +70,214 @@ pub struct TownhallConfig {
     /// Request timeout in milliseconds
     #[serde(default = "default_timeout_ms")]
     pub request_timeout_ms: u64,
+
+    /// Authentication configuration
+    #[serde(default)]
+    pub auth: AuthConfig,
+
+    /// TLS configuration for server certificates
+    #[serde(default)]
+    pub tls: TlsConfig,
+
+    /// Mutual TLS configuration for client certificate auth
+    #[serde(default)]
+    pub mtls: MtlsConfig,
+}
+
+/// Authentication mode for townhall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    /// No authentication required (only safe on loopback)
+    #[default]
+    None,
+    /// API key authentication via Bearer token or X-API-Key header
+    ApiKey,
+    /// OIDC JWT authentication
+    Oidc,
+}
+
+/// Authentication configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthConfig {
+    /// Authentication mode
+    #[serde(default)]
+    pub mode: AuthMode,
+
+    // --- API Key mode settings ---
+    /// Argon2id hash of the API key (not the raw key!)
+    #[serde(default)]
+    pub api_key_hash: Option<String>,
+
+    /// Scopes granted to API key authentication (defaults to all scopes if empty)
+    #[serde(default)]
+    pub api_key_scopes: Vec<Scope>,
+
+    // --- OIDC mode settings ---
+    /// OIDC issuer URL (e.g., "https://issuer.example.com")
+    #[serde(default)]
+    pub issuer: Option<String>,
+
+    /// Expected audience claim
+    #[serde(default)]
+    pub audience: Option<String>,
+
+    /// JWKS URL for key validation
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+
+    /// Required scopes for access
+    #[serde(default)]
+    pub required_scopes: Vec<String>,
+
+    /// Clock skew tolerance in seconds for JWT validation
+    #[serde(default = "default_clock_skew")]
+    pub clock_skew_seconds: u64,
+}
+
+fn default_clock_skew() -> u64 {
+    60
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            mode: AuthMode::None,
+            api_key_hash: None,
+            api_key_scopes: Vec::new(),
+            issuer: None,
+            audience: None,
+            jwks_url: None,
+            required_scopes: Vec::new(),
+            clock_skew_seconds: default_clock_skew(),
+        }
+    }
+}
+
+/// Authorization scopes for townhall endpoints.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Scope {
+    /// Read town/agent/task status
+    #[serde(rename = "town.read")]
+    TownRead,
+    /// Write operations: assign tasks, send messages, claim backlog
+    #[serde(rename = "town.write")]
+    TownWrite,
+    /// Agent lifecycle: spawn, kill, restart, prune, recover
+    #[serde(rename = "agent.manage")]
+    AgentManage,
+    /// Administrative operations
+    #[serde(rename = "admin")]
+    Admin,
+}
+
+impl Scope {
+    /// Parse scope from string representation.
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "town.read" | "town:read" => Some(Scope::TownRead),
+            "town.write" | "town:write" => Some(Scope::TownWrite),
+            "agent.manage" | "agent:manage" => Some(Scope::AgentManage),
+            "admin" => Some(Scope::Admin),
+            _ => None,
+        }
+    }
+
+    /// Get string representation.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Scope::TownRead => "town.read",
+            Scope::TownWrite => "town.write",
+            Scope::AgentManage => "agent.manage",
+            Scope::Admin => "admin",
+        }
+    }
+}
+
+impl std::fmt::Display for Scope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// TLS configuration for server certificates.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TlsConfig {
+    /// Whether TLS is enabled
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Path to TLS certificate file (PEM)
+    #[serde(default)]
+    pub cert_file: Option<String>,
+
+    /// Path to TLS private key file (PEM)
+    #[serde(default)]
+    pub key_file: Option<String>,
+}
+
+impl TlsConfig {
+    /// Validate TLS configuration. Returns error message if invalid.
+    pub fn validate(&self) -> Option<&'static str> {
+        if !self.enabled {
+            return None;
+        }
+        if self.cert_file.is_none() {
+            return Some("TLS enabled but cert_file is not configured");
+        }
+        if self.key_file.is_none() {
+            return Some("TLS enabled but key_file is not configured");
+        }
+        // Check files exist
+        if let Some(cert) = &self.cert_file
+            && !std::path::Path::new(cert).exists()
+        {
+            return Some("TLS cert_file does not exist");
+        }
+        if let Some(key) = &self.key_file
+            && !std::path::Path::new(key).exists()
+        {
+            return Some("TLS key_file does not exist");
+        }
+        None
+    }
+}
+
+/// Mutual TLS (mTLS) configuration for client certificate auth.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MtlsConfig {
+    /// Whether mTLS is enabled
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Whether mTLS is required (vs optional)
+    #[serde(default)]
+    pub required: bool,
+
+    /// Path to CA certificate for client verification
+    #[serde(default)]
+    pub ca_file: Option<String>,
+}
+
+impl MtlsConfig {
+    /// Validate mTLS configuration. Returns error message if invalid.
+    pub fn validate(&self) -> Option<&'static str> {
+        if !self.enabled && !self.required {
+            return None;
+        }
+        if self.required && self.ca_file.is_none() {
+            return Some("mTLS required but ca_file is not configured");
+        }
+        if let Some(ca) = &self.ca_file
+            && !std::path::Path::new(ca).exists()
+        {
+            return Some("mTLS ca_file does not exist");
+        }
+        None
+    }
 }
 
 fn default_rest_port() -> u16 {
@@ -86,6 +294,9 @@ impl Default for TownhallConfig {
             bind: default_bind(),
             rest_port: default_rest_port(),
             request_timeout_ms: default_timeout_ms(),
+            auth: AuthConfig::default(),
+            tls: TlsConfig::default(),
+            mtls: MtlsConfig::default(),
         }
     }
 }

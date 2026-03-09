@@ -15,9 +15,9 @@ use tower_http::{
     compression::CompressionLayer,
     cors::{Any, CorsLayer},
     timeout::TimeoutLayer,
-    trace::TraceLayer,
+    trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
-use tracing::info;
+use tracing::{Level, info};
 use tracing_subscriber::EnvFilter;
 
 use tinytown::{AppState, Town, create_router};
@@ -60,17 +60,77 @@ async fn main() -> tinytown::Result<()> {
     let addr: SocketAddr = format!("{}:{}", bind, port)
         .parse()
         .expect("Invalid address");
+
+    // Startup safety rules (Issue #16)
+    let is_loopback = addr.ip().is_loopback();
+    let auth_mode = &config.townhall.auth.mode;
+
+    // Fail fast: non-loopback binding without authentication
+    if !is_loopback && *auth_mode == tinytown::AuthMode::None {
+        tracing::error!(
+            "❌ FATAL: Binding to non-loopback address {} with auth.mode=none is not allowed. \
+             Configure API key or OIDC authentication, or bind to 127.0.0.1.",
+            addr
+        );
+        std::process::exit(1);
+    }
+
+    // Warn when using API key mode on non-loopback
+    if !is_loopback && *auth_mode == tinytown::AuthMode::ApiKey {
+        tracing::warn!(
+            "⚠️  Running API key authentication on non-loopback address {}. \
+             Consider using OIDC for production deployments.",
+            addr
+        );
+    }
+
+    // Fail fast: TLS enabled but invalid config
+    if let Some(err) = config.townhall.tls.validate() {
+        tracing::error!("❌ FATAL: TLS configuration error: {}", err);
+        std::process::exit(1);
+    }
+
+    // Fail fast: mTLS required but invalid config
+    if let Some(err) = config.townhall.mtls.validate() {
+        tracing::error!("❌ FATAL: mTLS configuration error: {}", err);
+        std::process::exit(1);
+    }
+
+    info!("🔐 Auth mode: {:?}", auth_mode);
+    if config.townhall.tls.enabled {
+        info!("🔒 TLS enabled");
+    }
+    if config.townhall.mtls.enabled {
+        info!(
+            "🔒 mTLS enabled (required: {})",
+            config.townhall.mtls.required
+        );
+    }
+
     let timeout_duration = Duration::from_millis(config.townhall.request_timeout_ms);
-    let state = Arc::new(AppState { town });
+    let auth_config = Arc::new(config.townhall.auth.clone());
+    let state = Arc::new(AppState { town, auth_config });
     #[allow(deprecated)]
     let timeout_layer = TimeoutLayer::new(timeout_duration);
+    // Configure trace layer with sensitive header redaction
+    // Never log Authorization, X-API-Key, or other sensitive headers
+    let trace_layer = TraceLayer::new_for_http()
+        .make_span_with(|request: &axum::http::Request<_>| {
+            // Create span without sensitive headers - only log method, path, version
+            tracing::info_span!(
+                "http_request",
+                method = %request.method(),
+                uri = %request.uri().path(),
+                version = ?request.version(),
+            )
+        })
+        .on_request(DefaultOnRequest::new().level(Level::INFO))
+        .on_response(DefaultOnResponse::new().level(Level::INFO));
+
     let app = create_router(state)
-        .layer(TraceLayer::new_for_http())
+        .layer(trace_layer)
         .layer(CompressionLayer::new())
         .layer(timeout_layer)
-        // TODO(#16): Replace permissive CORS with restricted configuration once
-        // authentication is implemented. Current wide-open policy is intentional
-        // for local development but should not be used in production.
         .layer(
             CorsLayer::new()
                 .allow_origin(Any)
