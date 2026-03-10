@@ -129,7 +129,7 @@ augment  # Uses the model command from config
 When you're done:
 
 ```bash
-# Stop the town (kills Redis)
+# Stop the town's agents
 tt stop
 
 # Or just Ctrl+C if running `tt start`
@@ -139,4 +139,3 @@ tt stop
 
 - **[Core Concepts](../concepts/overview.md)** — Deep dive into Towns, Agents, Tasks
 - **[Multi-Agent Tutorial](../tutorials/multi-agent.md)** — More complex coordination patterns
-

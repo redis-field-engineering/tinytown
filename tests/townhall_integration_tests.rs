@@ -354,6 +354,87 @@ async fn test_services_send_message() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+/// Test that the inbox endpoint supports GET for read semantics while keeping POST compatibility.
+#[tokio::test]
+async fn test_townhall_inbox_endpoint_supports_get_and_post()
+-> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, create_router};
+
+    let server = TownhallTestServer::new("townhall-inbox-route-test").await?;
+    server.spawn_test_agent("receiver").await?;
+    tinytown::MessageService::send(
+        &server.town,
+        "receiver",
+        "Hello over townhall",
+        tinytown::app::services::messages::MessageKind::Info,
+        false,
+    )
+    .await?;
+
+    let auth_config = Arc::new(AuthConfig::default());
+    let state = Arc::new(AppState {
+        town: server.town.clone(),
+        auth_config,
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    test_server
+        .get("/v1/agents/receiver/inbox")
+        .await
+        .assert_status_ok()
+        .assert_json_contains(&serde_json::json!({
+            "agent": "receiver",
+            "total": 1
+        }));
+
+    test_server
+        .post("/v1/agents/receiver/inbox")
+        .await
+        .assert_status_ok()
+        .assert_json_contains(&serde_json::json!({
+            "agent": "receiver",
+            "total": 1
+        }));
+
+    Ok(())
+}
+
+/// Test that backlog removal is exposed through the REST router and deletes task data.
+#[tokio::test]
+async fn test_townhall_delete_backlog_endpoint() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, BacklogService, create_router};
+
+    let server = TownhallTestServer::new("townhall-backlog-delete-route-test").await?;
+    let added = BacklogService::add(server.channel(), "Remove me", None).await?;
+
+    let auth_config = Arc::new(AuthConfig::default());
+    let state = Arc::new(AppState {
+        town: server.town.clone(),
+        auth_config,
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    test_server
+        .delete(&format!("/v1/backlog/{}", added.task_id))
+        .await
+        .assert_status_ok()
+        .assert_json_contains(&serde_json::json!({
+            "removed": true,
+            "task_id": added.task_id.to_string()
+        }));
+
+    assert!(BacklogService::list(server.channel()).await?.is_empty());
+    assert!(server.channel().get_task(added.task_id).await?.is_none());
+
+    Ok(())
+}
+
 // ============================================================================
 // AUTHENTICATION TESTS (Issue #16)
 // ============================================================================

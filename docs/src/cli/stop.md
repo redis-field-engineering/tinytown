@@ -1,6 +1,6 @@
 # tt stop
 
-Stop the town.
+Request all agents in the current town to stop gracefully.
 
 ## Synopsis
 
@@ -10,7 +10,8 @@ tt stop [OPTIONS]
 
 ## Description
 
-Signals that the town should stop. Currently this is a placeholder command that logs a shutdown message. Redis cleanup happens when all connections are closed.
+`tt stop` requests all agents in the current town to stop gracefully.
+It does not shut down the shared central Redis instance, because that instance may be serving other towns.
 
 Note: To fully reset a town, use `tt reset` instead.
 
@@ -31,23 +32,25 @@ tt stop
 
 Output:
 ```
-👋 Town stopped (Redis will be cleaned up)
+🛑 Requested graceful stop for 3 agent(s) in town 'my-project'
+   Agents will stop at the start of their next round.
+   Central Redis remains available to other towns.
 ```
 
 ## Related Operations
 
 | Task | Command |
 |------|---------|
-| Stop all agents | `tt kill --all` |
+| Stop one agent | `tt kill <agent>` |
 | Reset all state | `tt reset` |
-| Kill specific agent | `tt kill <agent>` |
+| Inspect remaining work | `tt inbox --all` |
 
-## Redis Lifecycle
+## Shared Redis Lifecycle
 
-Redis in Tinytown is managed per-connection:
-- Starts when `tt init` runs or first connection is made
-- Stays alive while any tt command is connected
-- Socket-based Redis uses the `.tt/redis.sock` file
+Central Redis in Tinytown is shared across towns:
+- Starts when a town first needs it
+- Remains available after `tt stop`
+- Should only be shut down through explicit Redis administration, not normal town cleanup
 
 For persistent deployments, consider running Redis independently.
 
@@ -56,4 +59,3 @@ For persistent deployments, consider running Redis independently.
 - [tt start](./start.md) — Keep town alive
 - [tt reset](./reset.md) — Full state reset
 - [tt kill](./kill.md) — Stop specific agents
-

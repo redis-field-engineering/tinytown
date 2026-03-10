@@ -16,7 +16,7 @@ use axum::{
     http::StatusCode,
     middleware,
     response::IntoResponse,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 
@@ -106,7 +106,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/v1/agents", get(list_agents))
         .route("/v1/tasks/pending", get(list_pending_tasks))
         .route("/v1/backlog", get(list_backlog))
-        .route("/v1/agents/{agent}/inbox", post(get_inbox))
+        .route("/v1/agents/{agent}/inbox", get(get_inbox).post(get_inbox))
         .route_layer(middleware::from_fn(move |req, next| {
             require_scope(route_scopes::READ_OPS, req, next)
         }));
@@ -117,6 +117,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/v1/backlog", post(add_backlog))
         .route("/v1/backlog/{task_id}/claim", post(claim_backlog))
         .route("/v1/backlog/assign-all", post(assign_all_backlog))
+        .route("/v1/backlog/{task_id}", delete(remove_backlog))
         .route("/v1/messages/send", post(send_message))
         .route_layer(middleware::from_fn(move |req, next| {
             require_scope(route_scopes::WRITE_OPS, req, next)
@@ -362,6 +363,29 @@ async fn assign_all_backlog(
         .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
     Ok(Json(
         serde_json::json!({ "assigned": results.len(), "tasks": results.iter().map(|r| r.task_id.to_string()).collect::<Vec<_>>() }),
+    ))
+}
+
+async fn remove_backlog(
+    State(state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let tid: crate::TaskId = task_id
+        .parse()
+        .map_err(|e| ProblemDetails::bad_request(&format!("Invalid task ID: {}", e)))?;
+    let removed = BacklogService::remove(state.town.channel(), tid)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+
+    if !removed {
+        return Err(ProblemDetails::not_found(&format!(
+            "Task {} not found in backlog",
+            tid
+        )));
+    }
+
+    Ok(Json(
+        serde_json::json!({ "removed": true, "task_id": tid.to_string() }),
     ))
 }
 

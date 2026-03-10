@@ -88,8 +88,9 @@ See [MCP Interface](./mcp.md) for detailed MCP documentation.
 | `/v1/backlog` | POST | `town.write` | Add to backlog |
 | `/v1/backlog/{task_id}/claim` | POST | `town.write` | Claim backlog task |
 | `/v1/backlog/assign-all` | POST | `town.write` | Assign all backlog |
+| `/v1/backlog/{task_id}` | DELETE | `town.write` | Remove backlog task |
 | `/v1/messages/send` | POST | `town.write` | Send message |
-| `/v1/agents/{agent}/inbox` | POST | `town.read` | Get inbox |
+| `/v1/agents/{agent}/inbox` | GET | `town.read` | Get inbox |
 | `/v1/recover` | POST | `agent.manage` | Recover orphaned agents |
 | `/v1/reclaim` | POST | `agent.manage` | Reclaim tasks |
 
@@ -143,4 +144,3 @@ Townhall enforces security by default:
 - Enable API key or OIDC authentication for any network exposure
 - Enable TLS for production deployments
 - Use mTLS for service-to-service communication
-

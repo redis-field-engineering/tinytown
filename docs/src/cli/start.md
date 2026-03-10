@@ -1,6 +1,6 @@
 # tt start
 
-Start the town (keep Redis alive).
+Keep a connection open to the current town.
 
 ## Synopsis
 
@@ -12,11 +12,11 @@ tt start [OPTIONS]
 
 Connects to an existing town and keeps the process running until Ctrl+C. This is useful for:
 
-1. Keeping the Redis server alive when no agents are running
+1. Keeping an active town session open during development
 2. Maintaining a persistent connection for debugging
-3. Ensuring the town stays online during development
+3. Watching a town without spawning a new agent
 
-Note: Towns automatically start Redis when you run `tt init` or any command that connects. This command is mainly for explicitly keeping the connection open.
+Note: Towns automatically connect to central Redis when you run `tt init` or any command that needs it. This command is mainly for explicitly keeping the town connection open.
 
 ## Options
 
@@ -35,9 +35,9 @@ tt start
 
 Output:
 ```
-🚀 Town started
+🚀 Town connection open
 ^C
-👋 Shutting down...
+👋 Closing town connection...
 ```
 
 ### With Specific Town
@@ -49,12 +49,12 @@ tt start --town ~/git/my-project
 ## When to Use
 
 Most operations don't require `tt start` because:
-- `tt init` starts Redis automatically
+- `tt init` provisions the town and connects as needed
 - `tt spawn` connects and stays alive
 - `tt status` connects temporarily
 
 Use `tt start` when you want to:
-- Keep Redis running without spawning agents
+- Keep a town session open without spawning agents
 - Debug connection issues
 - Manually control the town lifecycle
 
@@ -63,4 +63,3 @@ Use `tt start` when you want to:
 - [tt stop](./stop.md) — Stop the town
 - [tt init](./init.md) — Initialize a new town
 - [tt status](./status.md) — Check town status
-
