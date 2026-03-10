@@ -2602,6 +2602,7 @@ version = "0.7.0"
 dependencies = [
  "anyhow",
  "argon2",
+ "async-trait",
  "axum",
  "axum-test",
  "chrono",
@@ -2611,6 +2612,7 @@ dependencies = [
  "hex",
  "libc",
  "redis",
+ "regex",
  "schemars 1.2.1",
  "serde",
  "serde_json",
