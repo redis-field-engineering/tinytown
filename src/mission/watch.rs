@@ -28,9 +28,7 @@ use crate::channel::Channel;
 use crate::error::Result;
 use crate::message::{Message, MessageType};
 use crate::mission::storage::MissionStorage;
-use crate::mission::types::{
-    MissionId, TriggerAction, WatchId, WatchItem, WatchKind, WatchStatus,
-};
+use crate::mission::types::{MissionId, TriggerAction, WatchId, WatchItem, WatchKind, WatchStatus};
 
 // ==================== Watch Check Results ====================
 
@@ -131,7 +129,7 @@ pub struct WatchEngineTickResult {
 pub trait GitHubClient: Send + Sync {
     /// Get PR check status.
     async fn get_pr_checks(&self, owner: &str, repo: &str, pr_number: u64)
-        -> Result<PrCheckResult>;
+    -> Result<PrCheckResult>;
 
     /// Get PR review comments.
     async fn get_pr_reviews(
@@ -365,13 +363,11 @@ impl<G: GitHubClient> WatchEngine<G> {
     }
 
     /// Check for bugbot comments.
-    async fn check_bugbot(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> Result<(bool, bool)> {
-        let comments = self.github.get_bugbot_comments(owner, repo, pr_number).await?;
+    async fn check_bugbot(&self, owner: &str, repo: &str, pr_number: u64) -> Result<(bool, bool)> {
+        let comments = self
+            .github
+            .get_bugbot_comments(owner, repo, pr_number)
+            .await?;
 
         if comments.is_empty() {
             // No bugbot issues yet - continue watching (bugbot may not have posted yet)
@@ -384,12 +380,7 @@ impl<G: GitHubClient> WatchEngine<G> {
     }
 
     /// Check for review comments.
-    async fn check_reviews(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> Result<(bool, bool)> {
+    async fn check_reviews(&self, owner: &str, repo: &str, pr_number: u64) -> Result<(bool, bool)> {
         let reviews = self.github.get_pr_reviews(owner, repo, pr_number).await?;
 
         let has_actionable = reviews.iter().any(|r| r.is_actionable);
@@ -543,7 +534,10 @@ impl<G: GitHubClient> WatchEngine<G> {
                 )
                 .await?;
 
-            info!("Advanced pipeline: work item '{}' completed", work_item.title);
+            info!(
+                "Advanced pipeline: work item '{}' completed",
+                work_item.title
+            );
         }
 
         Ok(())
@@ -716,4 +710,3 @@ mod tests {
         assert!(client.pr_checks.contains_key("test/repo#1"));
     }
 }
-

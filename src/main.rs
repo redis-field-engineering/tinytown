@@ -3760,7 +3760,10 @@ Now, help the user orchestrate their project!
                     info!("   Max parallel: {}", max_parallel);
                     info!("   Reviewer required: {}", !no_reviewer);
                     info!("");
-                    info!("   Check status with: tt mission status --run {}", mission.id);
+                    info!(
+                        "   Check status with: tt mission status --run {}",
+                        mission.id
+                    );
                 }
 
                 MissionAction::Status { run, work, watch } => {
@@ -3820,7 +3823,9 @@ Now, help the user orchestrate their project!
                     mission.start();
                     storage.save_mission(&mission).await?;
                     storage.add_active(mission_id).await?;
-                    storage.log_event(mission_id, "Mission resumed via CLI").await?;
+                    storage
+                        .log_event(mission_id, "Mission resumed via CLI")
+                        .await?;
 
                     info!("▶️  Mission {} resumed", run_id);
                 }
@@ -3908,7 +3913,9 @@ fn derive_git_remote_info(town_path: &std::path::Path) -> Option<(String, String
 
     // Parse SSH format: git@github.com:owner/repo.git
     if url.starts_with("git@github.com:") {
-        let path = url.strip_prefix("git@github.com:")?.trim_end_matches(".git");
+        let path = url
+            .strip_prefix("git@github.com:")?
+            .trim_end_matches(".git");
         let (owner, repo) = path.split_once('/')?;
         return Some((owner.to_string(), repo.to_string()));
     }
@@ -3935,7 +3942,11 @@ fn parse_issue_ref(
     if let Ok(number) = input.parse::<u64>() {
         // Try to derive owner/repo from git remote
         if let Some((owner, repo)) = derive_git_remote_info(town_path) {
-            return Some(ObjectiveRef::Issue { owner, repo, number });
+            return Some(ObjectiveRef::Issue {
+                owner,
+                repo,
+                number,
+            });
         }
 
         // Fall back to deriving repo from town name (format: repo-branch)
@@ -3966,7 +3977,11 @@ fn parse_issue_ref(
             let owner = parts[parts.len() - 4].to_string();
             let repo = parts[parts.len() - 3].to_string();
             if let Ok(number) = parts[parts.len() - 1].parse::<u64>() {
-                return Some(ObjectiveRef::Issue { owner, repo, number });
+                return Some(ObjectiveRef::Issue {
+                    owner,
+                    repo,
+                    number,
+                });
             }
         }
     }
@@ -3984,9 +3999,18 @@ fn print_mission_summary(mission: &tinytown::mission::MissionRun) {
         tinytown::mission::MissionState::Failed => "❌",
     };
 
-    let objectives_str: Vec<String> = mission.objective_refs.iter().map(|o| o.to_string()).collect();
+    let objectives_str: Vec<String> = mission
+        .objective_refs
+        .iter()
+        .map(|o| o.to_string())
+        .collect();
     let objectives_short = if objectives_str.len() > 2 {
-        format!("{}, {} +{} more", objectives_str[0], objectives_str[1], objectives_str.len() - 2)
+        format!(
+            "{}, {} +{} more",
+            objectives_str[0],
+            objectives_str[1],
+            objectives_str.len() - 2
+        )
     } else {
         objectives_str.join(", ")
     };
@@ -4032,8 +4056,14 @@ async fn print_mission_status(
     info!("🎯 Mission Status");
     info!("   ID: {}", mission.id);
     info!("   State: {} {:?}", state_emoji, mission.state);
-    info!("   Created: {}", mission.created_at.format("%Y-%m-%d %H:%M:%S UTC"));
-    info!("   Updated: {}", mission.updated_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    info!(
+        "   Created: {}",
+        mission.created_at.format("%Y-%m-%d %H:%M:%S UTC")
+    );
+    info!(
+        "   Updated: {}",
+        mission.updated_at.format("%Y-%m-%d %H:%M:%S UTC")
+    );
     info!("");
 
     info!("📋 Objectives: {}", mission.objective_refs.len());
@@ -4070,10 +4100,7 @@ async fn print_mission_status(
             };
             info!(
                 "   {} {} ({:?}) - {:?}",
-                status_emoji,
-                item.title,
-                item.kind,
-                item.status
+                status_emoji, item.title, item.kind, item.status
             );
             if let Some(agent) = item.assigned_to {
                 info!("      └─ Assigned to: {}", agent);
@@ -4081,14 +4108,29 @@ async fn print_mission_status(
         }
     } else {
         // Count by status
-        let pending = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Pending).count();
-        let ready = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Ready).count();
-        let running = work_items.iter().filter(|w| {
-            w.status == tinytown::mission::WorkStatus::Running
-                || w.status == tinytown::mission::WorkStatus::Assigned
-        }).count();
-        let done = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Done).count();
-        let blocked = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Blocked).count();
+        let pending = work_items
+            .iter()
+            .filter(|w| w.status == tinytown::mission::WorkStatus::Pending)
+            .count();
+        let ready = work_items
+            .iter()
+            .filter(|w| w.status == tinytown::mission::WorkStatus::Ready)
+            .count();
+        let running = work_items
+            .iter()
+            .filter(|w| {
+                w.status == tinytown::mission::WorkStatus::Running
+                    || w.status == tinytown::mission::WorkStatus::Assigned
+            })
+            .count();
+        let done = work_items
+            .iter()
+            .filter(|w| w.status == tinytown::mission::WorkStatus::Done)
+            .count();
+        let blocked = work_items
+            .iter()
+            .filter(|w| w.status == tinytown::mission::WorkStatus::Blocked)
+            .count();
 
         info!("   ⏳ Pending: {}", pending);
         info!("   🔵 Ready: {}", ready);
@@ -4114,11 +4156,20 @@ async fn print_mission_status(
                 "   {} {:?} - {} ({:?})",
                 status_emoji, item.kind, item.target_ref, item.status
             );
-            info!("      └─ Next check: {}", item.next_due_at.format("%H:%M:%S"));
+            info!(
+                "      └─ Next check: {}",
+                item.next_due_at.format("%H:%M:%S")
+            );
         }
     } else if !watch_items.is_empty() {
-        let active = watch_items.iter().filter(|w| w.status == tinytown::mission::WatchStatus::Active).count();
-        let done = watch_items.iter().filter(|w| w.status == tinytown::mission::WatchStatus::Done).count();
+        let active = watch_items
+            .iter()
+            .filter(|w| w.status == tinytown::mission::WatchStatus::Active)
+            .count();
+        let done = watch_items
+            .iter()
+            .filter(|w| w.status == tinytown::mission::WatchStatus::Done)
+            .count();
         info!("   🟢 Active: {}", active);
         info!("   ✅ Done: {}", done);
         info!("   (use --watch for full list)");

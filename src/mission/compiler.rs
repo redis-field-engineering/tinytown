@@ -34,9 +34,7 @@ use serde::Deserialize;
 use tracing::{debug, instrument, warn};
 
 use crate::error::{Error, Result};
-use crate::mission::types::{
-    MissionId, ObjectiveRef, WorkItem, WorkItemId, WorkKind,
-};
+use crate::mission::types::{MissionId, ObjectiveRef, WorkItem, WorkItemId, WorkKind};
 
 // ==================== Compiled Work Graph ====================
 
@@ -53,7 +51,10 @@ impl WorkGraph {
     /// Get items that are ready to execute (no dependencies).
     #[must_use]
     pub fn ready_items(&self) -> Vec<&WorkItem> {
-        self.items.iter().filter(|item| item.depends_on.is_empty()).collect()
+        self.items
+            .iter()
+            .filter(|item| item.depends_on.is_empty())
+            .collect()
     }
 
     /// Check if the graph is empty.
@@ -163,7 +164,9 @@ impl WorkGraphCompiler {
             .map(|p| Regex::new(p).expect("Invalid regex pattern"))
             .collect();
 
-        Self { dependency_patterns }
+        Self {
+            dependency_patterns,
+        }
     }
 
     /// Parse dependencies from issue body text.
@@ -227,7 +230,10 @@ impl WorkGraphCompiler {
             Some("tester".to_string())
         } else if text.contains("review") {
             Some("reviewer".to_string())
-        } else if text.contains("devops") || text.contains("infrastructure") || text.contains("deploy") {
+        } else if text.contains("devops")
+            || text.contains("infrastructure")
+            || text.contains("deploy")
+        {
             Some("devops".to_string())
         } else {
             None
@@ -319,12 +325,9 @@ impl WorkGraphCompiler {
         let mut work_items: HashMap<WorkItemId, WorkItem> = HashMap::new();
 
         for issue in &issues {
-            let mut item = WorkItem::new(
-                mission_id,
-                issue.title.clone(),
-                issue.kind,
-            );
-            item = item.with_source_ref(format!("{}/#{}",
+            let mut item = WorkItem::new(mission_id, issue.title.clone(), issue.kind);
+            item = item.with_source_ref(format!(
+                "{}/#{}",
                 ObjectiveRef::Issue {
                     owner: issue.owner.clone(),
                     repo: issue.repo.clone(),
@@ -371,10 +374,7 @@ impl WorkGraphCompiler {
 
     /// Perform Kahn's algorithm for topological sorting.
     /// Returns error if a cycle is detected.
-    fn topological_sort(
-        &self,
-        items: HashMap<WorkItemId, WorkItem>,
-    ) -> Result<Vec<WorkItem>> {
+    fn topological_sort(&self, items: HashMap<WorkItemId, WorkItem>) -> Result<Vec<WorkItem>> {
         let mut in_degree: HashMap<WorkItemId, usize> = HashMap::new();
         let mut dependents: HashMap<WorkItemId, Vec<WorkItemId>> = HashMap::new();
 
@@ -441,9 +441,11 @@ impl WorkGraphCompiler {
         objectives
             .iter()
             .filter_map(|obj| match obj {
-                ObjectiveRef::Issue { owner, repo, number } => {
-                    Some((owner.clone(), repo.clone(), *number))
-                }
+                ObjectiveRef::Issue {
+                    owner,
+                    repo,
+                    number,
+                } => Some((owner.clone(), repo.clone(), *number)),
                 ObjectiveRef::Doc { .. } => None,
             })
             .collect()
@@ -500,9 +502,18 @@ mod tests {
     #[test]
     fn test_infer_work_kind() {
         let compiler = WorkGraphCompiler::new();
-        assert_eq!(compiler.infer_work_kind("Design auth system", ""), WorkKind::Design);
-        assert_eq!(compiler.infer_work_kind("Add unit tests", ""), WorkKind::Test);
-        assert_eq!(compiler.infer_work_kind("Implement feature", ""), WorkKind::Implement);
+        assert_eq!(
+            compiler.infer_work_kind("Design auth system", ""),
+            WorkKind::Design
+        );
+        assert_eq!(
+            compiler.infer_work_kind("Add unit tests", ""),
+            WorkKind::Test
+        );
+        assert_eq!(
+            compiler.infer_work_kind("Implement feature", ""),
+            WorkKind::Implement
+        );
     }
 
     #[test]
@@ -574,4 +585,3 @@ mod tests {
         assert!(result.is_err());
     }
 }
-

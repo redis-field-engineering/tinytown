@@ -244,7 +244,6 @@ pub enum TriggerAction {
     AdvancePipeline,
 }
 
-
 // ==================== Reference Types ====================
 
 /// Reference to an objective (issue or document).
@@ -270,7 +269,11 @@ pub enum ObjectiveRef {
 impl std::fmt::Display for ObjectiveRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ObjectiveRef::Issue { owner, repo, number } => {
+            ObjectiveRef::Issue {
+                owner,
+                repo,
+                number,
+            } => {
                 write!(f, "{}/{}#{}", owner, repo, number)
             }
             ObjectiveRef::Doc { path } => write!(f, "{}", path),
@@ -303,7 +306,6 @@ impl Default for MissionPolicy {
         }
     }
 }
-
 
 // ==================== Main Structs ====================
 
@@ -383,7 +385,6 @@ impl MissionRun {
         self.updated_at = Utc::now();
     }
 }
-
 
 /// Individual work unit in the mission DAG.
 ///
@@ -491,7 +492,6 @@ impl WorkItem {
         self.updated_at = Utc::now();
     }
 }
-
 
 /// PR/CI monitoring task.
 ///

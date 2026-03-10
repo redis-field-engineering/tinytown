@@ -20,9 +20,7 @@ use redis::aio::ConnectionManager;
 use tracing::{debug, instrument};
 
 use crate::error::Result;
-use crate::mission::types::{
-    MissionId, MissionRun, WatchId, WatchItem, WorkItem, WorkItemId,
-};
+use crate::mission::types::{MissionId, MissionRun, WatchId, WatchItem, WorkItem, WorkItemId};
 
 /// Maximum events to keep in the activity log.
 const MAX_EVENTS: isize = 100;
@@ -318,7 +316,11 @@ impl MissionStorage {
         let key = self.events_key(mission_id);
 
         // Add timestamp to event
-        let timestamped = format!("[{}] {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"), event);
+        let timestamped = format!(
+            "[{}] {}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+            event
+        );
 
         // Push to list, trim to max
         let _: () = conn.lpush(&key, &timestamped).await?;
@@ -355,8 +357,11 @@ impl MissionStorage {
         let mut missions = Vec::new();
         for key in keys {
             // Skip sub-keys
-            if key.contains(":work") || key.contains(":watch")
-                || key.contains(":events") || key.contains(":active") {
+            if key.contains(":work")
+                || key.contains(":watch")
+                || key.contains(":events")
+                || key.contains(":active")
+            {
                 continue;
             }
 

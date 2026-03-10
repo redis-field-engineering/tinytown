@@ -1870,7 +1870,7 @@ async fn test_redis_url_redacted_no_password() -> Result<(), Box<dyn std::error:
 /// Test MissionId creation and parsing.
 #[test]
 fn test_mission_id_creation_and_parsing() {
-    use tinytown::mission::{MissionId, WorkItemId, WatchId};
+    use tinytown::mission::{MissionId, WatchId, WorkItemId};
     use uuid::Uuid;
 
     // Test MissionId
@@ -1915,7 +1915,10 @@ fn test_objective_ref_display() {
         repo: "tinytown".into(),
         number: 42,
     };
-    assert_eq!(format!("{}", issue_ref), "redis-field-engineering/tinytown#42");
+    assert_eq!(
+        format!("{}", issue_ref),
+        "redis-field-engineering/tinytown#42"
+    );
 
     let doc_ref = ObjectiveRef::Doc {
         path: "docs/design.md".into(),
@@ -1928,13 +1931,11 @@ fn test_objective_ref_display() {
 fn test_mission_run_state_transitions() {
     use tinytown::mission::{MissionRun, MissionState, ObjectiveRef};
 
-    let objectives = vec![
-        ObjectiveRef::Issue {
-            owner: "owner".into(),
-            repo: "repo".into(),
-            number: 1,
-        },
-    ];
+    let objectives = vec![ObjectiveRef::Issue {
+        owner: "owner".into(),
+        repo: "repo".into(),
+        number: 1,
+    }];
 
     let mut mission = MissionRun::new(objectives.clone());
     assert_eq!(mission.state, MissionState::Planning);
@@ -1959,15 +1960,20 @@ fn test_mission_run_state_transitions() {
     let mut mission2 = MissionRun::new(objectives);
     mission2.fail("Unrecoverable error");
     assert_eq!(mission2.state, MissionState::Failed);
-    assert_eq!(mission2.blocked_reason.as_deref(), Some("Unrecoverable error"));
+    assert_eq!(
+        mission2.blocked_reason.as_deref(),
+        Some("Unrecoverable error")
+    );
 }
 
 /// Test MissionRun with custom policy.
 #[test]
 fn test_mission_run_with_policy() {
-    use tinytown::mission::{MissionRun, MissionPolicy, ObjectiveRef};
+    use tinytown::mission::{MissionPolicy, MissionRun, ObjectiveRef};
 
-    let objectives = vec![ObjectiveRef::Doc { path: "README.md".into() }];
+    let objectives = vec![ObjectiveRef::Doc {
+        path: "README.md".into(),
+    }];
     let policy = MissionPolicy {
         max_parallel_items: 5,
         reviewer_required: false,
@@ -1985,8 +1991,8 @@ fn test_mission_run_with_policy() {
 /// Test WorkItem creation and state transitions.
 #[test]
 fn test_work_item_state_transitions() {
-    use tinytown::mission::{MissionId, WorkItem, WorkKind, WorkStatus};
     use tinytown::AgentId;
+    use tinytown::mission::{MissionId, WorkItem, WorkKind, WorkStatus};
 
     let mission_id = MissionId::new();
     let mut work_item = WorkItem::new(mission_id, "Implement feature", WorkKind::Implement);
@@ -2026,7 +2032,7 @@ fn test_work_item_state_transitions() {
 /// Test WorkItem builder methods.
 #[test]
 fn test_work_item_builder_methods() {
-    use tinytown::mission::{MissionId, WorkItem, WorkKind, WorkItemId};
+    use tinytown::mission::{MissionId, WorkItem, WorkItemId, WorkKind};
 
     let mission_id = MissionId::new();
     let dep1 = WorkItemId::new();
@@ -2048,7 +2054,9 @@ fn test_work_item_builder_methods() {
 /// Test WatchItem creation and check scheduling.
 #[test]
 fn test_watch_item_scheduling() {
-    use tinytown::mission::{MissionId, WorkItemId, WatchItem, WatchKind, WatchStatus, TriggerAction};
+    use tinytown::mission::{
+        MissionId, TriggerAction, WatchItem, WatchKind, WatchStatus, WorkItemId,
+    };
 
     let mission_id = MissionId::new();
     let work_item_id = WorkItemId::new();
@@ -2074,7 +2082,8 @@ fn test_watch_item_scheduling() {
         WatchKind::ReviewComments,
         "pr/1",
         60,
-    ).with_trigger(TriggerAction::NotifyReviewer);
+    )
+    .with_trigger(TriggerAction::NotifyReviewer);
 
     assert_eq!(watch_with_trigger.on_trigger, TriggerAction::NotifyReviewer);
 }
@@ -2082,19 +2091,13 @@ fn test_watch_item_scheduling() {
 /// Test WatchItem check recording.
 #[test]
 fn test_watch_item_check_recording() {
-    use tinytown::mission::{MissionId, WorkItemId, WatchItem, WatchKind};
     use chrono::Utc;
+    use tinytown::mission::{MissionId, WatchItem, WatchKind, WorkItemId};
 
     let mission_id = MissionId::new();
     let work_item_id = WorkItemId::new();
 
-    let mut watch = WatchItem::new(
-        mission_id,
-        work_item_id,
-        WatchKind::PrChecks,
-        "pr/1",
-        60,
-    );
+    let mut watch = WatchItem::new(mission_id, work_item_id, WatchKind::PrChecks, "pr/1", 60);
 
     // Record successful check
     let before_check = Utc::now();
@@ -2119,8 +2122,8 @@ fn test_watch_item_check_recording() {
 /// Test WatchItem snooze and complete.
 #[test]
 fn test_watch_item_snooze_and_complete() {
-    use tinytown::mission::{MissionId, WorkItemId, WatchItem, WatchKind, WatchStatus};
     use chrono::Utc;
+    use tinytown::mission::{MissionId, WatchItem, WatchKind, WatchStatus, WorkItemId};
 
     let mission_id = MissionId::new();
     let work_item_id = WorkItemId::new();
@@ -2149,7 +2152,7 @@ fn test_work_kind_and_status_variants() {
     use tinytown::mission::{WorkKind, WorkStatus};
 
     // Test all WorkKind variants exist
-    let kinds = vec![
+    let kinds = [
         WorkKind::Design,
         WorkKind::Implement,
         WorkKind::Test,
@@ -2161,7 +2164,7 @@ fn test_work_kind_and_status_variants() {
     assert_eq!(WorkKind::default(), WorkKind::Implement);
 
     // Test all WorkStatus variants
-    let statuses = vec![
+    let statuses = [
         WorkStatus::Pending,
         WorkStatus::Ready,
         WorkStatus::Assigned,
@@ -2189,7 +2192,7 @@ fn test_work_kind_and_status_variants() {
 /// Test MissionState, WatchKind, WatchStatus, and TriggerAction defaults.
 #[test]
 fn test_enum_defaults() {
-    use tinytown::mission::{MissionState, WatchKind, WatchStatus, TriggerAction};
+    use tinytown::mission::{MissionState, TriggerAction, WatchKind, WatchStatus};
 
     assert_eq!(MissionState::default(), MissionState::Planning);
     assert_eq!(WatchKind::default(), WatchKind::PrChecks);
@@ -2216,18 +2219,16 @@ fn test_mission_policy_defaults() {
 /// Test MissionStorage save and get operations for MissionRun.
 #[tokio::test]
 async fn test_mission_storage_save_and_get_mission() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef, MissionState};
+    use tinytown::mission::{MissionRun, MissionState, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-basic").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-basic");
 
-    let objectives = vec![
-        ObjectiveRef::Issue {
-            owner: "owner".into(),
-            repo: "repo".into(),
-            number: 42,
-        },
-    ];
+    let objectives = vec![ObjectiveRef::Issue {
+        owner: "owner".into(),
+        repo: "repo".into(),
+        number: 42,
+    }];
 
     let mission = MissionRun::new(objectives);
     let mission_id = mission.id;
@@ -2249,12 +2250,14 @@ async fn test_mission_storage_save_and_get_mission() -> Result<(), Box<dyn std::
 /// Test MissionStorage delete operation.
 #[tokio::test]
 async fn test_mission_storage_delete_mission() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+    use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-delete").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-delete");
 
-    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
     let mission_id = mission.id;
 
     storage.save_mission(&mission).await?;
@@ -2279,7 +2282,7 @@ async fn test_mission_storage_delete_mission() -> Result<(), Box<dyn std::error:
 /// Test MissionStorage active set operations.
 #[tokio::test]
 async fn test_mission_storage_active_set() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+    use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-active").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-active");
@@ -2289,8 +2292,12 @@ async fn test_mission_storage_active_set() -> Result<(), Box<dyn std::error::Err
     assert!(active.is_empty());
 
     // Create and add two missions to active set
-    let mission1 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc1.md".into() }]);
-    let mission2 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc2.md".into() }]);
+    let mission1 = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "doc1.md".into(),
+    }]);
+    let mission2 = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "doc2.md".into(),
+    }]);
     let id1 = mission1.id;
     let id2 = mission2.id;
 
@@ -2318,12 +2325,14 @@ async fn test_mission_storage_active_set() -> Result<(), Box<dyn std::error::Err
 /// Test MissionStorage WorkItem operations.
 #[tokio::test]
 async fn test_mission_storage_work_items() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, WorkItem, WorkKind, ObjectiveRef};
+    use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef, WorkItem, WorkKind};
 
     let town = create_test_town("mission-storage-work").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-work");
 
-    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
     let mission_id = mission.id;
     storage.save_mission(&mission).await?;
 
@@ -2359,12 +2368,16 @@ async fn test_mission_storage_work_items() -> Result<(), Box<dyn std::error::Err
 /// Test MissionStorage WatchItem operations.
 #[tokio::test]
 async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, WorkItem, WatchItem, WorkKind, WatchKind, ObjectiveRef};
+    use tinytown::mission::{
+        MissionRun, MissionStorage, ObjectiveRef, WatchItem, WatchKind, WorkItem, WorkKind,
+    };
 
     let town = create_test_town("mission-storage-watch").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-watch");
 
-    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
     let mission_id = mission.id;
     storage.save_mission(&mission).await?;
 
@@ -2397,12 +2410,14 @@ async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Er
 /// Test MissionStorage event logging.
 #[tokio::test]
 async fn test_mission_storage_events() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+    use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-events").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-events");
 
-    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
     let mission_id = mission.id;
     storage.save_mission(&mission).await?;
 
@@ -2426,15 +2441,21 @@ async fn test_mission_storage_events() -> Result<(), Box<dyn std::error::Error>>
 /// Test MissionStorage list_all_missions operation.
 #[tokio::test]
 async fn test_mission_storage_list_all() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+    use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-list-all").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-list-all");
 
     // Create multiple missions
-    let mission1 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc1.md".into() }]);
-    let mission2 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc2.md".into() }]);
-    let mission3 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc3.md".into() }]);
+    let mission1 = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "doc1.md".into(),
+    }]);
+    let mission2 = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "doc2.md".into(),
+    }]);
+    let mission3 = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "doc3.md".into(),
+    }]);
 
     storage.save_mission(&mission1).await?;
     storage.save_mission(&mission2).await?;
@@ -2456,13 +2477,17 @@ async fn test_mission_storage_list_all() -> Result<(), Box<dyn std::error::Error
 /// Test MissionStorage list_due_watches across active missions.
 #[tokio::test]
 async fn test_mission_storage_list_due_watches() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, WorkItem, WatchItem, WorkKind, WatchKind, ObjectiveRef};
+    use tinytown::mission::{
+        MissionRun, MissionStorage, ObjectiveRef, WatchItem, WatchKind, WorkItem, WorkKind,
+    };
 
     let town = create_test_town("mission-storage-due-watches").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-due-watches");
 
     // Create mission with watch items
-    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
     let mission_id = mission.id;
     storage.save_mission(&mission).await?;
     storage.add_active(mission_id).await?;
@@ -2486,7 +2511,9 @@ async fn test_mission_storage_list_due_watches() -> Result<(), Box<dyn std::erro
 /// Test mission and work item update flow.
 #[tokio::test]
 async fn test_mission_storage_update_flow() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::mission::{MissionStorage, MissionRun, MissionState, WorkItem, WorkKind, WorkStatus, ObjectiveRef};
+    use tinytown::mission::{
+        MissionRun, MissionState, MissionStorage, ObjectiveRef, WorkItem, WorkKind, WorkStatus,
+    };
 
     let town = create_test_town("mission-storage-update").await?;
     let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-update");

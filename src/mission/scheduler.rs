@@ -104,7 +104,10 @@ impl AgentMatchScore {
     /// Create a new match score.
     #[must_use]
     pub fn new(score: u32, load_penalty: u32) -> Self {
-        Self { score, load_penalty }
+        Self {
+            score,
+            load_penalty,
+        }
     }
 
     /// Total score (higher is better).
@@ -202,7 +205,10 @@ impl MissionScheduler {
 
         // Skip non-running missions
         if mission.state != MissionState::Running {
-            debug!("Skipping mission {} (state: {:?})", mission_id, mission.state);
+            debug!(
+                "Skipping mission {} (state: {:?})",
+                mission_id, mission.state
+            );
             return Ok(result);
         }
 
@@ -218,7 +224,10 @@ impl MissionScheduler {
             if let Some(item) = work_items.iter().find(|w| w.id == *id) {
                 self.storage.save_work_item(item).await?;
                 self.storage
-                    .log_event(mission_id, &format!("Work item '{}' promoted to ready", item.title))
+                    .log_event(
+                        mission_id,
+                        &format!("Work item '{}' promoted to ready", item.title),
+                    )
                     .await?;
             }
         }
@@ -232,7 +241,8 @@ impl MissionScheduler {
 
         // Step 3: Check for completion
         // Guard: empty work_items.iter().all() returns true, causing spurious completion
-        let all_done = !work_items.is_empty() && work_items.iter().all(|w| w.status == WorkStatus::Done);
+        let all_done =
+            !work_items.is_empty() && work_items.iter().all(|w| w.status == WorkStatus::Done);
         let has_ready = work_items.iter().any(|w| w.status == WorkStatus::Ready);
         let has_running = work_items
             .iter()
@@ -255,7 +265,6 @@ impl MissionScheduler {
 
         Ok(result)
     }
-
 
     // ==================== Ready Queue Promotion ====================
 
@@ -474,12 +483,8 @@ impl MissionScheduler {
                     || agent_name.contains("web")
                     || agent_name.contains("client")
             }
-            "tester" | "test" => {
-                agent_name.contains("test") || agent_name.contains("qa")
-            }
-            "reviewer" | "review" => {
-                agent_name.contains("review") || agent_name.contains("audit")
-            }
+            "tester" | "test" => agent_name.contains("test") || agent_name.contains("qa"),
+            "reviewer" | "review" => agent_name.contains("review") || agent_name.contains("audit"),
             "devops" | "infra" => {
                 agent_name.contains("devops")
                     || agent_name.contains("infra")
@@ -539,10 +544,7 @@ impl MissionScheduler {
             self.storage
                 .log_event(
                     mission_id,
-                    &format!(
-                        "Work item '{}' awaiting reviewer approval",
-                        item.title
-                    ),
+                    &format!("Work item '{}' awaiting reviewer approval", item.title),
                 )
                 .await?;
             return Ok(false);
@@ -553,10 +555,7 @@ impl MissionScheduler {
         self.storage.save_work_item(&item).await?;
 
         self.storage
-            .log_event(
-                mission_id,
-                &format!("Work item '{}' completed", item.title),
-            )
+            .log_event(mission_id, &format!("Work item '{}' completed", item.title))
             .await?;
 
         info!("Completed work item '{}'", item.title);
@@ -607,10 +606,7 @@ impl MissionScheduler {
             self.storage.save_work_item(&item).await?;
 
             self.storage
-                .log_event(
-                    mission_id,
-                    &format!("Work item '{}' started", item.title),
-                )
+                .log_event(mission_id, &format!("Work item '{}' started", item.title))
                 .await?;
 
             info!("Started work item '{}'", item.title);
@@ -619,7 +615,6 @@ impl MissionScheduler {
         Ok(())
     }
 }
-
 
 // ==================== Tests ====================
 
@@ -692,12 +687,24 @@ mod tests {
         let design_item = WorkItem::new(mission.id, "Design", WorkKind::Design);
 
         // Implement and Test require reviewer gate
-        assert!(matches!(implement_item.kind, WorkKind::Implement | WorkKind::Test));
-        assert!(matches!(test_item.kind, WorkKind::Implement | WorkKind::Test));
+        assert!(matches!(
+            implement_item.kind,
+            WorkKind::Implement | WorkKind::Test
+        ));
+        assert!(matches!(
+            test_item.kind,
+            WorkKind::Implement | WorkKind::Test
+        ));
 
         // Review and Design do not
-        assert!(!matches!(review_item.kind, WorkKind::Implement | WorkKind::Test));
-        assert!(!matches!(design_item.kind, WorkKind::Implement | WorkKind::Test));
+        assert!(!matches!(
+            review_item.kind,
+            WorkKind::Implement | WorkKind::Test
+        ));
+        assert!(!matches!(
+            design_item.kind,
+            WorkKind::Implement | WorkKind::Test
+        ));
 
         // When reviewer not required, nothing needs gate
         mission.policy.reviewer_required = false;
@@ -748,4 +755,3 @@ mod tests {
         }
     }
 }
-
