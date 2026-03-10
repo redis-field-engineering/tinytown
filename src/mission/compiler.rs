@@ -143,15 +143,19 @@ impl WorkGraphCompiler {
         // Compile regex patterns for dependency detection
         // These patterns match the keyword followed by issue references
         // We'll extract all #N numbers from the matched portion
+        //
+        // Pattern structure: keyword + issue list
+        // Issue list: #N optionally followed by more #N with separators (comma, "and", space)
+        // Using non-greedy matching and explicit delimiters to avoid false matches
         let patterns = vec![
             // "depends on #123" or "depends on #123, #456" or "depends on #123 and #456"
-            r"(?i)depends?\s+on\s+[#\d,\s\w]+",
+            r"(?i)depends?\s+on\s+(#\d+(?:\s*[,&]\s*#\d+|\s+and\s+#\d+)*)",
             // "after #123" or "after #123, #456"
-            r"(?i)after\s+[#\d,\s\w]+",
+            r"(?i)after\s+(#\d+(?:\s*[,&]\s*#\d+|\s+and\s+#\d+)*)",
             // "blocked by #123"
-            r"(?i)blocked\s+by\s+[#\d,\s\w]+",
+            r"(?i)blocked\s+by\s+(#\d+(?:\s*[,&]\s*#\d+|\s+and\s+#\d+)*)",
             // "requires #123"
-            r"(?i)requires?\s+[#\d,\s\w]+",
+            r"(?i)requires?\s+(#\d+(?:\s*[,&]\s*#\d+|\s+and\s+#\d+)*)",
         ];
 
         let dependency_patterns = patterns

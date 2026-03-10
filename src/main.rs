@@ -3718,7 +3718,7 @@ Now, help the user orchestrate their project!
                     let mut objectives = Vec::new();
 
                     for issue in &issues {
-                        if let Some(obj) = parse_issue_ref(issue, &config.name) {
+                        if let Some(obj) = parse_issue_ref(issue, &config.name, town.root()) {
                             objectives.push(obj);
                         } else {
                             warn!("⚠️  Could not parse issue: {}", issue);
@@ -3885,19 +3885,66 @@ Now, help the user orchestrate their project!
 
 // ==================== Mission Helper Functions ====================
 
+/// Derive GitHub owner and repo from git remote URL.
+///
+/// Parses remote URLs in formats:
+/// - `git@github.com:owner/repo.git`
+/// - `https://github.com/owner/repo.git`
+/// - `https://github.com/owner/repo`
+fn derive_git_remote_info(town_path: &std::path::Path) -> Option<(String, String)> {
+    use std::process::Command;
+
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(town_path)
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let url = String::from_utf8(output.stdout).ok()?.trim().to_string();
+
+    // Parse SSH format: git@github.com:owner/repo.git
+    if url.starts_with("git@github.com:") {
+        let path = url.strip_prefix("git@github.com:")?.trim_end_matches(".git");
+        let (owner, repo) = path.split_once('/')?;
+        return Some((owner.to_string(), repo.to_string()));
+    }
+
+    // Parse HTTPS format: https://github.com/owner/repo.git
+    if url.contains("github.com/") {
+        let path = url.split("github.com/").nth(1)?.trim_end_matches(".git");
+        let (owner, repo) = path.split_once('/')?;
+        return Some((owner.to_string(), repo.to_string()));
+    }
+
+    None
+}
+
 /// Parse an issue reference (e.g., "23", "owner/repo#23", or URL).
-fn parse_issue_ref(input: &str, default_repo: &str) -> Option<tinytown::mission::ObjectiveRef> {
+fn parse_issue_ref(
+    input: &str,
+    default_repo: &str,
+    town_path: &std::path::Path,
+) -> Option<tinytown::mission::ObjectiveRef> {
     use tinytown::mission::ObjectiveRef;
 
     // Try as plain number first
     if let Ok(number) = input.parse::<u64>() {
-        // Use default repo from tinytown.toml name (format: repo-branch)
+        // Try to derive owner/repo from git remote
+        if let Some((owner, repo)) = derive_git_remote_info(town_path) {
+            return Some(ObjectiveRef::Issue { owner, repo, number });
+        }
+
+        // Fall back to deriving repo from town name (format: repo-branch)
         let repo_part = default_repo.split('-').next().unwrap_or("tinytown");
-        return Some(ObjectiveRef::Issue {
-            owner: "redis-field-engineering".into(),
-            repo: repo_part.into(),
-            number,
-        });
+        warn!(
+            "Could not derive GitHub owner from git remote; using repo '{}' with unknown owner",
+            repo_part
+        );
+        return None;
     }
 
     // Try as owner/repo#number

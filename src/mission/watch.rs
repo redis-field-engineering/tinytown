@@ -374,8 +374,9 @@ impl<G: GitHubClient> WatchEngine<G> {
         let comments = self.github.get_bugbot_comments(owner, repo, pr_number).await?;
 
         if comments.is_empty() {
-            // No bugbot issues - watch complete
-            Ok((false, true))
+            // No bugbot issues yet - continue watching (bugbot may not have posted yet)
+            // The watch should only complete when CI passes and we've confirmed no bugbot issues
+            Ok((false, false))
         } else {
             // Bugbot found issues - trigger action
             Ok((true, false))

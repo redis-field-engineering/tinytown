@@ -231,7 +231,8 @@ impl MissionScheduler {
         result.assigned = assigned;
 
         // Step 3: Check for completion
-        let all_done = work_items.iter().all(|w| w.status == WorkStatus::Done);
+        // Guard: empty work_items.iter().all() returns true, causing spurious completion
+        let all_done = !work_items.is_empty() && work_items.iter().all(|w| w.status == WorkStatus::Done);
         let has_ready = work_items.iter().any(|w| w.status == WorkStatus::Ready);
         let has_running = work_items
             .iter()
