@@ -241,22 +241,38 @@ impl MissionScheduler {
 
         // Step 3: Check for completion
         // Guard: empty work_items.iter().all() returns true, causing spurious completion
-        let all_done =
+        let all_work_done =
             !work_items.is_empty() && work_items.iter().all(|w| w.status == WorkStatus::Done);
         let has_ready = work_items.iter().any(|w| w.status == WorkStatus::Ready);
         let has_running = work_items
             .iter()
             .any(|w| w.status == WorkStatus::Running || w.status == WorkStatus::Assigned);
 
-        if all_done {
+        // Also check that all watches are complete before marking mission done
+        let watches = self.storage.list_watch_items(mission_id).await?;
+        let all_watches_done = watches
+            .iter()
+            .all(|w| w.status == crate::mission::WatchStatus::Done);
+        let has_active_watches = watches
+            .iter()
+            .any(|w| w.status == crate::mission::WatchStatus::Active);
+
+        if all_work_done && all_watches_done {
             mission.complete();
             self.storage.save_mission(&mission).await?;
             self.storage.remove_active(mission_id).await?;
             self.storage
-                .log_event(mission_id, "Mission completed - all work items done")
+                .log_event(mission_id, "Mission completed - all work items and watches done")
                 .await?;
             result.state_changed = true;
             result.new_state = Some(MissionState::Completed);
+        } else if all_work_done && has_active_watches {
+            // All work is done but watches still pending - log and wait
+            debug!(
+                "Mission {} has all work done but {} active watches remaining",
+                mission_id,
+                watches.iter().filter(|w| w.status == crate::mission::WatchStatus::Active).count()
+            );
         } else if !has_ready && !has_running {
             // All items are pending or blocked - compute next wake time
             let next_wake = Utc::now() + Duration::seconds(self.config.tick_interval_secs as i64);
