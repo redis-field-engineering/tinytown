@@ -262,7 +262,10 @@ impl MissionScheduler {
             self.storage.save_mission(&mission).await?;
             self.storage.remove_active(mission_id).await?;
             self.storage
-                .log_event(mission_id, "Mission completed - all work items and watches done")
+                .log_event(
+                    mission_id,
+                    "Mission completed - all work items and watches done",
+                )
                 .await?;
             result.state_changed = true;
             result.new_state = Some(MissionState::Completed);
@@ -271,7 +274,10 @@ impl MissionScheduler {
             debug!(
                 "Mission {} has all work done but {} active watches remaining",
                 mission_id,
-                watches.iter().filter(|w| w.status == crate::mission::WatchStatus::Active).count()
+                watches
+                    .iter()
+                    .filter(|w| w.status == crate::mission::WatchStatus::Active)
+                    .count()
             );
         } else if !has_ready && !has_running {
             // All items are pending or blocked - compute next wake time
