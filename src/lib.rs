@@ -50,6 +50,7 @@ pub mod error;
 pub mod global_config;
 pub mod message;
 pub mod migration;
+pub mod mission;
 pub mod plan;
 pub mod redis_manager;
 pub mod task;

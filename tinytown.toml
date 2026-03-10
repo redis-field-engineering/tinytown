@@ -32,23 +32,11 @@ enabled = false
 enabled = false
 required = false
 
-[agent_clis.gemini]
-name = "gemini"
-command = "gemini"
+[agent_clis.aider]
+name = "aider"
+command = "aider --yes --no-auto-commits --message"
 
-[agent_clis.gemini.env]
-
-[agent_clis.codex]
-name = "codex"
-command = "codex exec --dangerously-bypass-approvals-and-sandbox"
-
-[agent_clis.codex.env]
-
-[agent_clis.claude]
-name = "claude"
-command = "claude --print --dangerously-skip-permissions"
-
-[agent_clis.claude.env]
+[agent_clis.aider.env]
 
 [agent_clis.auggie]
 name = "auggie"
@@ -56,11 +44,11 @@ command = "auggie --print"
 
 [agent_clis.auggie.env]
 
-[agent_clis.aider]
-name = "aider"
-command = "aider --yes --no-auto-commits --message"
+[agent_clis.claude]
+name = "claude"
+command = "claude --print --dangerously-skip-permissions"
 
-[agent_clis.aider.env]
+[agent_clis.claude.env]
 
 [agent_clis.copilot]
 name = "copilot"
@@ -73,3 +61,15 @@ name = "cursor"
 command = "cursor"
 
 [agent_clis.cursor.env]
+
+[agent_clis.gemini]
+name = "gemini"
+command = "gemini"
+
+[agent_clis.gemini.env]
+
+[agent_clis.codex]
+name = "codex"
+command = "codex exec --dangerously-bypass-approvals-and-sandbox"
+
+[agent_clis.codex.env]

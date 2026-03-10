@@ -1862,3 +1862,661 @@ async fn test_redis_url_redacted_no_password() -> Result<(), Box<dyn std::error:
 
     Ok(())
 }
+
+// ============================================================================
+// MISSION MODULE TESTS
+// ============================================================================
+
+/// Test MissionId creation and parsing.
+#[test]
+fn test_mission_id_creation_and_parsing() {
+    use tinytown::mission::{MissionId, WorkItemId, WatchId};
+    use uuid::Uuid;
+
+    // Test MissionId
+    let id1 = MissionId::new();
+    let id2 = MissionId::new();
+    assert_ne!(id1, id2, "Each new ID should be unique");
+
+    // Test from_uuid
+    let uuid = Uuid::new_v4();
+    let id_from_uuid = MissionId::from_uuid(uuid);
+    assert_eq!(format!("{}", id_from_uuid), format!("{}", uuid));
+
+    // Test Display and FromStr roundtrip
+    let id_str = id1.to_string();
+    let parsed: MissionId = id_str.parse().expect("Should parse MissionId");
+    assert_eq!(id1, parsed);
+
+    // Test Default
+    let default_id = MissionId::default();
+    assert_ne!(default_id, id1, "Default should create new ID");
+
+    // Test WorkItemId similarly
+    let work_id = WorkItemId::new();
+    let work_str = work_id.to_string();
+    let parsed_work: WorkItemId = work_str.parse().expect("Should parse WorkItemId");
+    assert_eq!(work_id, parsed_work);
+
+    // Test WatchId similarly
+    let watch_id = WatchId::new();
+    let watch_str = watch_id.to_string();
+    let parsed_watch: WatchId = watch_str.parse().expect("Should parse WatchId");
+    assert_eq!(watch_id, parsed_watch);
+}
+
+/// Test ObjectiveRef display formatting.
+#[test]
+fn test_objective_ref_display() {
+    use tinytown::mission::ObjectiveRef;
+
+    let issue_ref = ObjectiveRef::Issue {
+        owner: "redis-field-engineering".into(),
+        repo: "tinytown".into(),
+        number: 42,
+    };
+    assert_eq!(format!("{}", issue_ref), "redis-field-engineering/tinytown#42");
+
+    let doc_ref = ObjectiveRef::Doc {
+        path: "docs/design.md".into(),
+    };
+    assert_eq!(format!("{}", doc_ref), "docs/design.md");
+}
+
+/// Test MissionRun creation and state transitions.
+#[test]
+fn test_mission_run_state_transitions() {
+    use tinytown::mission::{MissionRun, MissionState, ObjectiveRef};
+
+    let objectives = vec![
+        ObjectiveRef::Issue {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            number: 1,
+        },
+    ];
+
+    let mut mission = MissionRun::new(objectives.clone());
+    assert_eq!(mission.state, MissionState::Planning);
+    assert!(mission.blocked_reason.is_none());
+    assert_eq!(mission.objective_refs.len(), 1);
+
+    // Test start transition
+    mission.start();
+    assert_eq!(mission.state, MissionState::Running);
+
+    // Test block transition
+    mission.block("Waiting for CI");
+    assert_eq!(mission.state, MissionState::Blocked);
+    assert_eq!(mission.blocked_reason.as_deref(), Some("Waiting for CI"));
+
+    // Test complete transition
+    mission.complete();
+    assert_eq!(mission.state, MissionState::Completed);
+    assert!(mission.blocked_reason.is_none());
+
+    // Test fail transition (from fresh mission)
+    let mut mission2 = MissionRun::new(objectives);
+    mission2.fail("Unrecoverable error");
+    assert_eq!(mission2.state, MissionState::Failed);
+    assert_eq!(mission2.blocked_reason.as_deref(), Some("Unrecoverable error"));
+}
+
+/// Test MissionRun with custom policy.
+#[test]
+fn test_mission_run_with_policy() {
+    use tinytown::mission::{MissionRun, MissionPolicy, ObjectiveRef};
+
+    let objectives = vec![ObjectiveRef::Doc { path: "README.md".into() }];
+    let policy = MissionPolicy {
+        max_parallel_items: 5,
+        reviewer_required: false,
+        auto_merge: true,
+        watch_interval_secs: 60,
+    };
+
+    let mission = MissionRun::new(objectives).with_policy(policy.clone());
+    assert_eq!(mission.policy.max_parallel_items, 5);
+    assert!(!mission.policy.reviewer_required);
+    assert!(mission.policy.auto_merge);
+    assert_eq!(mission.policy.watch_interval_secs, 60);
+}
+
+/// Test WorkItem creation and state transitions.
+#[test]
+fn test_work_item_state_transitions() {
+    use tinytown::mission::{MissionId, WorkItem, WorkKind, WorkStatus};
+    use tinytown::AgentId;
+
+    let mission_id = MissionId::new();
+    let mut work_item = WorkItem::new(mission_id, "Implement feature", WorkKind::Implement);
+
+    assert_eq!(work_item.status, WorkStatus::Pending);
+    assert!(!work_item.status.is_terminal());
+    assert!(!work_item.status.is_ready());
+    assert!(work_item.assigned_to.is_none());
+    assert!(work_item.artifact_refs.is_empty());
+
+    // Test mark_ready
+    work_item.mark_ready();
+    assert_eq!(work_item.status, WorkStatus::Ready);
+    assert!(work_item.status.is_ready());
+
+    // Test assign
+    let agent_id = AgentId::new();
+    work_item.assign(agent_id);
+    assert_eq!(work_item.status, WorkStatus::Assigned);
+    assert_eq!(work_item.assigned_to, Some(agent_id));
+
+    // Test start
+    work_item.start();
+    assert_eq!(work_item.status, WorkStatus::Running);
+
+    // Test block
+    work_item.block();
+    assert_eq!(work_item.status, WorkStatus::Blocked);
+
+    // Test complete
+    work_item.complete(vec!["https://github.com/owner/repo/pull/1".into()]);
+    assert_eq!(work_item.status, WorkStatus::Done);
+    assert!(work_item.status.is_terminal());
+    assert_eq!(work_item.artifact_refs.len(), 1);
+}
+
+/// Test WorkItem builder methods.
+#[test]
+fn test_work_item_builder_methods() {
+    use tinytown::mission::{MissionId, WorkItem, WorkKind, WorkItemId};
+
+    let mission_id = MissionId::new();
+    let dep1 = WorkItemId::new();
+    let dep2 = WorkItemId::new();
+
+    let work_item = WorkItem::new(mission_id, "Test feature", WorkKind::Test)
+        .with_dependencies(vec![dep1, dep2])
+        .with_owner_role("tester")
+        .with_source_ref("owner/repo#42");
+
+    assert_eq!(work_item.depends_on.len(), 2);
+    assert!(work_item.depends_on.contains(&dep1));
+    assert!(work_item.depends_on.contains(&dep2));
+    assert_eq!(work_item.owner_role.as_deref(), Some("tester"));
+    assert_eq!(work_item.source_ref.as_deref(), Some("owner/repo#42"));
+    assert_eq!(work_item.kind, WorkKind::Test);
+}
+
+/// Test WatchItem creation and check scheduling.
+#[test]
+fn test_watch_item_scheduling() {
+    use tinytown::mission::{MissionId, WorkItemId, WatchItem, WatchKind, WatchStatus, TriggerAction};
+
+    let mission_id = MissionId::new();
+    let work_item_id = WorkItemId::new();
+
+    // Create watch with 1 second interval for test
+    let watch = WatchItem::new(
+        mission_id,
+        work_item_id,
+        WatchKind::PrChecks,
+        "https://github.com/owner/repo/pull/1",
+        1,
+    );
+
+    assert_eq!(watch.status, WatchStatus::Active);
+    assert_eq!(watch.kind, WatchKind::PrChecks);
+    assert!(watch.last_check_at.is_none());
+    assert_eq!(watch.consecutive_failures, 0);
+
+    // Test with_trigger
+    let watch_with_trigger = WatchItem::new(
+        mission_id,
+        work_item_id,
+        WatchKind::ReviewComments,
+        "pr/1",
+        60,
+    ).with_trigger(TriggerAction::NotifyReviewer);
+
+    assert_eq!(watch_with_trigger.on_trigger, TriggerAction::NotifyReviewer);
+}
+
+/// Test WatchItem check recording.
+#[test]
+fn test_watch_item_check_recording() {
+    use tinytown::mission::{MissionId, WorkItemId, WatchItem, WatchKind};
+    use chrono::Utc;
+
+    let mission_id = MissionId::new();
+    let work_item_id = WorkItemId::new();
+
+    let mut watch = WatchItem::new(
+        mission_id,
+        work_item_id,
+        WatchKind::PrChecks,
+        "pr/1",
+        60,
+    );
+
+    // Record successful check
+    let before_check = Utc::now();
+    watch.record_check();
+    assert!(watch.last_check_at.is_some());
+    assert!(watch.last_check_at.unwrap() >= before_check);
+    assert_eq!(watch.consecutive_failures, 0);
+    // Next due should be ~60 seconds from now
+    assert!(watch.next_due_at > before_check);
+
+    // Record failures with backoff
+    watch.record_failure();
+    assert_eq!(watch.consecutive_failures, 1);
+
+    watch.record_failure();
+    assert_eq!(watch.consecutive_failures, 2);
+
+    watch.record_failure();
+    assert_eq!(watch.consecutive_failures, 3);
+}
+
+/// Test WatchItem snooze and complete.
+#[test]
+fn test_watch_item_snooze_and_complete() {
+    use tinytown::mission::{MissionId, WorkItemId, WatchItem, WatchKind, WatchStatus};
+    use chrono::Utc;
+
+    let mission_id = MissionId::new();
+    let work_item_id = WorkItemId::new();
+
+    let mut watch = WatchItem::new(
+        mission_id,
+        work_item_id,
+        WatchKind::Mergeability,
+        "pr/1",
+        60,
+    );
+
+    // Test snooze
+    watch.snooze(300);
+    assert_eq!(watch.status, WatchStatus::Snoozed);
+    assert!(watch.next_due_at > Utc::now());
+
+    // Test complete
+    watch.complete();
+    assert_eq!(watch.status, WatchStatus::Done);
+}
+
+/// Test WorkKind and WorkStatus variants.
+#[test]
+fn test_work_kind_and_status_variants() {
+    use tinytown::mission::{WorkKind, WorkStatus};
+
+    // Test all WorkKind variants exist
+    let kinds = vec![
+        WorkKind::Design,
+        WorkKind::Implement,
+        WorkKind::Test,
+        WorkKind::Review,
+        WorkKind::MergeGate,
+        WorkKind::Followup,
+    ];
+    assert_eq!(kinds.len(), 6);
+    assert_eq!(WorkKind::default(), WorkKind::Implement);
+
+    // Test all WorkStatus variants
+    let statuses = vec![
+        WorkStatus::Pending,
+        WorkStatus::Ready,
+        WorkStatus::Assigned,
+        WorkStatus::Running,
+        WorkStatus::Blocked,
+        WorkStatus::Done,
+    ];
+    assert_eq!(statuses.len(), 6);
+    assert_eq!(WorkStatus::default(), WorkStatus::Pending);
+
+    // Test is_terminal for each status
+    assert!(!WorkStatus::Pending.is_terminal());
+    assert!(!WorkStatus::Ready.is_terminal());
+    assert!(!WorkStatus::Assigned.is_terminal());
+    assert!(!WorkStatus::Running.is_terminal());
+    assert!(!WorkStatus::Blocked.is_terminal());
+    assert!(WorkStatus::Done.is_terminal());
+
+    // Test is_ready for each status
+    assert!(!WorkStatus::Pending.is_ready());
+    assert!(WorkStatus::Ready.is_ready());
+    assert!(!WorkStatus::Assigned.is_ready());
+}
+
+/// Test MissionState, WatchKind, WatchStatus, and TriggerAction defaults.
+#[test]
+fn test_enum_defaults() {
+    use tinytown::mission::{MissionState, WatchKind, WatchStatus, TriggerAction};
+
+    assert_eq!(MissionState::default(), MissionState::Planning);
+    assert_eq!(WatchKind::default(), WatchKind::PrChecks);
+    assert_eq!(WatchStatus::default(), WatchStatus::Active);
+    assert_eq!(TriggerAction::default(), TriggerAction::CreateFixTask);
+}
+
+/// Test MissionPolicy default values.
+#[test]
+fn test_mission_policy_defaults() {
+    use tinytown::mission::MissionPolicy;
+
+    let policy = MissionPolicy::default();
+    assert_eq!(policy.max_parallel_items, 2);
+    assert!(policy.reviewer_required);
+    assert!(!policy.auto_merge);
+    assert_eq!(policy.watch_interval_secs, 180);
+}
+
+// ============================================================================
+// MISSION STORAGE TESTS
+// ============================================================================
+
+/// Test MissionStorage save and get operations for MissionRun.
+#[tokio::test]
+async fn test_mission_storage_save_and_get_mission() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef, MissionState};
+
+    let town = create_test_town("mission-storage-basic").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-basic");
+
+    let objectives = vec![
+        ObjectiveRef::Issue {
+            owner: "owner".into(),
+            repo: "repo".into(),
+            number: 42,
+        },
+    ];
+
+    let mission = MissionRun::new(objectives);
+    let mission_id = mission.id;
+
+    // Save mission
+    storage.save_mission(&mission).await?;
+
+    // Get mission
+    let retrieved = storage.get_mission(mission_id).await?;
+    assert!(retrieved.is_some());
+    let retrieved = retrieved.unwrap();
+    assert_eq!(retrieved.id, mission_id);
+    assert_eq!(retrieved.state, MissionState::Planning);
+    assert_eq!(retrieved.objective_refs.len(), 1);
+
+    Ok(())
+}
+
+/// Test MissionStorage delete operation.
+#[tokio::test]
+async fn test_mission_storage_delete_mission() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-delete").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-delete");
+
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission_id = mission.id;
+
+    storage.save_mission(&mission).await?;
+
+    // Verify it exists
+    assert!(storage.get_mission(mission_id).await?.is_some());
+
+    // Delete
+    let deleted = storage.delete_mission(mission_id).await?;
+    assert!(deleted);
+
+    // Verify it's gone
+    assert!(storage.get_mission(mission_id).await?.is_none());
+
+    // Delete non-existent should return false
+    let deleted_again = storage.delete_mission(mission_id).await?;
+    assert!(!deleted_again);
+
+    Ok(())
+}
+
+/// Test MissionStorage active set operations.
+#[tokio::test]
+async fn test_mission_storage_active_set() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-active").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-active");
+
+    // Initially empty
+    let active = storage.list_active().await?;
+    assert!(active.is_empty());
+
+    // Create and add two missions to active set
+    let mission1 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc1.md".into() }]);
+    let mission2 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc2.md".into() }]);
+    let id1 = mission1.id;
+    let id2 = mission2.id;
+
+    storage.save_mission(&mission1).await?;
+    storage.save_mission(&mission2).await?;
+    storage.add_active(id1).await?;
+    storage.add_active(id2).await?;
+
+    // List active
+    let active = storage.list_active().await?;
+    assert_eq!(active.len(), 2);
+    assert!(active.contains(&id1));
+    assert!(active.contains(&id2));
+
+    // Remove one
+    storage.remove_active(id1).await?;
+    let active = storage.list_active().await?;
+    assert_eq!(active.len(), 1);
+    assert!(!active.contains(&id1));
+    assert!(active.contains(&id2));
+
+    Ok(())
+}
+
+/// Test MissionStorage WorkItem operations.
+#[tokio::test]
+async fn test_mission_storage_work_items() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, WorkItem, WorkKind, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-work").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-work");
+
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission_id = mission.id;
+    storage.save_mission(&mission).await?;
+
+    // Create and save work items
+    let work1 = WorkItem::new(mission_id, "Design feature", WorkKind::Design);
+    let work2 = WorkItem::new(mission_id, "Implement feature", WorkKind::Implement);
+    let work1_id = work1.id;
+    let work2_id = work2.id;
+
+    storage.save_work_item(&work1).await?;
+    storage.save_work_item(&work2).await?;
+
+    // Get individual work item
+    let retrieved = storage.get_work_item(mission_id, work1_id).await?;
+    assert!(retrieved.is_some());
+    assert_eq!(retrieved.unwrap().title, "Design feature");
+
+    // List all work items
+    let items = storage.list_work_items(mission_id).await?;
+    assert_eq!(items.len(), 2);
+
+    // Delete one
+    let deleted = storage.delete_work_item(mission_id, work1_id).await?;
+    assert!(deleted);
+
+    let items = storage.list_work_items(mission_id).await?;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].id, work2_id);
+
+    Ok(())
+}
+
+/// Test MissionStorage WatchItem operations.
+#[tokio::test]
+async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, WorkItem, WatchItem, WorkKind, WatchKind, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-watch").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-watch");
+
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission_id = mission.id;
+    storage.save_mission(&mission).await?;
+
+    let work = WorkItem::new(mission_id, "Implement", WorkKind::Implement);
+    let work_id = work.id;
+    storage.save_work_item(&work).await?;
+
+    // Create and save watch item
+    let watch = WatchItem::new(mission_id, work_id, WatchKind::PrChecks, "pr/123", 60);
+    let watch_id = watch.id;
+    storage.save_watch_item(&watch).await?;
+
+    // Get watch item
+    let retrieved = storage.get_watch_item(mission_id, watch_id).await?;
+    assert!(retrieved.is_some());
+    assert_eq!(retrieved.unwrap().target_ref, "pr/123");
+
+    // List watch items
+    let watches = storage.list_watch_items(mission_id).await?;
+    assert_eq!(watches.len(), 1);
+
+    // Delete watch
+    let deleted = storage.delete_watch_item(mission_id, watch_id).await?;
+    assert!(deleted);
+    assert!(storage.list_watch_items(mission_id).await?.is_empty());
+
+    Ok(())
+}
+
+/// Test MissionStorage event logging.
+#[tokio::test]
+async fn test_mission_storage_events() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-events").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-events");
+
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission_id = mission.id;
+    storage.save_mission(&mission).await?;
+
+    // Log some events
+    storage.log_event(mission_id, "Mission started").await?;
+    storage.log_event(mission_id, "Work item assigned").await?;
+    storage.log_event(mission_id, "PR created").await?;
+
+    // Get events (they should be in reverse order - newest first)
+    let events = storage.get_events(mission_id, 10).await?;
+    assert_eq!(events.len(), 3);
+
+    // Events should contain timestamps and messages
+    assert!(events[0].contains("PR created"));
+    assert!(events[1].contains("Work item assigned"));
+    assert!(events[2].contains("Mission started"));
+
+    Ok(())
+}
+
+/// Test MissionStorage list_all_missions operation.
+#[tokio::test]
+async fn test_mission_storage_list_all() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-list-all").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-list-all");
+
+    // Create multiple missions
+    let mission1 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc1.md".into() }]);
+    let mission2 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc2.md".into() }]);
+    let mission3 = MissionRun::new(vec![ObjectiveRef::Doc { path: "doc3.md".into() }]);
+
+    storage.save_mission(&mission1).await?;
+    storage.save_mission(&mission2).await?;
+    storage.save_mission(&mission3).await?;
+
+    // List all missions
+    let all = storage.list_all_missions().await?;
+    assert_eq!(all.len(), 3);
+
+    // Verify IDs are present
+    let ids: Vec<_> = all.iter().map(|m| m.id).collect();
+    assert!(ids.contains(&mission1.id));
+    assert!(ids.contains(&mission2.id));
+    assert!(ids.contains(&mission3.id));
+
+    Ok(())
+}
+
+/// Test MissionStorage list_due_watches across active missions.
+#[tokio::test]
+async fn test_mission_storage_list_due_watches() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, WorkItem, WatchItem, WorkKind, WatchKind, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-due-watches").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-due-watches");
+
+    // Create mission with watch items
+    let mission = MissionRun::new(vec![ObjectiveRef::Doc { path: "test.md".into() }]);
+    let mission_id = mission.id;
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission_id).await?;
+
+    let work = WorkItem::new(mission_id, "Implement", WorkKind::Implement);
+    let work_id = work.id;
+    storage.save_work_item(&work).await?;
+
+    // Create a watch that is due (interval of 0 means immediately due)
+    let watch = WatchItem::new(mission_id, work_id, WatchKind::PrChecks, "pr/123", 0);
+    storage.save_watch_item(&watch).await?;
+
+    // List due watches
+    let due = storage.list_due_watches().await?;
+    assert_eq!(due.len(), 1);
+    assert_eq!(due[0].target_ref, "pr/123");
+
+    Ok(())
+}
+
+/// Test mission and work item update flow.
+#[tokio::test]
+async fn test_mission_storage_update_flow() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{MissionStorage, MissionRun, MissionState, WorkItem, WorkKind, WorkStatus, ObjectiveRef};
+
+    let town = create_test_town("mission-storage-update").await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-update");
+
+    // Create and save mission
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
+        owner: "owner".into(),
+        repo: "repo".into(),
+        number: 1,
+    }]);
+    let mission_id = mission.id;
+    storage.save_mission(&mission).await?;
+
+    // Update mission state
+    mission.start();
+    storage.save_mission(&mission).await?;
+
+    let retrieved = storage.get_mission(mission_id).await?.unwrap();
+    assert_eq!(retrieved.state, MissionState::Running);
+
+    // Create and update work item
+    let mut work = WorkItem::new(mission_id, "Task", WorkKind::Implement);
+    let work_id = work.id;
+    storage.save_work_item(&work).await?;
+
+    work.mark_ready();
+    storage.save_work_item(&work).await?;
+
+    let retrieved_work = storage.get_work_item(mission_id, work_id).await?.unwrap();
+    assert_eq!(retrieved_work.status, WorkStatus::Ready);
+
+    Ok(())
+}

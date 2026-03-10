@@ -281,12 +281,78 @@ enum Commands {
         #[arg(long)]
         hash: bool,
     },
+
+    /// Autonomous multi-issue mission mode
+    Mission {
+        #[command(subcommand)]
+        action: MissionAction,
+    },
 }
 
 #[derive(Subcommand)]
 enum AuthAction {
     /// Generate a new API key and its hash
     GenKey,
+}
+
+#[derive(Subcommand)]
+enum MissionAction {
+    /// Start a new mission with one or more GitHub issues
+    Start {
+        /// GitHub issue numbers or URLs (e.g., "23" or "owner/repo#23")
+        #[arg(long = "issue", short = 'i', value_name = "ISSUE")]
+        issues: Vec<String>,
+
+        /// Document paths to include as objectives
+        #[arg(long = "doc", short = 'd', value_name = "PATH")]
+        docs: Vec<String>,
+
+        /// Maximum parallel work items (default: 2)
+        #[arg(long, default_value = "2")]
+        max_parallel: u32,
+
+        /// Disable reviewer requirement
+        #[arg(long)]
+        no_reviewer: bool,
+    },
+
+    /// Show status of active missions
+    Status {
+        /// Specific mission ID to show
+        #[arg(long, short = 'r')]
+        run: Option<String>,
+
+        /// Show detailed work item status
+        #[arg(long)]
+        work: bool,
+
+        /// Show watch items
+        #[arg(long)]
+        watch: bool,
+    },
+
+    /// Resume a stopped or blocked mission
+    Resume {
+        /// Mission run ID to resume
+        run_id: String,
+    },
+
+    /// Stop an active mission
+    Stop {
+        /// Mission run ID to stop
+        run_id: String,
+
+        /// Force stop without graceful cleanup
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// List all missions (including completed)
+    List {
+        /// Include completed/failed missions
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3625,6 +3691,399 @@ Now, help the user orchestrate their project!
                     }
                 }
             }
+        }
+
+        Commands::Mission { action } => {
+            use tinytown::mission::{
+                MissionId, MissionPolicy, MissionRun, MissionState, MissionStorage, ObjectiveRef,
+            };
+
+            let town = Town::connect(&cli.town).await?;
+            let config = town.config();
+            let storage = MissionStorage::new(town.channel().conn().clone(), &config.name);
+
+            match action {
+                MissionAction::Start {
+                    issues,
+                    docs,
+                    max_parallel,
+                    no_reviewer,
+                } => {
+                    if issues.is_empty() && docs.is_empty() {
+                        info!("❌ At least one --issue or --doc is required");
+                        return Ok(());
+                    }
+
+                    // Parse objectives
+                    let mut objectives = Vec::new();
+
+                    for issue in &issues {
+                        if let Some(obj) = parse_issue_ref(issue, &config.name) {
+                            objectives.push(obj);
+                        } else {
+                            warn!("⚠️  Could not parse issue: {}", issue);
+                        }
+                    }
+
+                    for doc in &docs {
+                        objectives.push(ObjectiveRef::Doc { path: doc.clone() });
+                    }
+
+                    if objectives.is_empty() {
+                        info!("❌ No valid objectives found");
+                        return Ok(());
+                    }
+
+                    // Create mission with policy
+                    let policy = MissionPolicy {
+                        max_parallel_items: max_parallel,
+                        reviewer_required: !no_reviewer,
+                        ..Default::default()
+                    };
+
+                    let mut mission = MissionRun::new(objectives.clone()).with_policy(policy);
+                    mission.start();
+
+                    // Save to Redis
+                    storage.save_mission(&mission).await?;
+                    storage.add_active(mission.id).await?;
+                    storage
+                        .log_event(mission.id, "Mission started via CLI")
+                        .await?;
+
+                    info!("🚀 Mission started!");
+                    info!("   ID: {}", mission.id);
+                    info!("   Objectives: {}", objectives.len());
+                    for obj in &objectives {
+                        info!("      - {}", obj);
+                    }
+                    info!("   Max parallel: {}", max_parallel);
+                    info!("   Reviewer required: {}", !no_reviewer);
+                    info!("");
+                    info!("   Check status with: tt mission status --run {}", mission.id);
+                }
+
+                MissionAction::Status { run, work, watch } => {
+                    if let Some(run_id) = run {
+                        // Show specific mission
+                        let mission_id: MissionId = run_id
+                            .parse()
+                            .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?;
+
+                        let Some(mission) = storage.get_mission(mission_id).await? else {
+                            info!("❌ Mission {} not found", run_id);
+                            return Ok(());
+                        };
+
+                        print_mission_status(&storage, &mission, work, watch).await?;
+                    } else {
+                        // Show all active missions
+                        let active_ids = storage.list_active().await?;
+
+                        if active_ids.is_empty() {
+                            info!("📋 No active missions");
+                            info!("   Start one with: tt mission start --issue <N>");
+                            return Ok(());
+                        }
+
+                        info!("📋 Active Missions: {}", active_ids.len());
+                        info!("");
+
+                        for mission_id in active_ids {
+                            if let Some(mission) = storage.get_mission(mission_id).await? {
+                                print_mission_summary(&mission);
+                            }
+                        }
+                    }
+                }
+
+                MissionAction::Resume { run_id } => {
+                    let mission_id: MissionId = run_id
+                        .parse()
+                        .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?;
+
+                    let Some(mut mission) = storage.get_mission(mission_id).await? else {
+                        info!("❌ Mission {} not found", run_id);
+                        return Ok(());
+                    };
+
+                    if mission.state == MissionState::Running {
+                        info!("ℹ️  Mission {} is already running", run_id);
+                        return Ok(());
+                    }
+
+                    if mission.state == MissionState::Completed {
+                        info!("ℹ️  Mission {} is already completed", run_id);
+                        return Ok(());
+                    }
+
+                    mission.start();
+                    storage.save_mission(&mission).await?;
+                    storage.add_active(mission_id).await?;
+                    storage.log_event(mission_id, "Mission resumed via CLI").await?;
+
+                    info!("▶️  Mission {} resumed", run_id);
+                }
+
+                MissionAction::Stop { run_id, force } => {
+                    let mission_id: MissionId = run_id
+                        .parse()
+                        .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?;
+
+                    let Some(mut mission) = storage.get_mission(mission_id).await? else {
+                        info!("❌ Mission {} not found", run_id);
+                        return Ok(());
+                    };
+
+                    if force {
+                        mission.fail("Stopped by user (forced)");
+                    } else {
+                        mission.block("Stopped by user");
+                    }
+
+                    storage.save_mission(&mission).await?;
+                    storage.remove_active(mission_id).await?;
+                    storage
+                        .log_event(mission_id, &format!("Mission stopped (force={})", force))
+                        .await?;
+
+                    info!("⏹️  Mission {} stopped", run_id);
+                }
+
+                MissionAction::List { all } => {
+                    let missions = if all {
+                        storage.list_all_missions().await?
+                    } else {
+                        let active_ids = storage.list_active().await?;
+                        let mut missions = Vec::new();
+                        for id in active_ids {
+                            if let Some(m) = storage.get_mission(id).await? {
+                                missions.push(m);
+                            }
+                        }
+                        missions
+                    };
+
+                    if missions.is_empty() {
+                        info!("📋 No missions found");
+                        return Ok(());
+                    }
+
+                    info!("📋 Missions: {}", missions.len());
+                    info!("");
+
+                    for mission in missions {
+                        print_mission_summary(&mission);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ==================== Mission Helper Functions ====================
+
+/// Parse an issue reference (e.g., "23", "owner/repo#23", or URL).
+fn parse_issue_ref(input: &str, default_repo: &str) -> Option<tinytown::mission::ObjectiveRef> {
+    use tinytown::mission::ObjectiveRef;
+
+    // Try as plain number first
+    if let Ok(number) = input.parse::<u64>() {
+        // Use default repo from tinytown.toml name (format: repo-branch)
+        let repo_part = default_repo.split('-').next().unwrap_or("tinytown");
+        return Some(ObjectiveRef::Issue {
+            owner: "redis-field-engineering".into(),
+            repo: repo_part.into(),
+            number,
+        });
+    }
+
+    // Try as owner/repo#number
+    if let Some((repo_part, num_part)) = input.split_once('#')
+        && let Ok(number) = num_part.parse::<u64>()
+        && let Some((owner, repo)) = repo_part.split_once('/')
+    {
+        return Some(ObjectiveRef::Issue {
+            owner: owner.into(),
+            repo: repo.into(),
+            number,
+        });
+    }
+
+    // Try as GitHub URL
+    if input.contains("github.com") && input.contains("/issues/") {
+        let parts: Vec<&str> = input.split('/').collect();
+        if parts.len() >= 4 {
+            let owner = parts[parts.len() - 4].to_string();
+            let repo = parts[parts.len() - 3].to_string();
+            if let Ok(number) = parts[parts.len() - 1].parse::<u64>() {
+                return Some(ObjectiveRef::Issue { owner, repo, number });
+            }
+        }
+    }
+
+    None
+}
+
+/// Print a summary of a mission.
+fn print_mission_summary(mission: &tinytown::mission::MissionRun) {
+    let state_emoji = match mission.state {
+        tinytown::mission::MissionState::Planning => "📝",
+        tinytown::mission::MissionState::Running => "🚀",
+        tinytown::mission::MissionState::Blocked => "🚧",
+        tinytown::mission::MissionState::Completed => "✅",
+        tinytown::mission::MissionState::Failed => "❌",
+    };
+
+    let objectives_str: Vec<String> = mission.objective_refs.iter().map(|o| o.to_string()).collect();
+    let objectives_short = if objectives_str.len() > 2 {
+        format!("{}, {} +{} more", objectives_str[0], objectives_str[1], objectives_str.len() - 2)
+    } else {
+        objectives_str.join(", ")
+    };
+
+    let age = chrono::Utc::now() - mission.created_at;
+    let age_str = if age.num_hours() > 24 {
+        format!("{}d ago", age.num_days())
+    } else if age.num_hours() > 0 {
+        format!("{}h ago", age.num_hours())
+    } else {
+        format!("{}m ago", age.num_minutes())
+    };
+
+    info!(
+        "   {} {} ({:?}) - {} - {}",
+        state_emoji,
+        mission.id.to_string().chars().take(8).collect::<String>(),
+        mission.state,
+        objectives_short,
+        age_str
+    );
+
+    if let Some(reason) = &mission.blocked_reason {
+        info!("      └─ Blocked: {}", reason);
+    }
+}
+
+/// Print detailed mission status.
+async fn print_mission_status(
+    storage: &tinytown::mission::MissionStorage,
+    mission: &tinytown::mission::MissionRun,
+    show_work: bool,
+    show_watch: bool,
+) -> tinytown::Result<()> {
+    let state_emoji = match mission.state {
+        tinytown::mission::MissionState::Planning => "📝",
+        tinytown::mission::MissionState::Running => "🚀",
+        tinytown::mission::MissionState::Blocked => "🚧",
+        tinytown::mission::MissionState::Completed => "✅",
+        tinytown::mission::MissionState::Failed => "❌",
+    };
+
+    info!("🎯 Mission Status");
+    info!("   ID: {}", mission.id);
+    info!("   State: {} {:?}", state_emoji, mission.state);
+    info!("   Created: {}", mission.created_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    info!("   Updated: {}", mission.updated_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    info!("");
+
+    info!("📋 Objectives: {}", mission.objective_refs.len());
+    for obj in &mission.objective_refs {
+        info!("   - {}", obj);
+    }
+    info!("");
+
+    info!("⚙️  Policy:");
+    info!("   Max parallel: {}", mission.policy.max_parallel_items);
+    info!("   Reviewer required: {}", mission.policy.reviewer_required);
+    info!("   Auto-merge: {}", mission.policy.auto_merge);
+    info!("   Watch interval: {}s", mission.policy.watch_interval_secs);
+    info!("");
+
+    if let Some(reason) = &mission.blocked_reason {
+        info!("🚧 Blocked Reason: {}", reason);
+        info!("");
+    }
+
+    // Work items
+    let work_items = storage.list_work_items(mission.id).await?;
+    info!("📦 Work Items: {}", work_items.len());
+
+    if show_work || work_items.len() <= 5 {
+        for item in &work_items {
+            let status_emoji = match item.status {
+                tinytown::mission::WorkStatus::Pending => "⏳",
+                tinytown::mission::WorkStatus::Ready => "🔵",
+                tinytown::mission::WorkStatus::Assigned => "📌",
+                tinytown::mission::WorkStatus::Running => "🔄",
+                tinytown::mission::WorkStatus::Blocked => "🚧",
+                tinytown::mission::WorkStatus::Done => "✅",
+            };
+            info!(
+                "   {} {} ({:?}) - {:?}",
+                status_emoji,
+                item.title,
+                item.kind,
+                item.status
+            );
+            if let Some(agent) = item.assigned_to {
+                info!("      └─ Assigned to: {}", agent);
+            }
+        }
+    } else {
+        // Count by status
+        let pending = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Pending).count();
+        let ready = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Ready).count();
+        let running = work_items.iter().filter(|w| {
+            w.status == tinytown::mission::WorkStatus::Running
+                || w.status == tinytown::mission::WorkStatus::Assigned
+        }).count();
+        let done = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Done).count();
+        let blocked = work_items.iter().filter(|w| w.status == tinytown::mission::WorkStatus::Blocked).count();
+
+        info!("   ⏳ Pending: {}", pending);
+        info!("   🔵 Ready: {}", ready);
+        info!("   🔄 Running: {}", running);
+        info!("   ✅ Done: {}", done);
+        info!("   🚧 Blocked: {}", blocked);
+        info!("   (use --work for full list)");
+    }
+    info!("");
+
+    // Watch items
+    let watch_items = storage.list_watch_items(mission.id).await?;
+    info!("👁️  Watch Items: {}", watch_items.len());
+
+    if show_watch {
+        for item in &watch_items {
+            let status_emoji = match item.status {
+                tinytown::mission::WatchStatus::Active => "🟢",
+                tinytown::mission::WatchStatus::Snoozed => "😴",
+                tinytown::mission::WatchStatus::Done => "✅",
+            };
+            info!(
+                "   {} {:?} - {} ({:?})",
+                status_emoji, item.kind, item.target_ref, item.status
+            );
+            info!("      └─ Next check: {}", item.next_due_at.format("%H:%M:%S"));
+        }
+    } else if !watch_items.is_empty() {
+        let active = watch_items.iter().filter(|w| w.status == tinytown::mission::WatchStatus::Active).count();
+        let done = watch_items.iter().filter(|w| w.status == tinytown::mission::WatchStatus::Done).count();
+        info!("   🟢 Active: {}", active);
+        info!("   ✅ Done: {}", done);
+        info!("   (use --watch for full list)");
+    }
+    info!("");
+
+    // Recent events
+    let events = storage.get_events(mission.id, 5).await?;
+    if !events.is_empty() {
+        info!("📜 Recent Events:");
+        for event in events {
+            info!("   {}", event);
         }
     }
 

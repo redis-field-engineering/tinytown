@@ -52,6 +52,14 @@ impl Channel {
         &self.town_name
     }
 
+    /// Get a clone of the underlying Redis connection manager.
+    ///
+    /// This is useful for creating specialized storage layers (like MissionStorage)
+    /// that need direct Redis access while maintaining the same connection pool.
+    pub fn conn(&self) -> &ConnectionManager {
+        &self.conn
+    }
+
     // ==================== Key Generation ====================
     // All keys are namespaced by town name: tt:{town}:{type}:{id}
 
