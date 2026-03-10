@@ -21,6 +21,8 @@ Read tools:
 
 - `town.get_status`
 - `agent.list`
+- `agent.inbox`
+- `task.list_pending`
 - `backlog.list`
 
 Write tools:
@@ -30,12 +32,14 @@ Write tools:
 - `backlog.add`
 - `backlog.claim`
 - `backlog.assign_all`
+- `backlog.remove`
 
 Agent-management/recovery tools:
 
 - `agent.spawn`
 - `agent.kill`
 - `agent.restart`
+- `agent.prune`
 - `recovery.recover_agents`
 - `recovery.reclaim_tasks`
 

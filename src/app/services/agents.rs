@@ -121,6 +121,24 @@ impl AgentService {
         Ok(())
     }
 
+    /// Request all non-terminal agents in a town to stop gracefully.
+    pub async fn stop_all(town: &Town) -> Result<Vec<Agent>> {
+        let agents = town.list_agents().await;
+        let channel = town.channel();
+        let mut requested = Vec::new();
+
+        for agent in agents {
+            if agent.state.is_terminal() {
+                continue;
+            }
+
+            Self::kill(channel, agent.id).await?;
+            requested.push(agent);
+        }
+
+        Ok(requested)
+    }
+
     /// Restart a stopped agent.
     pub async fn restart(channel: &Channel, agent_id: AgentId) -> Result<()> {
         if let Some(mut agent_state) = channel.get_agent_state(agent_id).await? {

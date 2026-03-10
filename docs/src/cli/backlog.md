@@ -55,6 +55,7 @@ tt backlog remove <TASK_ID>
 ```
 
 Removes a task from the backlog without assigning it to any agent. Useful for cleaning up tasks that are no longer needed or were added by mistake.
+The task record is deleted as part of the removal.
 
 ## Options
 

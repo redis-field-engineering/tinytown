@@ -137,9 +137,16 @@ impl BacklogService {
 
     /// Remove a task from the backlog without assigning it.
     ///
+    /// This also deletes the persisted task record so all interfaces behave the
+    /// same as the CLI `tt backlog remove` command.
+    ///
     /// Returns true if the task was found and removed, false otherwise.
     pub async fn remove(channel: &Channel, task_id: TaskId) -> Result<bool> {
-        channel.backlog_remove(task_id).await
+        let removed = channel.backlog_remove(task_id).await?;
+        if removed {
+            channel.delete_task(task_id).await?;
+        }
+        Ok(removed)
     }
 
     /// Assign all backlog tasks to an agent.

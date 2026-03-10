@@ -117,10 +117,10 @@ enum Commands {
         tasks: bool,
     },
 
-    /// Start the town (Redis server)
+    /// Keep a connection open to the town
     Start,
 
-    /// Stop the town
+    /// Request all agents in the town to stop gracefully
     Stop,
 
     /// Reset all town state (clear all agents, tasks, messages)
@@ -1695,54 +1695,29 @@ async fn main() -> Result<()> {
         }
 
         Commands::Kill { agent } => {
-            use tinytown::AgentState;
-
             let town = Town::connect(&cli.town).await?;
             let handle = town.agent(&agent).await?;
-            let agent_id = handle.id();
-
-            // Request the agent to stop
-            town.channel().request_stop(agent_id).await?;
-
-            // Update state to show it's stopping
-            if let Some(mut agent_state) = town.channel().get_agent_state(agent_id).await? {
-                agent_state.state = AgentState::Stopped;
-                town.channel().set_agent_state(&agent_state).await?;
-            }
-
-            // Log activity
-            town.channel()
-                .log_agent_activity(agent_id, "🛑 Stop requested by user")
-                .await?;
+            tinytown::AgentService::kill(town.channel(), handle.id()).await?;
 
             info!("🛑 Requested stop for agent '{}'", agent);
             info!("   Agent will stop at the start of its next round.");
         }
 
         Commands::Prune { all } => {
-            use tinytown::AgentState;
-
             let town = Town::connect(&cli.town).await?;
-            let agents = town.list_agents().await;
+            let removed = tinytown::AgentService::prune(&town, all).await?;
 
-            let mut removed = 0;
-            for agent in agents {
-                let should_remove =
-                    all || matches!(agent.state, AgentState::Stopped | AgentState::Error);
-                if should_remove {
-                    town.channel().delete_agent(agent.id).await?;
-                    info!(
-                        "🗑️  Removed {} ({}) - {:?}",
-                        agent.name, agent.id, agent.state
-                    );
-                    removed += 1;
-                }
+            for agent in &removed {
+                info!(
+                    "🗑️  Removed {} ({}) - {:?}",
+                    agent.name, agent.id, agent.state
+                );
             }
 
-            if removed == 0 {
+            if removed.is_empty() {
                 info!("No agents to prune.");
             } else {
-                info!("✨ Pruned {} agent(s)", removed);
+                info!("✨ Pruned {} agent(s)", removed.len());
             }
         }
 
@@ -1893,16 +1868,33 @@ async fn main() -> Result<()> {
 
         Commands::Start => {
             let _town = Town::connect(&cli.town).await?;
-            info!("🚀 Town started");
+            info!("🚀 Town connection open");
             // Keep running until Ctrl+C
             tokio::signal::ctrl_c()
                 .await
                 .expect("Failed to listen for ctrl-c");
-            info!("👋 Shutting down...");
+            info!("👋 Closing town connection...");
         }
 
         Commands::Stop => {
-            info!("👋 Town stopped (Redis will be cleaned up)");
+            let town = Town::connect(&cli.town).await?;
+            let requested = tinytown::AgentService::stop_all(&town).await?;
+
+            if requested.is_empty() {
+                info!(
+                    "👋 No active agents to stop in town '{}'",
+                    town.config().name
+                );
+            } else {
+                info!(
+                    "🛑 Requested graceful stop for {} agent(s) in town '{}'",
+                    requested.len(),
+                    town.config().name
+                );
+                info!("   Agents will stop at the start of their next round.");
+            }
+
+            info!("   Central Redis remains available to other towns.");
         }
 
         Commands::Reset { force, agents_only } => {
@@ -3223,14 +3215,9 @@ Now, help the user orchestrate their project!
                     })?;
 
                     // Remove from backlog
-                    let removed = town.channel().backlog_remove(tid).await?;
+                    let removed = tinytown::BacklogService::remove(town.channel(), tid).await?;
                     if removed {
-                        // Also delete the task data from Redis
-                        town.channel().delete_task(tid).await?;
-                        info!(
-                            "✅ Removed task {} from backlog and deleted task data",
-                            task_id
-                        );
+                        info!("✅ Removed task {} from backlog", task_id);
                     } else {
                         info!("❌ Task {} not found in backlog", task_id);
                     }

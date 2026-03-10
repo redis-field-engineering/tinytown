@@ -29,8 +29,8 @@ request_timeout_ms = 30000
 The router is split into public/read/write/management groups:
 
 - Public: `GET /healthz`
-- Read (`town.read`): `GET /v1/town`, `GET /v1/status`, `GET /v1/agents`, `GET /v1/tasks/pending`, `GET /v1/backlog`, `POST /v1/agents/{agent}/inbox`
-- Write (`town.write`): `POST /v1/tasks/assign`, `POST /v1/backlog`, `POST /v1/backlog/{task_id}/claim`, `POST /v1/backlog/assign-all`, `POST /v1/messages/send`
+- Read (`town.read`): `GET /v1/town`, `GET /v1/status`, `GET /v1/agents`, `GET /v1/tasks/pending`, `GET /v1/backlog`, `GET /v1/agents/{agent}/inbox`
+- Write (`town.write`): `POST /v1/tasks/assign`, `POST /v1/backlog`, `POST /v1/backlog/{task_id}/claim`, `POST /v1/backlog/assign-all`, `DELETE /v1/backlog/{task_id}`, `POST /v1/messages/send`
 - Agent management (`agent.manage`): `POST /v1/agents`, `POST /v1/agents/{agent}/kill`, `POST /v1/agents/{agent}/restart`, `POST /v1/agents/prune`, `POST /v1/recover`, `POST /v1/reclaim`
 
 ## Authentication

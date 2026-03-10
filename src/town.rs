@@ -432,7 +432,7 @@ impl Town {
 }
 
 // Note: Redis runs daemonized and persists after Town is dropped.
-// Use `tt stop` to explicitly stop Redis if needed.
+// `tt stop` only requests town agents to stop gracefully; it does not shut down shared Redis.
 
 /// Handle for interacting with an agent.
 #[derive(Clone)]

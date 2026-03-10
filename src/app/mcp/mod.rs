@@ -12,15 +12,19 @@
 //! ## Tools
 //! - `town.get_status` - Get town status including all agents
 //! - `agent.list` - List all agents
+//! - `agent.inbox` - Inspect an agent inbox
 //! - `agent.spawn` - Spawn a new agent
 //! - `agent.kill` - Kill (stop) an agent
 //! - `agent.restart` - Restart a stopped agent
+//! - `agent.prune` - Remove stopped or stale agents
 //! - `task.assign` - Assign a task to an agent
+//! - `task.list_pending` - List pending tasks across inboxes
 //! - `message.send` - Send a message to an agent
 //! - `backlog.add` - Add a task to the backlog
 //! - `backlog.list` - List backlog tasks
 //! - `backlog.claim` - Claim a backlog task for an agent
 //! - `backlog.assign_all` - Assign all backlog tasks to agents
+//! - `backlog.remove` - Remove a task from the backlog
 //! - `recovery.recover_agents` - Recover orphaned agents
 //! - `recovery.reclaim_tasks` - Reclaim tasks from dead agents
 //!

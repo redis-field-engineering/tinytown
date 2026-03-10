@@ -34,6 +34,14 @@ pub struct AgentNameInput {
     pub agent: String,
 }
 
+/// Input for pruning agents.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PruneAgentsInput {
+    /// Remove all agents, not just stopped/error agents
+    #[serde(default)]
+    pub all: bool,
+}
+
 /// Input for task assignment.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AssignTaskInput {
@@ -96,6 +104,13 @@ pub struct ClaimBacklogInput {
 pub struct AssignAllBacklogInput {
     /// Agent name to assign all tasks to
     pub agent: String,
+}
+
+/// Input for removing a backlog task.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RemoveBacklogInput {
+    /// Task ID to remove
+    pub task_id: String,
 }
 
 /// Input for recovery operations.
@@ -246,6 +261,68 @@ pub fn backlog_list_tool(state: Arc<McpState>) -> Tool {
                             })
                             .collect::<Vec<_>>(),
                     )),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
+/// Create the task.list_pending tool.
+pub fn task_list_pending_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("task.list_pending")
+        .description("List all pending tasks across agent inboxes")
+        .read_only()
+        .no_params_handler(move || {
+            let state = s.clone();
+            async move {
+                use crate::TaskService;
+                match TaskService::list_pending(&state.town).await {
+                    Ok(tasks) => Ok(json_result(
+                        tasks
+                            .iter()
+                            .map(|t| {
+                                serde_json::json!({
+                                    "task_id": t.task_id.to_string(),
+                                    "description": t.description,
+                                    "agent_id": t.agent_id.to_string(),
+                                    "agent_name": t.agent_name
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
+/// Create the agent.inbox tool.
+pub fn agent_inbox_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.inbox")
+        .description("Inspect an agent inbox")
+        .read_only()
+        .handler(move |input: AgentNameInput| {
+            let state = s.clone();
+            async move {
+                use crate::MessageService;
+                match MessageService::get_inbox(&state.town, &input.agent).await {
+                    Ok(inbox) => Ok(json_result(serde_json::json!({
+                        "agent": input.agent,
+                        "agent_id": inbox.agent_id.to_string(),
+                        "total_messages": inbox.total_messages,
+                        "urgent_messages": inbox.urgent_messages,
+                        "messages": inbox.messages.iter().map(|m| serde_json::json!({
+                            "id": m.id.to_string(),
+                            "from": m.from.to_string(),
+                            "type": m.msg_type,
+                            "summary": m.summary,
+                            "urgent": m.urgent
+                        })).collect::<Vec<_>>()
+                    }))),
                     Err(e) => Ok(error_response(e.to_string())),
                 }
             }
@@ -513,6 +590,41 @@ pub fn backlog_assign_all_tool(state: Arc<McpState>) -> Tool {
         .build()
 }
 
+/// Create the backlog.remove tool.
+pub fn backlog_remove_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("backlog.remove")
+        .description("Remove a backlog task without assigning it")
+        .handler(move |input: RemoveBacklogInput| {
+            let state = s.clone();
+            async move {
+                use crate::BacklogService;
+                use crate::TaskId;
+                let task_id: TaskId = match input.task_id.parse() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Ok(error_response(format!(
+                            "Invalid task ID: {}",
+                            input.task_id
+                        )));
+                    }
+                };
+                match BacklogService::remove(state.town.channel(), task_id).await {
+                    Ok(true) => Ok(json_result(serde_json::json!({
+                        "task_id": task_id.to_string(),
+                        "removed": true
+                    }))),
+                    Ok(false) => Ok(error_response(format!(
+                        "Task {} not found in backlog",
+                        task_id
+                    ))),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
 // ============================================================================
 // Recovery Tools (agent.manage scope)
 // ============================================================================
@@ -570,6 +682,31 @@ pub fn recovery_reclaim_tasks_tool(state: Arc<McpState>) -> Tool {
         .build()
 }
 
+/// Create the agent.prune tool.
+pub fn agent_prune_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.prune")
+        .description("Remove stopped or stale agents from the town")
+        .handler(move |input: PruneAgentsInput| {
+            let state = s.clone();
+            async move {
+                use crate::AgentService;
+                match AgentService::prune(&state.town, input.all).await {
+                    Ok(removed) => Ok(json_result(serde_json::json!({
+                        "removed": removed.len(),
+                        "agents": removed.iter().map(|a| serde_json::json!({
+                            "id": a.id.to_string(),
+                            "name": a.name,
+                            "state": format!("{:?}", a.state)
+                        })).collect::<Vec<_>>()
+                    }))),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
 // ============================================================================
 // Tool Registration
 // ============================================================================
@@ -579,6 +716,8 @@ pub fn read_tools(state: Arc<McpState>) -> Vec<Tool> {
     vec![
         town_get_status_tool(state.clone()),
         agent_list_tool(state.clone()),
+        agent_inbox_tool(state.clone()),
+        task_list_pending_tool(state.clone()),
         backlog_list_tool(state),
     ]
 }
@@ -591,7 +730,8 @@ pub fn write_tools(state: Arc<McpState>) -> Vec<Tool> {
         message_send_tool(state.clone()),
         backlog_add_tool(state.clone()),
         backlog_claim_tool(state.clone()),
-        backlog_assign_all_tool(state),
+        backlog_assign_all_tool(state.clone()),
+        backlog_remove_tool(state),
     ]
 }
 
@@ -601,6 +741,7 @@ pub fn agent_manage_tools(state: Arc<McpState>) -> Vec<Tool> {
         agent_spawn_tool(state.clone()),
         agent_kill_tool(state.clone()),
         agent_restart_tool(state.clone()),
+        agent_prune_tool(state.clone()),
         recovery_recover_agents_tool(state.clone()),
         recovery_reclaim_tasks_tool(state),
     ]

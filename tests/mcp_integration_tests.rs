@@ -12,6 +12,7 @@
 //! with tower-mcp's testing module. These tests focus on verifying the router
 //! construction and service integration work correctly.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tinytown::{McpState, Town, create_mcp_router};
@@ -130,6 +131,17 @@ async fn test_mcp_service_agent_operations() -> Result<(), Box<dyn std::error::E
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].name, "test-worker");
 
+    // Test stop_all (used by `tt stop` semantics)
+    let stopped = tinytown::AgentService::stop_all(&ctx.town).await?;
+    assert_eq!(stopped.len(), 1);
+    assert_eq!(stopped[0].name, "test-worker");
+    assert!(
+        ctx.town
+            .channel()
+            .should_stop(spawn_result.agent_id)
+            .await?
+    );
+
     Ok(())
 }
 
@@ -210,6 +222,19 @@ async fn test_mcp_service_backlog_operations() -> Result<(), Box<dyn std::error:
     let items_after = tinytown::BacklogService::list(ctx.town.channel()).await?;
     assert!(items_after.is_empty());
 
+    // Test remove (used by backlog.remove tool)
+    let removable =
+        tinytown::BacklogService::add(ctx.town.channel(), "Remove this task", None).await?;
+    let removed = tinytown::BacklogService::remove(ctx.town.channel(), removable.task_id).await?;
+    assert!(removed);
+    assert!(
+        ctx.town
+            .channel()
+            .get_task(removable.task_id)
+            .await?
+            .is_none()
+    );
+
     Ok(())
 }
 
@@ -245,5 +270,27 @@ async fn test_mcp_router_is_configured() -> Result<(), Box<dyn std::error::Error
 
     // The router creation completed successfully
     // Full testing of MCP protocol would require an MCP client connection
+    Ok(())
+}
+
+/// Test that parity tools are registered in the MCP router inventory.
+#[tokio::test]
+async fn test_mcp_tool_inventory_includes_parity_tools() -> Result<(), Box<dyn std::error::Error>> {
+    let ctx = McpTestContext::new("mcp-tool-inventory-test").await?;
+
+    let tool_names: HashSet<_> = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect();
+
+    for expected in [
+        "agent.inbox",
+        "task.list_pending",
+        "agent.prune",
+        "backlog.remove",
+    ] {
+        assert!(tool_names.contains(expected), "missing tool {expected}");
+    }
+
     Ok(())
 }

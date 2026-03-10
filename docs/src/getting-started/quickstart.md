@@ -91,7 +91,7 @@ tt list
 
 ## Step 5: Keep It Running
 
-To keep the town running (Redis server active):
+To keep a town connection open during development:
 
 ```bash
 tt start
@@ -152,4 +152,3 @@ Now your tasks are version-controlled and can be reviewed in PRs. See [tt plan](
 - **[Your First Town](./first-town.md)** — Deeper dive into town setup
 - **[Core Concepts](../concepts/overview.md)** — Understand the 5 core types
 - **[Single Agent Workflow](../tutorials/single-agent.md)** — Complete tutorial
-
