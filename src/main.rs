@@ -3108,7 +3108,7 @@ You:
 4. `tt assign backend "Implement REST API for user auth: POST /signup, POST /login, POST /logout, POST /reset-password. Use bcrypt for passwords."`
 5. `tt assign tester "Write integration tests for auth API: test signup, login, logout, password reset. Cover success and error cases."`
 6. Monitor with `tt status`
-7. When backend is ready: backend or conductor notifies reviewer directly with `tt send reviewer --info "Auth API implementation complete. Review src/auth.rs and route fixes back to backend if needed."`
+7. When backend is ready: backend or conductor notifies reviewer directly with `tt send reviewer "Auth API implementation complete. Review src/auth.rs and route fixes back to backend if needed."`
 8. If reviewer finds concrete issues → reviewer sends them directly to backend and copies supervisor/conductor with `--info`
 9. If reviewer approves → done! If broader coordination is needed → you step in and reassign or reprioritize.
 10. Save state: `tt sync pull` to save tasks to tasks.toml

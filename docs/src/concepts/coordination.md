@@ -68,7 +68,7 @@ tt assign frontend "Build the UI"
 When implementation is ready, the next handoff is usually obvious:
 
 ```bash
-tt send reviewer --info "API implementation is ready for review in src/api.rs. Route concrete fixes back to backend and copy conductor if needed."
+tt send reviewer "API implementation is ready for review in src/api.rs. Route concrete fixes back to backend and copy conductor if needed."
 ```
 
 ### 4. Reviewer Responds
