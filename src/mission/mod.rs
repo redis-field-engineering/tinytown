@@ -65,6 +65,7 @@ pub mod watch;
 pub use compiler::{MissionManifest, ParsedIssue, WorkGraph, WorkGraphCompiler};
 pub use scheduler::{
     AgentMatchScore, MissionScheduler, MissionTickResult, SchedulerConfig, SchedulerTickResult,
+    WorkItemCompletion,
 };
 pub use storage::MissionStorage;
 pub use types::{

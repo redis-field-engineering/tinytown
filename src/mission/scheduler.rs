@@ -90,6 +90,19 @@ pub struct SchedulerTickResult {
     pub missions_completed: usize,
 }
 
+/// Outcome of attempting to complete a work item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkItemCompletion {
+    /// Work item completion was persisted successfully.
+    Completed,
+    /// Mission record was not found.
+    MissionNotFound,
+    /// Work item record was not found.
+    WorkItemNotFound,
+    /// Reviewer approval is still required before completion can proceed.
+    ReviewerApprovalRequired,
+}
+
 // ==================== Agent Match Score ====================
 
 /// Score for matching an agent to a work item.
@@ -554,7 +567,7 @@ impl MissionScheduler {
 
     /// Mark a work item as complete, respecting reviewer gates.
     ///
-    /// Returns true if the item was marked complete, false if blocked by reviewer gate.
+    /// Returns the specific completion outcome.
     #[instrument(skip(self, artifacts))]
     pub async fn complete_work_item(
         &self,
@@ -562,15 +575,15 @@ impl MissionScheduler {
         work_item_id: WorkItemId,
         artifacts: Vec<String>,
         reviewer_approved: bool,
-    ) -> Result<bool> {
+    ) -> Result<WorkItemCompletion> {
         let Some(mission) = self.storage.get_mission(mission_id).await? else {
             warn!("Mission {} not found", mission_id);
-            return Ok(false);
+            return Ok(WorkItemCompletion::MissionNotFound);
         };
 
         let Some(mut item) = self.storage.get_work_item(mission_id, work_item_id).await? else {
             warn!("Work item {} not found", work_item_id);
-            return Ok(false);
+            return Ok(WorkItemCompletion::WorkItemNotFound);
         };
 
         // Check reviewer gate
@@ -585,7 +598,7 @@ impl MissionScheduler {
                     &format!("Work item '{}' awaiting reviewer approval", item.title),
                 )
                 .await?;
-            return Ok(false);
+            return Ok(WorkItemCompletion::ReviewerApprovalRequired);
         }
 
         // Mark complete
@@ -597,7 +610,7 @@ impl MissionScheduler {
             .await?;
 
         info!("Completed work item '{}'", item.title);
-        Ok(true)
+        Ok(WorkItemCompletion::Completed)
     }
 
     /// Mark a work item as blocked.

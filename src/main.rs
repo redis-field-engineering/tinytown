@@ -1828,7 +1828,7 @@ async fn main() -> Result<()> {
                                 storage.clone(),
                                 town.channel().clone(),
                             );
-                            let completed = scheduler
+                            let completion = scheduler
                                 .complete_work_item(
                                     mission_id,
                                     work_item_id,
@@ -1836,16 +1836,31 @@ async fn main() -> Result<()> {
                                     false,
                                 )
                                 .await?;
-                            if completed {
-                                let tick_result = scheduler.tick().await?;
-                                info!(
-                                    "   Mission sync: work item completed; scheduler promoted {} and assigned {}",
-                                    tick_result.total_promoted, tick_result.total_assigned
-                                );
-                            } else {
-                                info!(
-                                    "   Mission sync: reviewer approval is still required before the work item can be completed"
-                                );
+                            match completion {
+                                tinytown::mission::WorkItemCompletion::Completed => {
+                                    let tick_result = scheduler.tick().await?;
+                                    info!(
+                                        "   Mission sync: work item completed; scheduler promoted {} and assigned {}",
+                                        tick_result.total_promoted, tick_result.total_assigned
+                                    );
+                                }
+                                tinytown::mission::WorkItemCompletion::ReviewerApprovalRequired => {
+                                    info!(
+                                        "   Mission sync: reviewer approval is still required before the work item can be completed"
+                                    );
+                                }
+                                tinytown::mission::WorkItemCompletion::MissionNotFound => {
+                                    warn!(
+                                        "   Mission sync: mission {} no longer exists; skipping work item completion sync",
+                                        mission_id
+                                    );
+                                }
+                                tinytown::mission::WorkItemCompletion::WorkItemNotFound => {
+                                    warn!(
+                                        "   Mission sync: work item {} was not found in mission {}; skipping completion sync",
+                                        work_item_id, mission_id
+                                    );
+                                }
                             }
                         }
 
