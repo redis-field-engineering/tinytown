@@ -158,9 +158,23 @@ async fn test_mcp_service_task_operations() -> Result<(), Box<dyn std::error::Er
         tinytown::TaskService::assign(&ctx.town, "worker", "Implement feature").await?;
     assert_eq!(assign_result.agent_name, "worker");
 
+    let inbox = ctx
+        .town
+        .channel()
+        .peek_inbox(assign_result.agent_id, 10)
+        .await?;
+    assert_eq!(inbox.len(), 1);
+    match &inbox[0].msg_type {
+        tinytown::MessageType::TaskAssign { task_id } => {
+            assert_eq!(task_id, &assign_result.task_id.to_string());
+        }
+        other => panic!("expected TaskAssign, got {:?}", other),
+    }
+
     // Test list_pending
     let pending = tinytown::TaskService::list_pending(&ctx.town).await?;
     assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].task_id, assign_result.task_id);
     assert_eq!(pending[0].description, "Implement feature");
 
     Ok(())

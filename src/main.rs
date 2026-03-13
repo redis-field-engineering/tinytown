@@ -568,6 +568,35 @@ fn summarize_message(msg_type: &tinytown::MessageType) -> String {
     }
 }
 
+async fn describe_message(channel: &tinytown::Channel, msg_type: &tinytown::MessageType) -> String {
+    match msg_type {
+        tinytown::MessageType::TaskAssign { task_id } => {
+            if let Ok(tid) = task_id.parse::<tinytown::TaskId>()
+                && let Ok(Some(task)) = channel.get_task(tid).await
+            {
+                format!("task {}: {}", task_id, task.description)
+            } else {
+                format!("task {}", task_id)
+            }
+        }
+        _ => summarize_message(msg_type),
+    }
+}
+
+fn mission_task_binding(
+    tags: &[String],
+) -> Option<(tinytown::mission::MissionId, tinytown::mission::WorkItemId)> {
+    let mission_id = tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("mission:"))
+        .and_then(|value| value.parse().ok())?;
+    let work_item_id = tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("work-item:"))
+        .and_then(|value| value.parse().ok())?;
+    Some((mission_id, work_item_id))
+}
+
 fn truncate_summary(text: &str, max_chars: usize) -> String {
     let first_line = text.lines().next().unwrap_or(text).trim();
     if first_line.chars().count() <= max_chars {
@@ -1290,26 +1319,10 @@ async fn main() -> Result<()> {
         }
 
         Commands::Assign { agent, task } => {
-            use tinytown::{AgentId, Message, MessageType};
-
             let town = Town::connect(&cli.town).await?;
-            let handle = town.agent(&agent).await?;
+            let result = tinytown::TaskService::assign(&town, &agent, &task).await?;
 
-            // Keep creating a persisted Task record for tracking/backlog operations.
-            let mut task_record = Task::new(&task);
-            task_record.assign(handle.id());
-            let task_id = task_record.id;
-            town.channel().set_task(&task_record).await?;
-
-            // Send semantic task message for agent processing.
-            let msg = Message::new(
-                AgentId::supervisor(),
-                handle.id(),
-                MessageType::Task { description: task },
-            );
-            town.channel().send(&msg).await?;
-
-            info!("📋 Assigned task {} to agent '{}'", task_id, agent);
+            info!("📋 Assigned task {} to agent '{}'", result.task_id, agent);
         }
 
         Commands::Status {
@@ -1804,6 +1817,38 @@ async fn main() -> Result<()> {
                         task.complete(&result_msg);
                         town.channel().set_task(&task).await?;
 
+                        if let Some((mission_id, work_item_id)) = mission_task_binding(&task.tags) {
+                            use tinytown::mission::{MissionScheduler, MissionStorage};
+
+                            let storage = MissionStorage::new(
+                                town.channel().conn().clone(),
+                                &town.config().name,
+                            );
+                            let scheduler = MissionScheduler::with_defaults(
+                                storage.clone(),
+                                town.channel().clone(),
+                            );
+                            let completed = scheduler
+                                .complete_work_item(
+                                    mission_id,
+                                    work_item_id,
+                                    vec![format!("task:{}", tid)],
+                                    false,
+                                )
+                                .await?;
+                            if completed {
+                                let tick_result = scheduler.tick().await?;
+                                info!(
+                                    "   Mission sync: work item completed; scheduler promoted {} and assigned {}",
+                                    tick_result.total_promoted, tick_result.total_assigned
+                                );
+                            } else {
+                                info!(
+                                    "   Mission sync: work item recorded but still awaiting reviewer approval"
+                                );
+                            }
+                        }
+
                         info!("✅ Task {} marked as completed", task_id);
                         info!(
                             "   Description: {}",
@@ -2019,8 +2064,6 @@ async fn main() -> Result<()> {
         }
 
         Commands::Inbox { agent, all } => {
-            use tinytown::TaskId;
-
             let town = Town::connect(&cli.town).await?;
 
             if all {
@@ -2078,20 +2121,7 @@ async fn main() -> Result<()> {
                                 break;
                             }
 
-                            let summary = match &msg.msg_type {
-                                tinytown::MessageType::TaskAssign { task_id } => {
-                                    if let Ok(tid) = task_id.parse::<TaskId>() {
-                                        if let Ok(Some(task)) = town.channel().get_task(tid).await {
-                                            task.description
-                                        } else {
-                                            format!("Task {}", task_id)
-                                        }
-                                    } else {
-                                        format!("Task {}", task_id)
-                                    }
-                                }
-                                _ => summarize_message(&msg.msg_type),
-                            };
+                            let summary = describe_message(town.channel(), &msg.msg_type).await;
                             info!("    • {}", truncate_summary(&summary, 90));
                             shown += 1;
                         }
@@ -2376,7 +2406,8 @@ async fn main() -> Result<()> {
                 let actionable_section = {
                     let mut section = String::from("## Actionable Messages (already popped)\n\n");
                     for (idx, (msg, urgent)) in actionable_messages.iter().enumerate() {
-                        let summary = truncate_summary(&summarize_message(&msg.msg_type), 120);
+                        let summary =
+                            truncate_summary(&describe_message(channel, &msg.msg_type).await, 120);
                         let priority = if *urgent { "URGENT" } else { "normal" };
                         section.push_str(&format!(
                             "{}. [{}] from {}: {}\n",
@@ -3695,7 +3726,8 @@ Now, help the user orchestrate their project!
 
         Commands::Mission { action } => {
             use tinytown::mission::{
-                MissionId, MissionPolicy, MissionRun, MissionState, MissionStorage, ObjectiveRef,
+                MissionId, MissionPolicy, MissionRun, MissionScheduler, MissionState,
+                MissionStorage, ObjectiveRef,
             };
 
             let town = Town::connect(&cli.town).await?;
@@ -3751,14 +3783,39 @@ Now, help the user orchestrate their project!
                         .log_event(mission.id, "Mission started via CLI")
                         .await?;
 
+                    let work_items =
+                        build_mission_work_items(town.root(), mission.id, &objectives)?;
+                    let work_item_count = work_items.len();
+                    for item in &work_items {
+                        storage.save_work_item(item).await?;
+                    }
+                    storage
+                        .log_event(
+                            mission.id,
+                            &format!(
+                                "Bootstrapped {} work item(s) from mission objectives",
+                                work_item_count
+                            ),
+                        )
+                        .await?;
+
+                    let scheduler =
+                        MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+                    let tick_result = scheduler.tick().await?;
+
                     info!("🚀 Mission started!");
                     info!("   ID: {}", mission.id);
                     info!("   Objectives: {}", objectives.len());
+                    info!("   Work items: {}", work_item_count);
                     for obj in &objectives {
                         info!("      - {}", obj);
                     }
                     info!("   Max parallel: {}", max_parallel);
                     info!("   Reviewer required: {}", !no_reviewer);
+                    info!(
+                        "   Scheduler bootstrap: {} promoted, {} assigned",
+                        tick_result.total_promoted, tick_result.total_assigned
+                    );
                     info!("");
                     info!(
                         "   Check status with: tt mission status --run {}",
@@ -3987,6 +4044,107 @@ fn parse_issue_ref(
     }
 
     None
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubIssueView {
+    title: String,
+    #[serde(default)]
+    body: String,
+}
+
+fn fetch_issue_view(
+    town_path: &std::path::Path,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<Option<GitHubIssueView>> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "issue",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &format!("{owner}/{repo}"),
+            "--json",
+            "title,body",
+        ])
+        .current_dir(town_path)
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            let issue = serde_json::from_slice::<GitHubIssueView>(&output.stdout)?;
+            Ok(Some(issue))
+        }
+        Ok(output) => {
+            warn!(
+                "⚠️  Could not fetch issue {}/{}#{} via gh: {}",
+                owner,
+                repo,
+                number,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+            Ok(None)
+        }
+        Err(err) => {
+            warn!(
+                "⚠️  Could not run gh for issue {}/{}#{}: {}",
+                owner, repo, number, err
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn build_mission_work_items(
+    town_path: &std::path::Path,
+    mission_id: tinytown::mission::MissionId,
+    objectives: &[tinytown::mission::ObjectiveRef],
+) -> Result<Vec<tinytown::mission::WorkItem>> {
+    use tinytown::mission::{ObjectiveRef, ParsedIssue, WorkGraphCompiler, WorkItem, WorkKind};
+
+    let compiler = WorkGraphCompiler::new();
+    let mut parsed_issues: Vec<ParsedIssue> = Vec::new();
+    let mut doc_items = Vec::new();
+
+    for objective in objectives {
+        match objective {
+            ObjectiveRef::Issue {
+                owner,
+                repo,
+                number,
+            } => {
+                let issue = fetch_issue_view(town_path, owner, repo, *number)?;
+                let title = issue
+                    .as_ref()
+                    .map(|data| data.title.clone())
+                    .unwrap_or_else(|| format!("Issue #{}", number));
+                let body = issue.map(|data| data.body).unwrap_or_default();
+                parsed_issues.push(compiler.parse_issue(
+                    *number,
+                    title,
+                    body,
+                    owner.clone(),
+                    repo.clone(),
+                ));
+            }
+            ObjectiveRef::Doc { path } => {
+                doc_items.push(
+                    WorkItem::new(mission_id, path.clone(), WorkKind::Design)
+                        .with_source_ref(path.clone()),
+                );
+            }
+        }
+    }
+
+    let mut work_items = if parsed_issues.is_empty() {
+        Vec::new()
+    } else {
+        compiler.compile(mission_id, parsed_issues, None)?.items
+    };
+    work_items.extend(doc_items);
+    Ok(work_items)
 }
 
 /// Print a summary of a mission.

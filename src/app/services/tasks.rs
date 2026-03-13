@@ -10,7 +10,7 @@
 use crate::agent::AgentId;
 use crate::channel::Channel;
 use crate::error::Result;
-use crate::message::{Message, MessageType};
+use crate::message::MessageType;
 use crate::task::{Task, TaskId};
 use crate::town::Town;
 
@@ -38,23 +38,11 @@ impl TaskService {
     /// Assign a task to an agent.
     pub async fn assign(town: &Town, agent_name: &str, description: &str) -> Result<AssignResult> {
         let handle = town.agent(agent_name).await?;
-        let channel = town.channel();
 
         // Create a persisted Task record for tracking
         let mut task_record = Task::new(description);
         task_record.assign(handle.id());
-        let task_id = task_record.id;
-        channel.set_task(&task_record).await?;
-
-        // Send semantic task message for agent processing
-        let msg = Message::new(
-            AgentId::supervisor(),
-            handle.id(),
-            MessageType::Task {
-                description: description.to_string(),
-            },
-        );
-        channel.send(&msg).await?;
+        let task_id = handle.assign(task_record).await?;
 
         Ok(AssignResult {
             task_id,

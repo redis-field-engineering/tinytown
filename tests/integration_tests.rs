@@ -2365,6 +2365,79 @@ async fn test_mission_storage_work_items() -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
+/// Test that mission scheduler assignments create persisted TaskAssign messages.
+#[tokio::test]
+async fn test_mission_scheduler_assigns_persisted_tasks() -> Result<(), Box<dyn std::error::Error>>
+{
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionStorage, ObjectiveRef, WorkItem, WorkKind,
+    };
+
+    let town = create_test_town("mission-scheduler-task-assign").await?;
+    let agent_handle = town.spawn_agent("backend-worker", "claude").await?;
+
+    let mut agent = Agent::new("backend-worker", "claude", AgentType::Worker);
+    agent.id = agent_handle.id();
+    agent.state = AgentState::Idle;
+    town.channel().set_agent_state(&agent).await?;
+
+    let storage = MissionStorage::new(
+        town.channel().conn().clone(),
+        "mission-scheduler-task-assign",
+    );
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
+        owner: "owner".into(),
+        repo: "repo".into(),
+        number: 42,
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut work_item = WorkItem::new(mission.id, "Implement feature", WorkKind::Implement);
+    work_item.mark_ready();
+    let work_item_id = work_item.id;
+    storage.save_work_item(&work_item).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    let result = scheduler.tick().await?;
+    assert_eq!(result.total_assigned, 1);
+
+    let inbox = town.channel().peek_inbox(agent_handle.id(), 10).await?;
+    assert_eq!(inbox.len(), 1);
+
+    let task_id = match &inbox[0].msg_type {
+        MessageType::TaskAssign { task_id } => task_id.parse::<TaskId>()?,
+        other => panic!("expected TaskAssign, got {:?}", other),
+    };
+
+    let task = town
+        .channel()
+        .get_task(task_id)
+        .await?
+        .expect("stored task");
+    assert_eq!(task.assigned_to, Some(agent_handle.id()));
+    assert!(
+        task.description
+            .contains("[Mission Work Item] Implement feature")
+    );
+    assert!(task.tags.iter().any(|tag| tag == "mission-work-item"));
+    assert!(
+        task.tags
+            .iter()
+            .any(|tag| tag == &format!("mission:{}", mission.id))
+    );
+    assert!(
+        task.tags
+            .iter()
+            .any(|tag| tag == &format!("work-item:{}", work_item_id))
+    );
+
+    Ok(())
+}
+
 /// Test MissionStorage WatchItem operations.
 #[tokio::test]
 async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Error>> {

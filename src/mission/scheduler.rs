@@ -29,6 +29,7 @@ use crate::mission::storage::MissionStorage;
 use crate::mission::types::{
     MissionId, MissionRun, MissionState, WorkItem, WorkItemId, WorkKind, WorkStatus,
 };
+use crate::task::Task;
 
 // ==================== Configuration ====================
 
@@ -376,16 +377,28 @@ impl MissionScheduler {
                 item.assign(agent.id);
                 self.storage.save_work_item(item).await?;
 
-                // Send task message to agent
+                let mut task = Task::new(format!(
+                    "[Mission Work Item] {}\n\nMission: {}\nWork item: {}\nSource: {}",
+                    item.title,
+                    mission.id,
+                    item.id,
+                    item.source_ref.as_deref().unwrap_or("unknown")
+                ))
+                .with_tags([
+                    "mission-work-item".to_string(),
+                    format!("mission:{}", mission.id),
+                    format!("work-item:{}", item.id),
+                ]);
+                task.assign(agent.id);
+                let task_id = task.id;
+                self.channel.set_task(&task).await?;
+
+                // Send persisted task assignment to agent
                 let msg = Message::new(
                     AgentId::supervisor(),
                     agent.id,
-                    MessageType::Task {
-                        description: format!(
-                            "[Mission Work Item] {}\n\nSource: {:?}",
-                            item.title,
-                            item.source_ref.as_deref().unwrap_or("unknown")
-                        ),
+                    MessageType::TaskAssign {
+                        task_id: task_id.to_string(),
                     },
                 );
                 self.channel.send(&msg).await?;
@@ -394,7 +407,10 @@ impl MissionScheduler {
                 self.storage
                     .log_event(
                         mission.id,
-                        &format!("Assigned '{}' to agent '{}'", item.title, agent.name),
+                        &format!(
+                            "Assigned '{}' to agent '{}' as task {}",
+                            item.title, agent.name, task_id
+                        ),
                     )
                     .await?;
 

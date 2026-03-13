@@ -320,9 +320,23 @@ async fn test_services_assign_task() -> Result<(), Box<dyn std::error::Error>> {
     let result = tinytown::TaskService::assign(&server.town, "worker", "Do something").await?;
     assert_eq!(result.agent_name, "worker");
 
+    let inbox = server
+        .town
+        .channel()
+        .peek_inbox(result.agent_id, 10)
+        .await?;
+    assert_eq!(inbox.len(), 1);
+    match &inbox[0].msg_type {
+        tinytown::MessageType::TaskAssign { task_id } => {
+            assert_eq!(task_id, &result.task_id.to_string());
+        }
+        other => panic!("expected TaskAssign, got {:?}", other),
+    }
+
     // Verify task is pending
     let pending = tinytown::TaskService::list_pending(&server.town).await?;
     assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].task_id, result.task_id);
     assert_eq!(pending[0].description, "Do something");
 
     Ok(())
