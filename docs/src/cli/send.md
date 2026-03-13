@@ -12,6 +12,8 @@ tt send <TO> <MESSAGE> [OPTIONS]
 
 Sends a semantic message to an agent's inbox. The agent will receive it on their next inbox check.
 
+`conductor` and `supervisor` are interchangeable names for the same well-known conductor mailbox, so either target works when agents need to report back to the human orchestrator.
+
 Message semantics:
 - Default (no semantic flag): Task-style/actionable message
 - `--query`: Question that expects a response or decision
@@ -72,6 +74,25 @@ tt send reviewer --info "CI is green on commit a1b2c3d"
 ```bash
 tt send conductor --ack "Received. I'll start after current task."
 ```
+
+### Report Back to the Conductor
+
+```bash
+# Progress or completion notice
+tt send supervisor --info "Implementation complete; ready for review"
+
+# Blocked, needs a human decision
+tt send conductor --query "Need a decision on OAuth scope naming"
+
+# Simple receipt only
+tt send supervisor --ack "Received. I will start after current task."
+```
+
+Recommended pattern:
+- Use `--info` for progress updates, completion notices, or FYI visibility
+- Use `--query` when blocked or when human judgment is needed
+- Use `--ack` only for receipt/confirmation
+- If the work corresponds to a real Tinytown task, still run `tt task complete <task_id> --result "summary"` when it is actually done
 
 ### Send an URGENT Message
 

@@ -110,6 +110,20 @@ Use `supervisor` / `conductor` when you need:
 - escalation or blockers
 - visibility for the broader town
 
+`conductor` is the user-facing name for that human-in-the-loop role. `supervisor` is the same well-known mailbox internally, so either name works in CLI commands.
+
+A practical report-back loop looks like:
+
+```bash
+tt send supervisor --info "Implementation complete; reviewer should take a look"
+tt send conductor --query "Need a decision on rollout timing"
+tt inbox conductor
+tt inbox --all
+tt status --deep
+```
+
+Use those messages for coordination, and still use `tt task complete <task_id> --result "summary"` when a real Tinytown task is actually finished.
+
 ## Keeping It Simple
 
 Tinytown deliberately avoids:

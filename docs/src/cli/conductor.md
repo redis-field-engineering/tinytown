@@ -161,6 +161,41 @@ When the next execution handoff is obvious, prefer direct agent-to-agent messagi
 
 Keep the conductor in the loop with `tt send supervisor --info ...` when a human should stay informed, but do not force routine execution routing through the conductor.
 
+## How Workers Report Back
+
+Use `conductor` as the user-facing name for the human-in-the-loop orchestrator. `supervisor` is the same well-known mailbox internally, so the names are interchangeable in CLI commands.
+
+Recommended loop:
+
+```bash
+# Worker reports progress, completion, or FYI context
+tt send supervisor --info "Implementation complete; reviewer should inspect src/auth.rs"
+
+# Worker is blocked and needs a human decision
+tt send conductor --query "Need a decision on password reset token lifetime"
+
+# Worker only needs to confirm receipt
+tt send supervisor --ack "Received. I will start after current task."
+
+# Conductor reads report-backs
+tt inbox conductor
+tt inbox --all
+tt status --deep
+```
+
+Use each message type intentionally:
+- `--info` for progress updates, completion notices, or context the conductor should see
+- `--query` for blockers, ambiguity, or decisions that need a response
+- `--ack` for simple receipt/confirmation only
+
+When a worker finishes a real Tinytown task, they should still use:
+
+```bash
+tt task complete <task_id> --result "what changed"
+```
+
+Treat the `tt send ...` report-back as coordination, not as a substitute for task completion.
+
 ## The Conductor's Context
 
 The conductor receives a markdown context file that includes:

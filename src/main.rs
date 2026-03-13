@@ -3150,6 +3150,19 @@ tt send <agent> --urgent --query "msg" # URGENT: processed first next round
 tt inbox <agent>                   # Check agent's inbox
 ```
 
+### Worker Report-Back Loop
+
+- `conductor` is the user-facing role name; `supervisor` is the same well-known mailbox/id.
+- Workers should report back to the conductor with:
+  - `tt send supervisor --info "implementation complete; reviewer should look at src/auth.rs"`
+  - `tt send conductor --query "Need product decision on password reset behavior"`
+  - `tt send supervisor --ack "Received. I will start after current task."`
+- Conductor should monitor those report-backs with:
+  - `tt inbox conductor`
+  - `tt inbox --all`
+  - `tt status --deep`
+- When work tied to a real Tinytown task is done, workers should still run `tt task complete <task_id> --result "what changed"` instead of only sending an informational message.
+
 ### Check status and stats
 ```bash
 tt status         # Overview of town and agents
