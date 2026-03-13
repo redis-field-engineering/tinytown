@@ -90,9 +90,12 @@ When agents are idle, have them:
 
 1. Run `tt backlog list`
 2. Claim one task matching their role/tags
-3. Work it to completion, then repeat
+3. Skip backlog claiming if nothing clearly matches their role
+4. Work claimed tasks to completion, then repeat
 
 This keeps specialists busy without over-assigning work up front.
+
+Tinytown's worker loop follows the same rule: idle agents should only auto-claim backlog work that matches their role hint. A `reviewer` should not pick up implementation-tagged backlog by default, and implementation agents should leave review/security backlog to the appropriate specialist unless a human explicitly redirects the work.
 
 ## See Also
 

@@ -557,6 +557,67 @@ impl MessageBreakdown {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BacklogRole {
+    Frontend,
+    Backend,
+    Tester,
+    Reviewer,
+    Docs,
+    Devops,
+    Security,
+    General,
+}
+
+fn classify_backlog_role(agent_name: &str) -> BacklogRole {
+    let role = agent_name.to_lowercase();
+    if role.contains("front")
+        || role.contains("ui")
+        || role.contains("web")
+        || role.contains("client")
+    {
+        BacklogRole::Frontend
+    } else if role.contains("back") || role.contains("api") || role.contains("server") {
+        BacklogRole::Backend
+    } else if role.contains("test") || role.contains("qa") {
+        BacklogRole::Tester
+    } else if role.contains("review") || role.contains("audit") {
+        BacklogRole::Reviewer
+    } else if role.contains("doc") || role.contains("writer") {
+        BacklogRole::Docs
+    } else if role.contains("devops")
+        || role.contains("ops")
+        || role.contains("infra")
+        || role.contains("deploy")
+    {
+        BacklogRole::Devops
+    } else if role.contains("security") || role == "sec" {
+        BacklogRole::Security
+    } else {
+        BacklogRole::General
+    }
+}
+
+fn backlog_role_keywords(agent_name: &str) -> &'static [&'static str] {
+    match classify_backlog_role(agent_name) {
+        BacklogRole::Frontend => &["frontend", "ui", "web", "client", "ux"],
+        BacklogRole::Backend => &["backend", "api", "server", "database", "data"],
+        BacklogRole::Tester => &["test", "qa", "validation", "regression"],
+        BacklogRole::Reviewer => &[
+            "review",
+            "reviewer",
+            "qa",
+            "security",
+            "audit",
+            "validation",
+        ],
+        BacklogRole::Docs => &["docs", "doc", "documentation", "spec", "readme"],
+        BacklogRole::Devops => &["devops", "ops", "infra", "deploy", "ci", "reliability"],
+        BacklogRole::Security => &["security", "sec", "vulnerability", "hardening", "audit"],
+        BacklogRole::General => &[],
+    }
+}
+
 fn classify_custom_message(kind: &str, payload: &str) -> MessageCategory {
     let kind = kind.to_lowercase();
     let payload = payload.to_lowercase();
@@ -947,32 +1008,69 @@ fn extract_log_content(line: &str) -> String {
 }
 
 fn backlog_role_hint(agent_name: &str) -> &'static str {
-    let role = agent_name.to_lowercase();
-    if role.contains("front")
-        || role.contains("ui")
-        || role.contains("web")
-        || role.contains("client")
-    {
-        "Prioritize tasks tagged frontend/ui/web/client."
-    } else if role.contains("back") || role.contains("api") || role.contains("server") {
-        "Prioritize tasks tagged backend/api/server/database."
-    } else if role.contains("test") || role.contains("qa") {
-        "Prioritize tasks tagged test/qa/validation/regression."
-    } else if role.contains("review") || role.contains("audit") {
-        "Prioritize review/quality/security validation tasks."
-    } else if role.contains("doc") || role.contains("writer") {
-        "Prioritize documentation/spec/readme tasks."
-    } else if role.contains("devops")
-        || role.contains("ops")
-        || role.contains("infra")
-        || role.contains("deploy")
-    {
-        "Prioritize infrastructure/ci/deploy/reliability tasks."
-    } else if role.contains("security") || role == "sec" {
-        "Prioritize security/vulnerability/hardening tasks."
-    } else {
-        "Prioritize tasks matching your current specialization and capabilities."
+    match classify_backlog_role(agent_name) {
+        BacklogRole::Frontend => "Prioritize tasks tagged frontend/ui/web/client.",
+        BacklogRole::Backend => "Prioritize tasks tagged backend/api/server/database.",
+        BacklogRole::Tester => "Prioritize tasks tagged test/qa/validation/regression.",
+        BacklogRole::Reviewer => "Prioritize review/quality/security validation tasks.",
+        BacklogRole::Docs => "Prioritize documentation/spec/readme tasks.",
+        BacklogRole::Devops => "Prioritize infrastructure/ci/deploy/reliability tasks.",
+        BacklogRole::Security => "Prioritize security/vulnerability/hardening tasks.",
+        BacklogRole::General => {
+            "Prioritize tasks matching your current specialization and capabilities."
+        }
     }
+}
+
+fn backlog_task_matches_role(task: &tinytown::Task, agent_name: &str) -> bool {
+    let keywords = backlog_role_keywords(agent_name);
+    if keywords.is_empty() {
+        return true;
+    }
+
+    let normalized_tags: Vec<String> = task.tags.iter().map(|tag| tag.to_lowercase()).collect();
+    if normalized_tags
+        .iter()
+        .any(|tag| keywords.iter().any(|keyword| tag == keyword))
+    {
+        return true;
+    }
+
+    let description = task.description.to_lowercase();
+    keywords.iter().any(|keyword| description.contains(keyword))
+}
+
+struct BacklogSnapshot {
+    total_backlog: usize,
+    total_matching: usize,
+    tasks: Vec<(tinytown::TaskId, Task)>,
+}
+
+async fn backlog_snapshot_for_agent(
+    channel: &tinytown::Channel,
+    agent_name: &str,
+    limit: usize,
+) -> Result<BacklogSnapshot> {
+    let backlog_ids = channel.backlog_list().await?;
+    let mut tasks = Vec::new();
+    let mut total_matching = 0usize;
+
+    for task_id in backlog_ids {
+        if let Some(task) = channel.get_task(task_id).await?
+            && backlog_task_matches_role(&task, agent_name)
+        {
+            total_matching += 1;
+            if tasks.len() < limit {
+                tasks.push((task_id, task));
+            }
+        }
+    }
+
+    Ok(BacklogSnapshot {
+        total_backlog: channel.backlog_len().await?,
+        total_matching,
+        tasks,
+    })
 }
 
 /// Bootstrap Redis by delegating to an AI coding agent.
@@ -2430,24 +2528,36 @@ async fn main() -> Result<()> {
                 let display_round = round + 1;
                 let urgent_messages = channel.receive_urgent(agent_id).await?;
                 let mut regular_messages = channel.drain_inbox(agent_id).await?;
+                let backlog_snapshot = backlog_snapshot_for_agent(channel, &name, 8).await?;
 
                 if regular_messages.is_empty() && urgent_messages.is_empty() {
-                    let backlog_count = channel.backlog_len().await?;
-                    if backlog_count > 0 {
+                    if backlog_snapshot.total_matching > 0 {
                         info!(
-                            "   📋 Inbox empty, but backlog has {} task(s); prompting backlog review",
-                            backlog_count
+                            "   📋 Inbox empty, but {} backlog task(s) match this role; prompting backlog review",
+                            backlog_snapshot.total_matching
                         );
                         regular_messages.push(tinytown::Message::new(
                             AgentId::supervisor(),
                             agent_id,
                             tinytown::MessageType::Query {
                                 question: format!(
-                                    "Backlog has {} task(s). Review `tt backlog list` and claim one that matches your role using `tt backlog claim <task-id> {}`.",
-                                    backlog_count, name
+                                    "Backlog has {} role-matching task(s). Review `tt backlog list` and claim one using `tt backlog claim <task-id> {}`.",
+                                    backlog_snapshot.total_matching, name
                                 ),
                             },
                         ));
+                    } else if backlog_snapshot.total_backlog > 0 {
+                        info!(
+                            "   📋 Backlog has {} task(s), but none match this role hint; waiting",
+                            backlog_snapshot.total_backlog
+                        );
+                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            agent.state = AgentState::Idle;
+                            agent.last_heartbeat = chrono::Utc::now();
+                            channel.set_agent_state(&agent).await?;
+                        }
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        continue;
                     } else {
                         info!("   📭 Inbox empty, waiting...");
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
@@ -2512,11 +2622,10 @@ async fn main() -> Result<()> {
                 );
 
                 if actionable_messages.is_empty() {
-                    let backlog_count = channel.backlog_len().await?;
-                    if backlog_count > 0 {
+                    if backlog_snapshot.total_matching > 0 {
                         info!(
-                            "   📋 No direct actionable messages; backlog has {} task(s), prompting claim review",
-                            backlog_count
+                            "   📋 No direct actionable messages; {} backlog task(s) match this role, prompting claim review",
+                            backlog_snapshot.total_matching
                         );
                         actionable_messages.push((
                             tinytown::Message::new(
@@ -2524,13 +2633,29 @@ async fn main() -> Result<()> {
                                 agent_id,
                                 tinytown::MessageType::Query {
                                     question: format!(
-                                        "No direct assignments right now. Backlog has {} task(s): review and claim one that fits your role with `tt backlog claim <task-id> {}`.",
-                                        backlog_count, name
+                                        "No direct assignments right now. Backlog has {} role-matching task(s): review and claim one with `tt backlog claim <task-id> {}`.",
+                                        backlog_snapshot.total_matching, name
                                     ),
                                 },
                             ),
                             false,
                         ));
+                    } else if backlog_snapshot.total_backlog > 0 {
+                        let summary = format!(
+                            "Round {}: ⏭️ no direct work and {} backlog task(s) did not match role hint",
+                            display_round, backlog_snapshot.total_backlog
+                        );
+                        info!("   {}", summary);
+                        channel.log_agent_activity(agent_id, &summary).await?;
+
+                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            agent.state = AgentState::Idle;
+                            agent.last_heartbeat = chrono::Utc::now();
+                            channel.set_agent_state(&agent).await?;
+                        }
+
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        continue;
                     } else {
                         let summary = format!(
                             "Round {}: ⏭️ auto-handled {} informational, {} confirmations",
@@ -2586,45 +2711,37 @@ async fn main() -> Result<()> {
                     section
                 };
 
-                let backlog_ids = channel.backlog_list().await?;
-                let backlog_count = backlog_ids.len();
                 let role_hint = backlog_role_hint(&name);
                 let backlog_section = {
                     let mut section = format!(
-                        "\n## Backlog Snapshot\n\n- Total backlog tasks: {}\n- Role match hint: {}\n",
-                        backlog_count, role_hint
+                        "\n## Backlog Snapshot\n\n- Total backlog tasks: {}\n- Role-matching backlog tasks: {}\n- Role match hint: {}\n",
+                        backlog_snapshot.total_backlog, backlog_snapshot.total_matching, role_hint
                     );
-                    if backlog_count > 0 {
+                    if backlog_snapshot.total_matching > 0 {
                         section.push_str("\nReview and claim role-matching items:\n");
-                        let mut shown = 0usize;
-                        for task_id in backlog_ids.iter().take(8) {
-                            if let Some(task) = channel.get_task(*task_id).await? {
-                                let tags = if task.tags.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(" [{}]", task.tags.join(", "))
-                                };
-                                section.push_str(&format!(
-                                    "- {} - {}{}\n",
-                                    task_id,
-                                    truncate_summary(&task.description, 90),
-                                    tags
-                                ));
-                                shown += 1;
+                        for (task_id, task) in &backlog_snapshot.tasks {
+                            let tags = if task.tags.is_empty() {
+                                String::new()
                             } else {
-                                section.push_str(&format!(
-                                    "- {} - (task record not found)\n",
-                                    task_id
-                                ));
-                                shown += 1;
-                            }
-                        }
-                        if backlog_count > shown {
+                                format!(" [{}]", task.tags.join(", "))
+                            };
                             section.push_str(&format!(
-                                "- ...and {} more backlog task(s)\n",
-                                backlog_count - shown
+                                "- {} - {}{}\n",
+                                task_id,
+                                truncate_summary(&task.description, 90),
+                                tags
                             ));
                         }
+                        if backlog_snapshot.total_matching > backlog_snapshot.tasks.len() {
+                            section.push_str(&format!(
+                                "- ...and {} more role-matching backlog task(s)\n",
+                                backlog_snapshot.total_matching - backlog_snapshot.tasks.len()
+                            ));
+                        }
+                    } else if backlog_snapshot.total_backlog > 0 {
+                        section.push_str(
+                            "\nNo backlog tasks currently match your role hint. Do not claim unrelated work by default.\n",
+                        );
                     }
                     section
                 };
@@ -4501,4 +4618,35 @@ struct TownEntry {
 struct TownsFile {
     #[serde(default)]
     towns: Vec<TownEntry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::backlog_task_matches_role;
+    use tinytown::Task;
+
+    #[test]
+    fn reviewer_does_not_match_implementation_backlog_tags() {
+        let task = Task::new("Add demo data mode").with_tags(["backend", "frontend", "data"]);
+        assert!(!backlog_task_matches_role(&task, "reviewer"));
+    }
+
+    #[test]
+    fn reviewer_matches_review_or_security_tags() {
+        let review_task = Task::new("Review auth flow").with_tags(["review", "security"]);
+        assert!(backlog_task_matches_role(&review_task, "reviewer"));
+    }
+
+    #[test]
+    fn backend_matches_backend_and_data_tags() {
+        let task = Task::new("Implement importer").with_tags(["backend", "data"]);
+        assert!(backlog_task_matches_role(&task, "backend"));
+    }
+
+    #[test]
+    fn generalist_roles_can_match_generic_backlog() {
+        let task = Task::new("Pick up the next general task");
+        assert!(backlog_task_matches_role(&task, "worker"));
+        assert!(backlog_task_matches_role(&task, "agent"));
+    }
 }
