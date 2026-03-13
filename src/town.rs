@@ -382,6 +382,14 @@ impl Town {
 
     /// Spawn a new worker agent.
     pub async fn spawn_agent(&self, name: &str, model: &str) -> Result<AgentHandle> {
+        let normalized = name.trim().to_lowercase();
+        if normalized == "supervisor" || normalized == "conductor" {
+            return Err(Error::Config(format!(
+                "'{}' is reserved for the well-known supervisor/conductor mailbox",
+                name
+            )));
+        }
+
         let agent = Agent::new(name, model, AgentType::Worker);
         let id = agent.id;
 
@@ -403,6 +411,14 @@ impl Town {
         if let Some(agent) = self.channel.get_agent_by_name(name).await? {
             return Ok(AgentHandle {
                 id: agent.id,
+                channel: self.channel.clone(),
+            });
+        }
+
+        let normalized = name.trim().to_lowercase();
+        if normalized == "supervisor" || normalized == "conductor" {
+            return Ok(AgentHandle {
+                id: AgentId::supervisor(),
                 channel: self.channel.clone(),
             });
         }

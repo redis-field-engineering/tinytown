@@ -111,6 +111,59 @@ async fn test_town_connect() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Test that supervisor/conductor aliases resolve to the well-known mailbox.
+#[tokio::test]
+async fn test_supervisor_aliases_resolve_without_spawned_agent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("supervisor-alias-test").await?;
+    let msg = Message::new(
+        AgentId::supervisor(),
+        AgentId::supervisor(),
+        MessageType::Informational {
+            summary: "Human decision needed".to_string(),
+        },
+    );
+    town.channel().send(&msg).await?;
+
+    assert_eq!(town.agent("supervisor").await?.id(), AgentId::supervisor());
+    assert_eq!(town.agent("conductor").await?.id(), AgentId::supervisor());
+    assert_eq!(town.agent("Conductor").await?.id(), AgentId::supervisor());
+
+    let supervisor_inbox = tinytown::MessageService::get_inbox(&town, "supervisor").await?;
+    let conductor_inbox = tinytown::MessageService::get_inbox(&town, "conductor").await?;
+
+    assert_eq!(supervisor_inbox.total_messages, 1);
+    assert_eq!(conductor_inbox.total_messages, 1);
+    assert_eq!(supervisor_inbox.agent_id, AgentId::supervisor());
+    assert_eq!(conductor_inbox.agent_id, AgentId::supervisor());
+    assert_eq!(
+        supervisor_inbox.messages[0].summary,
+        "Human decision needed"
+    );
+    assert_eq!(conductor_inbox.messages[0].summary, "Human decision needed");
+
+    Ok(())
+}
+
+/// Test that reserved supervisor/conductor mailbox names cannot be spawned as agents.
+#[tokio::test]
+async fn test_reserved_supervisor_names_cannot_be_spawned() -> Result<(), Box<dyn std::error::Error>>
+{
+    let town = create_test_town("supervisor-reserved-name-test").await?;
+
+    assert!(matches!(
+        town.spawn_agent("supervisor", "claude").await,
+        Err(tinytown::Error::Config(_))
+    ));
+    assert!(matches!(
+        town.spawn_agent("conductor", "claude").await,
+        Err(tinytown::Error::Config(_))
+    ));
+    assert!(town.spawn_agent("conductor-helper", "claude").await.is_ok());
+
+    Ok(())
+}
+
 // ============================================================================
 // AGENT CREATION AND STATE MANAGEMENT TESTS
 // ============================================================================

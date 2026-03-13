@@ -61,6 +61,108 @@ async fn resolve_agent_id_for_current_task(
     ))
 }
 
+fn is_supervisor_alias(name: &str) -> bool {
+    matches!(name.to_lowercase().as_str(), "supervisor" | "conductor")
+}
+
+fn validate_spawn_agent_name(name: &str) -> Result<()> {
+    if is_supervisor_alias(name) {
+        return Err(tinytown::Error::Config(format!(
+            "'{}' is reserved for the well-known supervisor/conductor mailbox",
+            name
+        )));
+    }
+
+    Ok(())
+}
+
+fn inbox_preview_prefix(msg_type: &tinytown::MessageType) -> &'static str {
+    match classify_message(msg_type) {
+        MessageCategory::Task => "[T]",
+        MessageCategory::Query => "[Q]",
+        MessageCategory::Informational => "[I]",
+        MessageCategory::Confirmation => "[C]",
+        MessageCategory::OtherActionable => "[!]",
+    }
+}
+
+async fn sampled_inbox(
+    channel: &tinytown::Channel,
+    agent_id: tinytown::AgentId,
+    sample_limit: usize,
+) -> Result<(usize, Vec<tinytown::Message>, MessageBreakdown)> {
+    let inbox_len = channel.inbox_len(agent_id).await?;
+    if inbox_len == 0 {
+        return Ok((0, Vec::new(), MessageBreakdown::default()));
+    }
+
+    let messages = channel
+        .peek_inbox(agent_id, std::cmp::min(inbox_len, sample_limit) as isize)
+        .await?;
+    let mut breakdown = MessageBreakdown::default();
+    for msg in &messages {
+        breakdown.count(&msg.msg_type);
+    }
+
+    Ok((inbox_len, messages, breakdown))
+}
+
+async fn print_all_inbox_section(
+    channel: &tinytown::Channel,
+    heading: &str,
+    inbox_len: usize,
+    messages: &[tinytown::Message],
+    breakdown: MessageBreakdown,
+) {
+    info!("  {}:", heading);
+    info!(
+        "    [T] {} tasks requiring action",
+        breakdown.tasks + breakdown.other_actionable
+    );
+    info!("    [Q] {} queries awaiting response", breakdown.queries);
+    info!("    [I] {} informational", breakdown.informational);
+    info!("    [C] {} confirmations", breakdown.confirmations);
+
+    let mut shown = 0;
+    for msg in messages {
+        if !matches!(
+            classify_message(&msg.msg_type),
+            MessageCategory::Task | MessageCategory::Query | MessageCategory::OtherActionable
+        ) {
+            continue;
+        }
+        if shown >= 5 {
+            break;
+        }
+
+        let summary = describe_message(channel, &msg.msg_type).await;
+        info!(
+            "    • {} {}",
+            inbox_preview_prefix(&msg.msg_type),
+            truncate_summary(&summary, 90)
+        );
+        shown += 1;
+    }
+
+    if shown == 0 {
+        for msg in messages.iter().take(3) {
+            let summary = describe_message(channel, &msg.msg_type).await;
+            info!(
+                "    • {} {}",
+                inbox_preview_prefix(&msg.msg_type),
+                truncate_summary(&summary, 90)
+            );
+            shown += 1;
+        }
+    }
+
+    if inbox_len > shown {
+        info!("    …plus {} more message(s)", inbox_len - shown);
+    }
+
+    info!("");
+}
+
 async fn track_current_task_for_round(
     channel: &tinytown::Channel,
     agent_id: tinytown::AgentId,
@@ -1427,6 +1529,7 @@ async fn main() -> Result<()> {
             foreground,
         } => {
             let town = Town::connect(&cli.town).await?;
+            validate_spawn_agent_name(&name)?;
             // Priority: CLI arg > town config > global config
             let cli_name = cli_arg.unwrap_or_else(|| {
                 let town_cli = &town.config().default_cli;
@@ -2320,77 +2423,57 @@ async fn main() -> Result<()> {
             if all {
                 // Show pending messages for all agents (replaces old 'tt tasks' command)
                 let agents = town.list_agents().await;
+                let supervisor_inbox =
+                    sampled_inbox(town.channel(), tinytown::AgentId::supervisor(), 100)
+                        .await
+                        .unwrap_or((0, Vec::new(), MessageBreakdown::default()));
 
-                if agents.is_empty() {
+                if agents.is_empty() && supervisor_inbox.0 == 0 {
                     info!("No agents. Run 'tt spawn <name>' to create one.");
                 } else {
                     info!("📋 Pending Messages by Agent:");
                     info!("");
 
                     let mut total_actionable = 0;
+                    let mut printed_any = false;
                     for agent in &agents {
-                        let inbox_len = town.channel().inbox_len(agent.id).await.unwrap_or(0);
+                        let (inbox_len, messages, breakdown) =
+                            sampled_inbox(town.channel(), agent.id, 100)
+                                .await
+                                .unwrap_or((0, Vec::new(), MessageBreakdown::default()));
                         if inbox_len == 0 {
                             continue;
                         }
 
-                        let peek_count = std::cmp::min(inbox_len, 100) as isize;
-                        let messages = town
-                            .channel()
-                            .peek_inbox(agent.id, peek_count)
-                            .await
-                            .unwrap_or_default();
-                        if messages.is_empty() {
-                            continue;
-                        }
-
-                        let mut breakdown = MessageBreakdown::default();
-                        for msg in &messages {
-                            breakdown.count(&msg.msg_type);
-                        }
-
-                        info!("  {} ({:?}):", agent.name, agent.state);
-                        info!(
-                            "    [T] {} tasks requiring action",
-                            breakdown.tasks + breakdown.other_actionable
-                        );
-                        info!("    [Q] {} queries awaiting response", breakdown.queries);
-                        info!("    [I] {} informational", breakdown.informational);
-                        info!("    [C] {} confirmations", breakdown.confirmations);
-
-                        let mut shown = 0;
-                        for msg in &messages {
-                            if !matches!(
-                                classify_message(&msg.msg_type),
-                                MessageCategory::Task
-                                    | MessageCategory::Query
-                                    | MessageCategory::OtherActionable
-                            ) {
-                                continue;
-                            }
-                            if shown >= 5 {
-                                break;
-                            }
-
-                            let summary = describe_message(town.channel(), &msg.msg_type).await;
-                            info!("    • {}", truncate_summary(&summary, 90));
-                            shown += 1;
-                        }
-
-                        if shown == 0 {
-                            info!("    • (no actionable messages in sampled inbox)");
-                        }
-
-                        if inbox_len > messages.len() {
-                            info!("    …plus {} more message(s)", inbox_len - messages.len());
-                        }
-
+                        printed_any = true;
+                        let heading = format!("{} ({:?})", agent.name, agent.state);
+                        print_all_inbox_section(
+                            town.channel(),
+                            &heading,
+                            inbox_len,
+                            &messages,
+                            breakdown,
+                        )
+                        .await;
                         total_actionable += breakdown.actionable_count();
-                        info!("");
                     }
 
-                    if total_actionable == 0 {
-                        info!("  (no actionable messages)");
+                    if supervisor_inbox.0 > 0 {
+                        printed_any = true;
+                        let (inbox_len, messages, breakdown) = supervisor_inbox;
+                        print_all_inbox_section(
+                            town.channel(),
+                            "supervisor/conductor (well-known mailbox)",
+                            inbox_len,
+                            &messages,
+                            breakdown,
+                        )
+                        .await;
+                        total_actionable += breakdown.actionable_count();
+                    }
+
+                    if !printed_any {
+                        info!("  (no pending messages)");
                     } else {
                         info!("Total: {} actionable message(s)", total_actionable);
                     }
@@ -2399,14 +2482,40 @@ async fn main() -> Result<()> {
                 // Show inbox for a specific agent
                 let handle = town.agent(&agent_name).await?;
                 let agent_id = handle.id();
+                let display_name = if is_supervisor_alias(&agent_name) {
+                    format!("{} (well-known supervisor/conductor mailbox)", agent_name)
+                } else {
+                    agent_name.clone()
+                };
 
-                // Check inbox length
-                let inbox_len = town.channel().inbox_len(agent_id).await?;
-                info!("📬 Inbox for '{}': {} messages", agent_name, inbox_len);
+                let (inbox_len, messages, breakdown) =
+                    sampled_inbox(town.channel(), agent_id, 100).await?;
+                info!("📬 Inbox for '{}': {} messages", display_name, inbox_len);
 
-                // Try to receive messages (non-blocking peek would be better, but for now show count)
                 if inbox_len > 0 {
-                    info!("   Use the agent loop to process messages");
+                    info!(
+                        "   [T] {} tasks requiring action",
+                        breakdown.tasks + breakdown.other_actionable
+                    );
+                    info!("   [Q] {} queries awaiting response", breakdown.queries);
+                    info!("   [I] {} informational", breakdown.informational);
+                    info!("   [C] {} confirmations", breakdown.confirmations);
+                    info!("");
+
+                    let preview_limit = 10;
+                    let shown = std::cmp::min(messages.len(), preview_limit);
+                    for msg in messages.iter().take(preview_limit) {
+                        let summary = describe_message(town.channel(), &msg.msg_type).await;
+                        info!(
+                            "   {} {}",
+                            inbox_preview_prefix(&msg.msg_type),
+                            truncate_summary(&summary, 120)
+                        );
+                    }
+
+                    if inbox_len > shown {
+                        info!("   …plus {} more message(s)", inbox_len - shown);
+                    }
                 }
             } else {
                 info!("Usage: tt inbox <AGENT> or tt inbox --all");
@@ -4627,7 +4736,7 @@ struct TownsFile {
 
 #[cfg(test)]
 mod tests {
-    use super::backlog_task_matches_role;
+    use super::{backlog_task_matches_role, is_supervisor_alias, validate_spawn_agent_name};
     use tinytown::Task;
 
     #[test]
@@ -4653,5 +4762,15 @@ mod tests {
         let task = Task::new("Pick up the next general task");
         assert!(backlog_task_matches_role(&task, "worker"));
         assert!(backlog_task_matches_role(&task, "agent"));
+    }
+
+    #[test]
+    fn supervisor_aliases_are_reserved_spawn_names() {
+        assert!(is_supervisor_alias("supervisor"));
+        assert!(is_supervisor_alias("Conductor"));
+        assert!(validate_spawn_agent_name("supervisor").is_err());
+        assert!(validate_spawn_agent_name("conductor").is_err());
+        assert!(validate_spawn_agent_name("supervisor-2").is_ok());
+        assert!(validate_spawn_agent_name("backend").is_ok());
     }
 }
