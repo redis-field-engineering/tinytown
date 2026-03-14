@@ -1,6 +1,6 @@
 [package]
 name = "tinytown"
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 authors = ["Jeremy Plichta <jeremy.plichta@redis.com>"]
 description = "A simple, fast multi-agent orchestration system using Redis for message passing"
