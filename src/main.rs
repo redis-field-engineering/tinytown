@@ -5,7 +5,7 @@
 
 //! Tinytown CLI - Simple multi-agent orchestration.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use tracing::{info, warn};
@@ -28,6 +28,46 @@ fn build_cli_command(cli_name: &str, cli_cmd: &str, prompt_file: &std::path::Pat
         // Other CLIs accept input via stdin
         format!("cat '{}' | {}", prompt_file.display(), cli_cmd)
     }
+}
+
+fn spawn_agent_loop_background(
+    exe: &Path,
+    town_path: &Path,
+    agent_name: &str,
+    agent_id: &str,
+    max_rounds: u32,
+    log_path: &Path,
+) -> Result<()> {
+    let log_file = std::fs::File::create(log_path)?;
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--town")
+        .arg(town_path)
+        .arg("agent-loop")
+        .arg(agent_name)
+        .arg(agent_id)
+        .arg(max_rounds.to_string())
+        .stdin(std::process::Stdio::null())
+        .stdout(log_file.try_clone()?)
+        .stderr(log_file);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        unsafe {
+            cmd.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+    }
+
+    cmd.spawn()?;
+    Ok(())
 }
 
 async fn resolve_agent_id_for_current_task(
@@ -1245,6 +1285,9 @@ Print the installed version and confirm the symlinks are working.
         "claude" => "claude --print --dangerously-skip-permissions",
         "auggie" => "auggie --print",
         "codex" => "codex exec --dangerously-bypass-approvals-and-sandbox",
+        "codex-mini" => {
+            "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\""
+        }
         "aider" => "aider --yes --no-auto-commits --message",
         _ => cli, // Allow custom commands
     };
@@ -1592,19 +1635,10 @@ async fn main() -> Result<()> {
                 info!("   Logs: {}/.tt/logs/{}.log", town_path.display(), name);
 
                 std::fs::create_dir_all(&log_dir)?;
-                let log_file = std::fs::File::create(log_dir.join(format!("{}.log", name)))?;
-
-                std::process::Command::new(&exe)
-                    .arg("--town")
-                    .arg(&town_path)
-                    .arg("agent-loop")
-                    .arg(&name)
-                    .arg(&agent_id)
-                    .arg(max_rounds.to_string())
-                    .stdin(std::process::Stdio::null())
-                    .stdout(log_file.try_clone()?)
-                    .stderr(log_file)
-                    .spawn()?;
+                let log_path = log_dir.join(format!("{}.log", name));
+                spawn_agent_loop_background(
+                    &exe, &town_path, &name, &agent_id, max_rounds, &log_path,
+                )?;
 
                 info!("   Agent running in background. Check status with 'tt status'");
             }
@@ -2577,8 +2611,8 @@ async fn main() -> Result<()> {
             id,
             max_rounds,
         } => {
-            // This is the actual agent worker loop
-            // It runs the AI model repeatedly, checking inbox for tasks
+            // This is the actual agent worker loop.
+            // It runs the selected agent CLI repeatedly, checking inbox for tasks.
 
             use std::time::Duration;
             use tinytown::{AgentId, AgentState};
@@ -3266,9 +3300,21 @@ Now, help the user orchestrate their project!
                 ),
                 "claude" => format!("exec claude --resume '{}'", context_file.display()),
                 "aider" => format!("exec aider --message-file '{}'", context_file.display()),
+                "codex" => format!(
+                    "exec codex --dangerously-bypass-approvals-and-sandbox \"$(cat '{}')\"",
+                    context_file.display()
+                ),
+                "codex-mini" => format!(
+                    "exec codex --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\" \"$(cat '{}')\"",
+                    context_file.display()
+                ),
                 _ => {
-                    // For unknown CLIs, try piping the context
-                    format!("cat '{}' | exec {}", context_file.display(), cli_name)
+                    if cli_name.starts_with("codex ") {
+                        format!("exec {} \"$(cat '{}')\"", cli_name, context_file.display())
+                    } else {
+                        // For unknown CLIs, try piping the context
+                        format!("cat '{}' | exec {}", context_file.display(), cli_name)
+                    }
                 }
             };
 
@@ -3401,7 +3447,9 @@ Now, help the user orchestrate their project!
                         }
                     }
                     info!("");
-                    info!("Available CLIs: claude, auggie, codex, aider, gemini, copilot, cursor");
+                    info!(
+                        "Available CLIs: claude, auggie, codex, codex-mini, aider, gemini, copilot, cursor"
+                    );
                 }
                 // Key only: show that value
                 (Some(key), None) => {
@@ -3881,30 +3929,24 @@ Now, help the user orchestrate their project!
             }
 
             let log_file = logs_dir.join(format!("{}.log", agent));
-
-            let agent_loop_cmd = format!(
-                "tt -t '{}' agent-loop '{}' '{}' {}",
-                cli.town.display(),
-                agent,
-                agent_state.id,
-                rounds
-            );
+            let exe = std::env::current_exe()?;
+            let town_path = cli.town.canonicalize().unwrap_or(cli.town.clone());
+            let agent_id = agent_state.id.to_string();
 
             if foreground {
                 // Run in foreground
-                std::process::Command::new("sh")
-                    .args(["-c", &agent_loop_cmd])
+                std::process::Command::new(&exe)
+                    .arg("--town")
+                    .arg(&town_path)
+                    .arg("agent-loop")
+                    .arg(&agent)
+                    .arg(&agent_id)
+                    .arg(rounds.to_string())
                     .status()?;
             } else {
-                // Run in background with logging
-                let full_cmd = format!(
-                    "nohup {} >> '{}' 2>&1 &",
-                    agent_loop_cmd,
-                    log_file.display()
-                );
-                std::process::Command::new("sh")
-                    .args(["-c", &full_cmd])
-                    .spawn()?;
+                spawn_agent_loop_background(
+                    &exe, &town_path, &agent, &agent_id, rounds, &log_file,
+                )?;
 
                 info!("   Log: {}", log_file.display());
                 info!("");

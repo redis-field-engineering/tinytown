@@ -234,7 +234,7 @@ tt list
 
 # If an agent is in error state, respawn it
 tt prune
-tt spawn worker-1 --model claude
+tt spawn worker-1 --cli claude
 
 # Reassign failed tasks
 tt assign worker-1 "Retry the failed operation"
@@ -253,4 +253,3 @@ Gastown features you might miss:
 | Dashboard | Visual monitoring | CLI + custom tooling |
 
 If you find yourself building these features, consider whether Gastown's complexity is justified for your use case.
-

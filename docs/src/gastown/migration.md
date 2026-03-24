@@ -91,9 +91,9 @@ gt mayor attach
 
 **Tinytown:**
 ```bash
-tt spawn backend --model claude
-tt spawn frontend --model auggie
-tt spawn reviewer --model codex
+tt spawn backend --cli claude
+tt spawn frontend --cli auggie
+tt spawn reviewer --cli codex-mini
 ```
 
 ### Step 4: Assign Work
@@ -196,4 +196,3 @@ A: Tasks are JSON. You could write a converter to Beads format.
 
 **Q: Does Tinytown support everything Gastown does?**
 A: No, and that's the point. Tinytown does less, but what it does is simple.
-

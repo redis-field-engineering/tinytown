@@ -1,31 +1,31 @@
-# Custom Models
+# Custom CLIs
 
-Add your own AI model configurations to Tinytown.
+Add your own AI CLI configurations to Tinytown.
 
-## Model Configuration
+## CLI Configuration
 
-Models are defined in `tinytown.toml`:
+CLIs are defined in `tinytown.toml`:
 
 ```toml
 [agent_clis.claude]
 name = "claude"
 command = "claude --print"
 
-[agent_clis.my-custom-model]
-name = "my-custom-model"
+[agent_clis.my-custom-cli]
+name = "my-custom-cli"
 command = "/path/to/my/agent --config ./agent.yaml"
 workdir = "/path/to/working/dir"
 
-[agent_clis.my-custom-model.env]
+[agent_clis.my-custom-cli.env]
 API_KEY = "secret"
 MODEL_VERSION = "v2"
 ```
 
-## Model Properties
+## CLI Properties
 
 | Property | Required | Description |
 |----------|----------|-------------|
-| `name` | Yes | Identifier for `--model` flag |
+| `name` | Yes | Identifier for the `--cli` flag |
 | `command` | Yes | Shell command to run the agent |
 | `workdir` | No | Working directory for the command |
 | `env` | No | Environment variables |
@@ -44,7 +44,7 @@ CUDA_VISIBLE_DEVICES = "0"
 
 Usage:
 ```bash
-tt spawn worker-1 --model local-llama
+tt spawn worker-1 --cli local-llama
 ```
 
 ## Example: Custom Script
@@ -77,20 +77,17 @@ name = "docker-agent"
 command = "docker run --rm -v $(pwd):/workspace my-agent:latest"
 ```
 
-## Programmatic Model Registration
+## Programmatic Use
 
 In Rust code:
 
 ```rust
-use tinytown::agent::AgentModel;
+use tinytown::Town;
 
-// Create custom model
-let model = AgentModel::new("my-model", "my-command --flag")
-    .with_workdir("/path/to/workdir")
-    .with_env("API_KEY", "secret");
+let town = Town::connect(".").await?;
 
-// Models are used when spawning
-town.spawn_agent("worker", "my-model").await?;
+// Spawn an agent using a CLI name that already exists in tinytown.toml
+town.spawn_agent("worker", "my-custom-cli").await?;
 ```
 
 ## Best Practices
@@ -128,4 +125,3 @@ Not:
 ```toml
 workdir = "./agents"  # May not resolve correctly
 ```
-

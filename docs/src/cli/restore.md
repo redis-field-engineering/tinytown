@@ -61,7 +61,7 @@ tt status  # State is restored!
 
 ## What Gets Restored
 
-- ✅ Agent registrations (names, states, models)
+- ✅ Agent registrations (names, states, CLIs)
 - ✅ Task states (pending, completed, etc.)
 - ✅ Message queues (inbox contents)
 - ✅ Activity logs (recent history)
@@ -71,4 +71,3 @@ tt status  # State is restored!
 
 - [tt save](./save.md) — Save state to AOF
 - [Redis Configuration](../advanced/redis.md)
-

@@ -44,7 +44,7 @@ When you need those features, you'll know — and you can add them yourself in a
 # Initialize a town
 tt init --name my-project
 
-# Spawn agents (uses default model, or specify with --model)
+# Spawn agents (uses the default CLI, or specify with --cli)
 tt spawn frontend
 tt spawn backend
 tt spawn reviewer

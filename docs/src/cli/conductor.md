@@ -10,7 +10,7 @@ tt conductor [OPTIONS]
 
 ## Description
 
-The **conductor** is an AI agent (using your default model) that coordinates your Tinytown! 🚂
+The **conductor** is an AI agent (using your default CLI) that coordinates your Tinytown! 🚂
 
 Like the train conductor guiding the miniature train through Tiny Town, Colorado, it:
 - Understands what you want to build
@@ -38,7 +38,7 @@ The conductor knows how to use the `tt` CLI to orchestrate your project.
    - Available `tt` commands and suggested team roles
    - Its role as orchestrator
 
-2. **AI Model Launch**: Your default model (claude, auggie, etc.) starts with this context
+2. **AI CLI Launch**: Your default CLI (claude, auggie, etc.) starts with this context
 
 3. **Natural Conversation**: You describe what you want, the AI orchestrates
 
@@ -82,7 +82,7 @@ The conductor will analyze your project and suggest roles that make sense.
 
 ```
 $ tt conductor
-🚂 Starting conductor with claude model...
+🚂 Starting conductor with claude CLI...
    Context: ./.conductor_context.md
 
    Running: claude --print

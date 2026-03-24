@@ -54,11 +54,11 @@ tt status
 **Agents** are workers. Each agent has:
 - A unique ID
 - A name (human-readable)
-- A model (claude, auggie, codex, etc.)
+- A CLI (claude, auggie, codex, etc.)
 - A state (starting, idle, working, stopped)
 
 ```bash
-tt spawn worker-1 --model claude
+tt spawn worker-1 --cli claude
 tt list
 ```
 
@@ -124,4 +124,3 @@ Deep dive into each type:
 - [Tasks](./tasks.md)
 - [Messages](./messages.md)
 - [Channels](./channels.md)
-

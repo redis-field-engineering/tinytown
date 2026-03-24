@@ -381,7 +381,7 @@ impl Town {
     }
 
     /// Spawn a new worker agent.
-    pub async fn spawn_agent(&self, name: &str, model: &str) -> Result<AgentHandle> {
+    pub async fn spawn_agent(&self, name: &str, cli: &str) -> Result<AgentHandle> {
         let normalized = name.trim().to_lowercase();
         if normalized == "supervisor" || normalized == "conductor" {
             return Err(Error::Config(format!(
@@ -390,7 +390,7 @@ impl Town {
             )));
         }
 
-        let agent = Agent::new(name, model, AgentType::Worker);
+        let agent = Agent::new(name, cli, AgentType::Worker);
         let id = agent.id;
 
         // Store agent state

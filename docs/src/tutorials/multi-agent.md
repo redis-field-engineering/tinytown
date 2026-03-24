@@ -20,10 +20,10 @@ tt init --name multi-demo
 ## Spawning the Team
 
 ```bash
-tt spawn architect --model claude
-tt spawn developer --model auggie
-tt spawn tester --model codex
-tt spawn reviewer --model claude
+tt spawn architect --cli claude
+tt spawn developer --cli auggie
+tt spawn tester --cli codex-mini
+tt spawn reviewer --cli claude
 ```
 
 Check your team:
@@ -72,9 +72,9 @@ When tasks are independent, assign them all at once:
 
 ```bash
 # Spawn agents
-tt spawn frontend --model claude
-tt spawn backend --model auggie
-tt spawn docs --model codex
+tt spawn frontend --cli claude
+tt spawn backend --cli auggie
+tt spawn docs --cli codex-mini
 
 # Assign tasks (they run in parallel)
 tt assign frontend "Build the login UI"
@@ -91,10 +91,10 @@ Use the conductor for complex workflows:
 
 ```bash
 # Spawn workers
-tt spawn worker-1 --model claude
-tt spawn worker-2 --model claude
-tt spawn worker-3 --model claude
-tt spawn reviewer --model claude
+tt spawn worker-1 --cli claude
+tt spawn worker-2 --cli claude
+tt spawn worker-3 --cli claude
+tt spawn reviewer --cli claude
 
 # Assign work to all workers
 tt assign worker-1 "Implement module A"
@@ -135,4 +135,3 @@ Tinytown is more explicit—you write the coordination logic. Gastown abstracts 
 
 - [Task Pipelines](./pipelines.md) — Build complex workflows
 - [Error Handling](./recovery.md) — Handle failures gracefully
-

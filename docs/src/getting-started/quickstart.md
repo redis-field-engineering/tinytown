@@ -40,19 +40,19 @@ tt spawn worker-1
 
 Output:
 ```
-🤖 Spawned agent 'worker-1' using model 'claude'
+🤖 Spawned agent 'worker-1' using CLI 'claude'
    ID: 550e8400-e29b-41d4-a716-446655440000
 ```
 
-The agent uses `default_model` from your config. Spawn more:
+The agent uses `default_cli` from your config. Spawn more:
 ```bash
 tt spawn worker-2
 tt spawn reviewer
 ```
 
-Or override with `--model`:
+Or override with `--cli`:
 ```bash
-tt spawn specialist --model codex
+tt spawn specialist --cli codex-mini
 ```
 
 ## Step 3: Assign Tasks

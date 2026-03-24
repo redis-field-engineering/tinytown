@@ -38,20 +38,20 @@ socket_path = "redis.sock"
 
 Key settings:
 - **`use_socket = true`** — Uses Unix socket for ~10x faster communication than TCP
-- **`default_cli`** — Agent CLI when `--model` isn't specified
+- **`default_cli`** — Agent CLI when `--cli` isn't specified
 - **`max_agents`** — Prevents accidentally spawning too many
 
 ## Create Your Team
 
 ```bash
 # The implementer
-tt spawn dev --model claude
+tt spawn dev --cli claude
 
 # The tester  
-tt spawn tester --model auggie
+tt spawn tester --cli auggie
 
 # The reviewer
-tt spawn reviewer --model codex
+tt spawn reviewer --cli codex-mini
 ```
 
 Check your team:
@@ -115,13 +115,13 @@ Tinytown creates the infrastructure, but you need to connect actual AI agents. T
 ```bash
 # Example: Run Claude CLI pointing at your town
 cd agents/dev
-claude --print  # Uses the model command from config
+claude --print  # Uses the CLI command from config
 ```
 
 Or with Augment:
 ```bash
 cd agents/tester
-augment  # Uses the model command from config
+auggie --print  # Uses the CLI command from config
 ```
 
 ## Cleanup

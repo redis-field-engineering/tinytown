@@ -44,11 +44,11 @@ If an agent dies, spawn a new one:
 tt list
 
 # If stopped or missing, respawn it
-tt spawn worker-1 --model claude
+tt spawn worker-1 --cli claude
 
 # Or prune stale agents first
 tt prune
-tt spawn worker-1 --model claude
+tt spawn worker-1 --cli claude
 ```
 
 ## Graceful Shutdown
@@ -101,4 +101,3 @@ When things go wrong:
 | Work resumption | Reassign tasks | Hook-based (automatic) |
 
 Tinytown puts you in control. Gastown automates more but is more complex. Choose based on your reliability requirements.
-

@@ -1,6 +1,6 @@
 # Agents
 
-An **Agent** is a worker that executes tasks. Agents can be AI models (Claude, Auggie, Codex) or custom processes.
+An **Agent** is a worker that executes tasks. Agents can use AI coding CLIs (Claude, Auggie, Codex) or custom processes.
 
 ## Agent Properties
 
@@ -44,13 +44,13 @@ An **Agent** is a worker that executes tasks. Agents can be AI models (Claude, A
 ### CLI
 
 ```bash
-# With default model
+# With default CLI
 tt spawn worker-1
 
-# With specific model
-tt spawn worker-1 --model claude
-tt spawn worker-2 --model auggie
-tt spawn reviewer --model codex
+# With a specific CLI
+tt spawn worker-1 --cli claude
+tt spawn worker-2 --cli auggie
+tt spawn reviewer --cli codex-mini
 ```
 
 ### Rust API
@@ -69,18 +69,19 @@ let state = handle.state().await?;
 let inbox_len = handle.inbox_len().await?;
 ```
 
-## Built-in Models
+## Built-in CLIs
 
 Tinytown comes with presets for popular AI coding agents:
 
-| Model | Command | Agent |
+| CLI | Command | Agent |
 |-------|---------|-------|
-| `claude` | `claude --print` | Anthropic Claude |
-| `auggie` | `augment` | Augment Code |
-| `codex` | `codex` | OpenAI Codex |
+| `claude` | `claude --print --dangerously-skip-permissions` | Anthropic Claude |
+| `auggie` | `auggie --print` | Augment Code |
+| `codex` | `codex exec --dangerously-bypass-approvals-and-sandbox` | OpenAI Codex |
+| `codex-mini` | `codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort="medium"` | OpenAI Codex |
 | `gemini` | `gemini` | Google Gemini |
 | `copilot` | `gh copilot` | GitHub Copilot |
-| `aider` | `aider` | Aider |
+| `aider` | `aider --yes --no-auto-commits --message` | Aider |
 | `cursor` | `cursor` | Cursor |
 
 ## Agent Types
@@ -143,4 +144,3 @@ This means:
 - Multiple processes can coordinate via the same town
 - Multiple towns can share the same Redis instance
 - You can inspect state with `redis-cli`
-

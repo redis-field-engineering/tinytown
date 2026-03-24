@@ -16,7 +16,7 @@ The agent:
 1. Registers in Redis with state `Starting`
 2. Starts a background process (or foreground with `--foreground`)
 3. Runs in a loop, checking inbox for tasks
-4. Executes the AI model (claude, auggie, etc.) for each task
+4. Executes the selected AI CLI (claude, auggie, etc.) for each task
 5. Stops after `--max-rounds` iterations
 
 ## Arguments
@@ -29,7 +29,7 @@ The agent:
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--model <MODEL>` | `-m` | AI CLI to use (default: from `tinytown.toml`) |
+| `--cli <CLI>` | `-m` | AI CLI to use (default: from `tinytown.toml`) |
 | `--max-rounds <N>` | | Maximum iterations before stopping (default: 10) |
 | `--foreground` | | Run in foreground instead of background |
 | `--town <PATH>` | `-t` | Town directory (default: `.`) |
@@ -48,7 +48,7 @@ Then all `tt spawn` commands use that CLI:
 
 ```bash
 tt spawn backend              # Uses auggie (from config)
-tt spawn frontend --model codex   # Override to use codex
+tt spawn frontend --cli codex-mini   # Override to use codex-mini
 ```
 
 ## Built-in Agent CLIs
@@ -58,6 +58,7 @@ tt spawn frontend --model codex   # Override to use codex
 | `claude` | `claude --print --dangerously-skip-permissions` |
 | `auggie` | `auggie --print` |
 | `codex` | `codex exec --dangerously-bypass-approvals-and-sandbox` |
+| `codex-mini` | `codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort="medium"` |
 | `aider` | `aider --yes --no-auto-commits --message` |
 | `gemini` | `gemini` |
 | `copilot` | `gh copilot` |
@@ -100,7 +101,7 @@ tt spawn tester &
 ## Output
 
 ```
-🤖 Spawned agent 'backend' using model 'auggie'
+🤖 Spawned agent 'backend' using CLI 'auggie'
    ID: 550e8400-e29b-41d4-a716-446655440000
 🔄 Starting agent loop in background (max 10 rounds)...
    Logs: ./logs/backend.log
@@ -113,8 +114,8 @@ tt spawn tester &
 2. **Background process** started running `tt agent-loop`
 3. **Agent loop**:
    - Checks inbox for messages
-   - If messages: builds prompt, runs AI model
-   - Model output logged to `logs/<name>_round_<n>.log`
+   - If messages: builds prompt, runs the selected CLI
+   - CLI output logged to `logs/<name>_round_<n>.log`
    - Repeats until `--max-rounds` reached
 4. **Agent stops** with state `Stopped`
 
@@ -168,4 +169,3 @@ Agents are tracked by name. Spawning the same name creates a new agent with a ne
 - [tt assign](./assign.md) — Assign tasks to agents
 - [tt list](./list.md) — List all agents
 - [Agents Concept](../concepts/agents.md)
-

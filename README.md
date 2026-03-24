@@ -186,6 +186,7 @@ Built-in presets for popular AI coding agents (with correct non-interactive flag
 | `claude` | `claude --print --dangerously-skip-permissions` |
 | `auggie` | `auggie --print` |
 | `codex` | `codex exec --dangerously-bypass-approvals-and-sandbox` |
+| `codex-mini` | `codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort="medium"` |
 | `aider` | `aider --yes --no-auto-commits --message` |
 | `gemini` | `gemini` |
 | `copilot` | `gh copilot` |
@@ -194,8 +195,8 @@ Built-in presets for popular AI coding agents (with correct non-interactive flag
 ```bash
 # Spawn uses default CLI from config (or override)
 tt spawn worker-1
-tt spawn worker-2 --model auggie
-tt spawn worker-3 --model codex
+tt spawn worker-2 --cli auggie
+tt spawn worker-3 --cli codex-mini
 ```
 
 ## ⚙️ Configuration
@@ -220,13 +221,13 @@ Change `default_cli` in `tinytown.toml` to set which AI CLI is used when spawnin
 default_cli = "auggie"
 ```
 
-Available options: `claude`, `auggie`, `codex`, `aider`, `gemini`, `copilot`, `cursor`
+Available options: `claude`, `auggie`, `codex`, `codex-mini`, `aider`, `gemini`, `copilot`, `cursor`
 
 Or override per-agent:
 
 ```bash
-tt spawn backend              # Uses default_model from config
-tt spawn frontend --model auggie   # Override for this agent
+tt spawn backend              # Uses default_cli from config
+tt spawn frontend --cli auggie     # Override for this agent
 ```
 
 ## 🎯 Design Philosophy

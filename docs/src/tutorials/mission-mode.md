@@ -56,9 +56,9 @@ After #2.
 
 ```bash
 # Spawn agents with appropriate roles
-tt spawn designer --model claude
-tt spawn backend --model auggie
-tt spawn tester --model codex
+tt spawn designer --cli claude
+tt spawn backend --cli auggie
+tt spawn tester --cli codex-mini
 ```
 
 ## Step 3: Start the Mission
@@ -190,4 +190,3 @@ Then reference it (feature coming soon).
 - [Mission Mode Concept](../concepts/missions.md)
 - [tt mission CLI Reference](../cli/mission.md)
 - [Multi-Agent Coordination](./multi-agent.md)
-

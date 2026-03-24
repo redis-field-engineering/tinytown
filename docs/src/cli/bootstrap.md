@@ -29,7 +29,7 @@ This gets you the latest Redis compiled and optimized for your machine.
 
 | Option | Short | Description |
 |--------|-------|-------------|
-| `--model <CLI>` | `-m` | AI CLI to use (default: `claude`) |
+| `--cli <CLI>` | `-m` | AI CLI to use (default: `claude`) |
 
 ## Examples
 
@@ -48,8 +48,8 @@ tt bootstrap 8.0.2
 ### Use Different AI CLI
 
 ```bash
-tt bootstrap --model auggie
-tt bootstrap --model codex
+tt bootstrap --cli auggie
+tt bootstrap --cli codex-mini
 ```
 
 ## Output
@@ -134,4 +134,3 @@ sudo make install
 
 - [tt init](./init.md) — Initialize a town
 - [Installation Guide](../getting-started/installation.md)
-

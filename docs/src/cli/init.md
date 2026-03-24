@@ -90,15 +90,15 @@ socket_path = "redis.sock"
 
 [agent_clis.claude]
 name = "claude"
-command = "claude --print"
+command = "claude --print --dangerously-skip-permissions"
 
 [agent_clis.auggie]
 name = "auggie"
-command = "augment"
+command = "auggie --print"
 
-[agent_clis.codex]
-name = "codex"
-command = "codex"
+[agent_clis.codex-mini]
+name = "codex-mini"
+command = "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\""
 ```
 
 ## Errors
@@ -130,4 +130,3 @@ If `tinytown.toml` already exists, `init` will fail. Use `tt start` to connect t
 - [tt start](./status.md) — Start an existing town
 - [tt spawn](./spawn.md) — Create agents
 - [Installation Guide](../getting-started/installation.md)
-

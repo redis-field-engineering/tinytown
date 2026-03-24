@@ -29,7 +29,7 @@ Manages the global Tinytown configuration stored in `~/.tt/config.toml`. This co
 
 | Key | Description | Values |
 |-----|-------------|--------|
-| `default_cli` | Default AI CLI for agents | `claude`, `auggie`, `codex`, `aider`, `gemini`, `copilot`, `cursor` |
+| `default_cli` | Default AI CLI for agents | `claude`, `auggie`, `codex`, `codex-mini`, `aider`, `gemini`, `copilot`, `cursor` |
 | `agent_clis.<name>` | Custom CLI command for a named CLI | Any command string |
 
 ## Examples
@@ -49,7 +49,7 @@ default_cli = "claude"
 [agent_clis]
 my-custom = "custom-ai --mode agent"
 
-Available CLIs: claude, auggie, codex, aider, gemini, copilot, cursor
+Available CLIs: claude, auggie, codex, codex-mini, aider, gemini, copilot, cursor
 ```
 
 ### Get a Specific Value
@@ -100,6 +100,5 @@ my-custom = "custom-ai --mode agent"
 
 ## See Also
 
-- [Custom Models](../advanced/custom-models.md) — Adding custom AI CLIs
+- [Custom CLIs](../advanced/custom-models.md) — Adding custom AI CLIs
 - [tt init](./init.md) — Town-level configuration
-

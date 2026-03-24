@@ -66,11 +66,15 @@ port = 6379
 
 [agent_clis.claude]
 name = "claude"
-command = "claude --print"
+command = "claude --print --dangerously-skip-permissions"
 
 [agent_clis.auggie]
 name = "auggie"
-command = "augment"
+command = "auggie --print"
+
+[agent_clis.codex-mini]
+name = "codex-mini"
+command = "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\""
 ```
 
 ### Configuration Options
@@ -149,4 +153,3 @@ use_socket = false
 host = "redis.example.com"
 port = 6379
 ```
-

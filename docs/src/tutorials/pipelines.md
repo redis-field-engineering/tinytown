@@ -66,10 +66,10 @@ Run the pipeline:
 tt plan --init
 
 # Spawn the team
-tt spawn architect --model claude
-tt spawn developer --model auggie
-tt spawn tester --model codex
-tt spawn reviewer --model claude
+tt spawn architect --cli claude
+tt spawn developer --cli auggie
+tt spawn tester --cli codex-mini
+tt spawn reviewer --cli claude
 
 # Push tasks to Redis
 tt sync push
@@ -157,4 +157,3 @@ parent = "review"
 
 - [Error Handling & Recovery](./recovery.md)
 - [Coming from Gastown: Convoy Mapping](../gastown/concepts.md)
-

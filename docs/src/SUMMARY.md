@@ -67,7 +67,7 @@
 
 # Advanced
 
-- [Custom Models](./advanced/custom-models.md)
+- [Custom CLIs](./advanced/custom-models.md)
 - [Redis Configuration](./advanced/redis.md)
 - [Townhall Control Plane](./advanced/townhall.md)
 - [Townhall REST API](./advanced/townhall-rest.md)

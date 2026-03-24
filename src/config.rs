@@ -459,6 +459,13 @@ impl Config {
                 "codex exec --dangerously-bypass-approvals-and-sandbox",
             ),
         );
+        agent_clis.insert(
+            "codex-mini".to_string(),
+            AgentCli::new(
+                "codex-mini",
+                "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\"",
+            ),
+        );
 
         // Aider: --yes for auto-confirm, --no-auto-commits to not auto-commit
         agent_clis.insert(

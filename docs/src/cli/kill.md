@@ -12,7 +12,7 @@ tt kill <AGENT>
 
 Requests an agent to stop gracefully. The agent will:
 
-1. Finish its current model run (if any)
+1. Finish its current CLI run (if any)
 2. Check the stop flag at the start of next round
 3. Exit cleanly with state `Stopped`
 
@@ -72,11 +72,10 @@ Output:
 - **Work complete**: All tasks finished, clean up agents
 - **Stuck agent**: Agent not making progress, stop and respawn
 - **Resource cleanup**: Free up system resources
-- **Reconfigure**: Stop agent to change model or settings
+- **Reconfigure**: Stop agent to change CLI or settings
 
 ## See Also
 
 - [tt spawn](./spawn.md) — Start new agents
 - [tt status](./status.md) — Check agent states
 - [Coordination](../concepts/coordination.md)
-
