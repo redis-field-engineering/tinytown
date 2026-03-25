@@ -41,14 +41,8 @@ impl std::ops::Deref for TownGuard {
 
 /// Helper function to create a temporary town for testing.
 /// Returns a TownGuard that cleans up Redis when dropped.
-/// Uses TT_USE_SOCKET=1 to ensure tests use isolated per-town Redis instances.
+/// Uses the default Redis mode so CI does not depend on per-test socket startup.
 async fn create_test_town(name: &str) -> Result<TownGuard, Box<dyn std::error::Error>> {
-    // Force Unix socket mode for test isolation
-    // Safety: Tests are run serially via serial_test where this matters
-    unsafe {
-        std::env::set_var("TT_USE_SOCKET", "1");
-    }
-
     let temp_dir = TempDir::new()?;
     let town = Town::init(temp_dir.path(), name).await?;
     Ok(TownGuard { town, temp_dir })

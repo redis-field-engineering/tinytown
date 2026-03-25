@@ -38,13 +38,8 @@ pub struct TownhallTestServer {
 
 impl TownhallTestServer {
     /// Create a new test server with a fresh town and Redis instance.
-    /// Uses Unix socket mode for test isolation.
+    /// Uses the default Redis mode so CI does not depend on per-test socket startup.
     pub async fn new(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        // Force Unix socket mode for test isolation
-        unsafe {
-            std::env::set_var("TT_USE_SOCKET", "1");
-        }
-
         let temp_dir = TempDir::new()?;
         let town = Town::init(temp_dir.path(), name).await?;
 
