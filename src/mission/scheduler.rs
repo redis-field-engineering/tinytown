@@ -27,7 +27,8 @@ use crate::error::Result;
 use crate::message::{Message, MessageType};
 use crate::mission::storage::MissionStorage;
 use crate::mission::types::{
-    MissionId, MissionRun, MissionState, WorkItem, WorkItemId, WorkKind, WorkStatus,
+    MissionId, MissionRun, MissionState, TriggerAction, WatchItem, WatchKind, WatchStatus,
+    WorkItem, WorkItemId, WorkKind, WorkStatus,
 };
 use crate::task::Task;
 
@@ -95,6 +96,10 @@ pub struct SchedulerTickResult {
 pub enum WorkItemCompletion {
     /// Work item completion was persisted successfully.
     Completed,
+    /// Work item is now waiting on reviewer approval.
+    WaitingForReview,
+    /// Work item is now waiting on PR/CI/Bugbot/review watches.
+    WaitingForExternal,
     /// Mission record was not found.
     MissionNotFound,
     /// Work item record was not found.
@@ -166,17 +171,20 @@ impl MissionScheduler {
     /// This is the main entry point for the scheduler loop.
     #[instrument(skip(self))]
     pub async fn tick(&self) -> Result<SchedulerTickResult> {
-        let mut result = SchedulerTickResult::default();
-
-        // Load active missions
         let active_ids = self.storage.list_active().await?;
-        debug!("Scheduler tick: {} active missions", active_ids.len());
+        self.tick_missions(&active_ids).await
+    }
 
-        // Get all agents once (cache for this tick)
+    /// Run a single scheduler tick for the provided active mission IDs.
+    #[instrument(skip(self, mission_ids))]
+    pub async fn tick_missions(&self, mission_ids: &[MissionId]) -> Result<SchedulerTickResult> {
+        let mut result = SchedulerTickResult::default();
+        debug!("Scheduler tick: {} active missions", mission_ids.len());
+
         let agents = self.channel.list_agents().await?;
 
-        for mission_id in active_ids {
-            match self.tick_mission(mission_id, &agents).await {
+        for mission_id in mission_ids {
+            match self.tick_mission(*mission_id, &agents).await {
                 Ok(mission_result) => {
                     result.total_promoted += mission_result.promoted.len();
                     result.total_assigned += mission_result.assigned.len();
@@ -226,8 +234,21 @@ impl MissionScheduler {
             return Ok(result);
         }
 
-        // Load work items
+        // Load work items and watches
         let mut work_items = self.storage.list_work_items(mission_id).await?;
+        let watches = self.storage.list_watch_items(mission_id).await?;
+
+        // Step 0: finalize previously submitted work once review/watch gates are clear.
+        let completed = self.complete_waiting_items(&mut work_items, &mission, &watches);
+        for id in &completed {
+            if let Some(item) = work_items.iter().find(|w| w.id == *id) {
+                self.storage.save_work_item(item).await?;
+                self.storage
+                    .log_event(mission_id, &format!("Work item '{}' completed", item.title))
+                    .await?;
+            }
+        }
+        result.completed = completed;
 
         // Step 1: Promote pending -> ready
         // Build a status map for dependency checking (owned data, no borrow conflict)
@@ -262,14 +283,17 @@ impl MissionScheduler {
             .iter()
             .any(|w| w.status == WorkStatus::Running || w.status == WorkStatus::Assigned);
 
-        // Also check that all watches are complete before marking mission done
-        let watches = self.storage.list_watch_items(mission_id).await?;
         let all_watches_done = watches
             .iter()
-            .all(|w| w.status == crate::mission::WatchStatus::Done);
+            .all(|w| w.status == WatchStatus::Done);
         let has_active_watches = watches
             .iter()
-            .any(|w| w.status == crate::mission::WatchStatus::Active);
+            .any(|w| w.status == WatchStatus::Active || w.status == WatchStatus::Snoozed);
+        let next_watch_due = watches
+            .iter()
+            .filter(|w| w.status == WatchStatus::Active || w.status == WatchStatus::Snoozed)
+            .map(|w| w.next_due_at)
+            .min();
 
         if all_work_done && all_watches_done {
             mission.complete();
@@ -284,19 +308,27 @@ impl MissionScheduler {
             result.state_changed = true;
             result.new_state = Some(MissionState::Completed);
         } else if all_work_done && has_active_watches {
-            // All work is done but watches still pending - log and wait
-            debug!(
-                "Mission {} has all work done but {} active watches remaining",
-                mission_id,
+            mission.blocked_reason = Some(format!(
+                "Waiting on {} active watch(es)",
                 watches
                     .iter()
-                    .filter(|w| w.status == crate::mission::WatchStatus::Active)
+                    .filter(|w| w.status == WatchStatus::Active || w.status == WatchStatus::Snoozed)
                     .count()
-            );
+            ));
+            mission.set_next_wake_at(next_watch_due);
+            self.storage.save_mission(&mission).await?;
         } else if !has_ready && !has_running {
             // All items are pending or blocked - compute next wake time
-            let next_wake = Utc::now() + Duration::seconds(self.config.tick_interval_secs as i64);
+            let next_wake = next_watch_due
+                .unwrap_or_else(|| Utc::now() + Duration::seconds(self.config.tick_interval_secs as i64));
+            mission.blocked_reason = Some("Waiting on dependency, review, or external watch".into());
+            mission.set_next_wake_at(Some(next_wake));
+            self.storage.save_mission(&mission).await?;
             result.next_wake_at = Some(next_wake);
+        } else if mission.blocked_reason.is_some() || mission.next_wake_at.is_some() {
+            mission.blocked_reason = None;
+            mission.set_next_wake_at(None);
+            self.storage.save_mission(&mission).await?;
         }
 
         Ok(result)
@@ -334,6 +366,37 @@ impl MissionScheduler {
         }
 
         promoted
+    }
+
+    fn complete_waiting_items(
+        &self,
+        work_items: &mut [WorkItem],
+        mission: &MissionRun,
+        watches: &[WatchItem],
+    ) -> Vec<WorkItemId> {
+        let mut completed = Vec::new();
+
+        for item in work_items.iter_mut() {
+            if item.status == WorkStatus::Done {
+                continue;
+            }
+            if item.artifact_refs.is_empty() && !item.reviewer_approved {
+                continue;
+            }
+            if self.requires_reviewer_gate(item, mission) && !item.reviewer_approved {
+                continue;
+            }
+
+            let item_watches = watches.iter().filter(|watch| watch.work_item_id == item.id);
+            if item_watches.clone().any(|watch| watch.status != WatchStatus::Done) {
+                continue;
+            }
+
+            item.complete(Vec::new());
+            completed.push(item.id);
+        }
+
+        completed
     }
 
     // ==================== Agent Assignment ====================
@@ -391,7 +454,7 @@ impl MissionScheduler {
                 self.storage.save_work_item(item).await?;
 
                 let mut task = Task::new(format!(
-                    "[Mission Work Item] {}\n\nMission: {}\nWork item: {}\nSource: {}",
+                    "[Mission Work Item] {}\n\nMission: {}\nWork item: {}\nSource: {}\n\nWhen this creates or updates a PR, complete the task with the PR URL or owner/repo#PR in the result so mission watches can take over automatically.",
                     item.title,
                     mission.id,
                     item.id,
@@ -399,6 +462,7 @@ impl MissionScheduler {
                 ))
                 .with_tags([
                     "mission-work-item".to_string(),
+                    "mission-task:work".to_string(),
                     format!("mission:{}", mission.id),
                     format!("work-item:{}", item.id),
                 ]);
@@ -613,6 +677,162 @@ impl MissionScheduler {
         Ok(WorkItemCompletion::Completed)
     }
 
+    /// Record a worker submission, potentially creating reviewer/fix follow-up
+    /// tasks and PR watches instead of completing the work item immediately.
+    pub async fn record_submission(
+        &self,
+        mission_id: MissionId,
+        work_item_id: WorkItemId,
+        artifacts: Vec<String>,
+    ) -> Result<WorkItemCompletion> {
+        let Some(mission) = self.storage.get_mission(mission_id).await? else {
+            return Ok(WorkItemCompletion::MissionNotFound);
+        };
+        let Some(mut item) = self.storage.get_work_item(mission_id, work_item_id).await? else {
+            return Ok(WorkItemCompletion::WorkItemNotFound);
+        };
+
+        let pr_refs = extract_pr_refs(&artifacts);
+        item.record_artifacts(artifacts.clone());
+        item.clear_review_approval();
+
+        if !pr_refs.is_empty() {
+            item.block();
+            self.storage.save_work_item(&item).await?;
+            self.ensure_pr_watches(&mission, &item, &pr_refs).await?;
+
+            if self.requires_reviewer_gate(&item, &mission) {
+                self.ensure_review_task(&mission, &item).await?;
+                self.storage
+                    .log_event(
+                        mission_id,
+                        &format!(
+                            "Work item '{}' is waiting on reviewer approval and PR watches",
+                            item.title
+                        ),
+                    )
+                    .await?;
+                return Ok(WorkItemCompletion::WaitingForReview);
+            }
+
+            self.storage
+                .log_event(
+                    mission_id,
+                    &format!("Work item '{}' is waiting on PR watches", item.title),
+                )
+                .await?;
+            return Ok(WorkItemCompletion::WaitingForExternal);
+        }
+
+        if self.requires_reviewer_gate(&item, &mission) {
+            item.block();
+            self.storage.save_work_item(&item).await?;
+            self.ensure_review_task(&mission, &item).await?;
+            self.storage
+                .log_event(
+                    mission_id,
+                    &format!("Work item '{}' is waiting on reviewer approval", item.title),
+                )
+                .await?;
+            return Ok(WorkItemCompletion::WaitingForReview);
+        }
+
+        self.complete_work_item(mission_id, work_item_id, artifacts, true).await
+    }
+
+    /// Record reviewer approval and finalize the work item if all watches are satisfied.
+    pub async fn approve_submission(
+        &self,
+        mission_id: MissionId,
+        work_item_id: WorkItemId,
+        artifacts: Vec<String>,
+    ) -> Result<WorkItemCompletion> {
+        let Some(mut item) = self.storage.get_work_item(mission_id, work_item_id).await? else {
+            return Ok(WorkItemCompletion::WorkItemNotFound);
+        };
+
+        item.record_artifacts(artifacts);
+        item.approve_review();
+        item.block();
+        self.storage.save_work_item(&item).await?;
+        self.storage
+            .log_event(
+                mission_id,
+                &format!("Reviewer approved '{}'", item.title),
+            )
+            .await?;
+
+        self.finalize_work_item_if_ready(mission_id, work_item_id).await
+    }
+
+    /// Record reviewer rejection and create a persisted fix task.
+    pub async fn request_changes(
+        &self,
+        mission_id: MissionId,
+        work_item_id: WorkItemId,
+        reason: &str,
+    ) -> Result<WorkItemCompletion> {
+        let Some(mission) = self.storage.get_mission(mission_id).await? else {
+            return Ok(WorkItemCompletion::MissionNotFound);
+        };
+        let Some(mut item) = self.storage.get_work_item(mission_id, work_item_id).await? else {
+            return Ok(WorkItemCompletion::WorkItemNotFound);
+        };
+
+        item.block();
+        item.clear_review_approval();
+        self.storage.save_work_item(&item).await?;
+        self.ensure_fix_task(&mission, &item, reason).await?;
+        self.storage
+            .log_event(
+                mission_id,
+                &format!("Reviewer requested changes for '{}': {}", item.title, reason),
+            )
+            .await?;
+
+        Ok(WorkItemCompletion::WaitingForExternal)
+    }
+
+    /// Try to finalize a work item if review and watch conditions are satisfied.
+    pub async fn finalize_work_item_if_ready(
+        &self,
+        mission_id: MissionId,
+        work_item_id: WorkItemId,
+    ) -> Result<WorkItemCompletion> {
+        let Some(mission) = self.storage.get_mission(mission_id).await? else {
+            return Ok(WorkItemCompletion::MissionNotFound);
+        };
+        let Some(mut item) = self.storage.get_work_item(mission_id, work_item_id).await? else {
+            return Ok(WorkItemCompletion::WorkItemNotFound);
+        };
+
+        if self.requires_reviewer_gate(&item, &mission) && !item.reviewer_approved {
+            return Ok(WorkItemCompletion::WaitingForReview);
+        }
+
+        let has_pending_watches = self
+            .storage
+            .list_watch_items(mission_id)
+            .await?
+            .into_iter()
+            .any(|watch| watch.work_item_id == work_item_id && watch.status != WatchStatus::Done);
+        if has_pending_watches {
+            item.block();
+            self.storage.save_work_item(&item).await?;
+            return Ok(WorkItemCompletion::WaitingForExternal);
+        }
+
+        item.complete(Vec::new());
+        self.storage.save_work_item(&item).await?;
+        self.storage
+            .log_event(
+                mission_id,
+                &format!("Work item '{}' finalized after review/watch gates", item.title),
+            )
+            .await?;
+        Ok(WorkItemCompletion::Completed)
+    }
+
     /// Mark a work item as blocked.
     #[instrument(skip(self))]
     pub async fn block_work_item(
@@ -665,6 +885,215 @@ impl MissionScheduler {
 
         Ok(())
     }
+
+    async fn ensure_pr_watches(
+        &self,
+        mission: &MissionRun,
+        item: &WorkItem,
+        pr_refs: &[String],
+    ) -> Result<()> {
+        let existing = self.storage.list_watch_items(mission.id).await?;
+        for pr_ref in pr_refs {
+            for (kind, trigger) in [
+                (WatchKind::PrChecks, TriggerAction::CreateFixTask),
+                (WatchKind::BugbotComments, TriggerAction::CreateFixTask),
+                (WatchKind::ReviewComments, TriggerAction::CreateFixTask),
+                (WatchKind::Mergeability, TriggerAction::AdvancePipeline),
+            ] {
+                if let Some(mut watch) = existing
+                    .iter()
+                    .find(|watch| {
+                        watch.work_item_id == item.id
+                            && watch.kind == kind
+                            && watch.target_ref == *pr_ref
+                    })
+                    .cloned()
+                {
+                    watch.status = WatchStatus::Active;
+                    watch.next_due_at = Utc::now();
+                    watch.last_check_at = None;
+                    watch.consecutive_failures = 0;
+                    watch.on_trigger = trigger;
+                    self.storage.save_watch_item(&watch).await?;
+                } else {
+                    let watch = WatchItem::new(
+                        mission.id,
+                        item.id,
+                        kind,
+                        pr_ref.clone(),
+                        mission.policy.watch_interval_secs,
+                    )
+                    .with_trigger(trigger);
+                    self.storage.save_watch_item(&watch).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_review_task(&self, mission: &MissionRun, item: &WorkItem) -> Result<()> {
+        if self.find_open_mission_task(mission.id, item.id, "mission-review-task")
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let agents = self.channel.list_agents().await?;
+        let Some(reviewer) = agents.iter().find(|agent| {
+            let name = agent.name.to_lowercase();
+            agent.state.can_accept_work() && (name.contains("review") || name.contains("audit"))
+        }) else {
+            warn!("No idle reviewer available for '{}'", item.title);
+            return Ok(());
+        };
+
+        let pr_hint = item
+            .artifact_refs
+            .iter()
+            .rev()
+            .find(|artifact| artifact.contains("github.com") || artifact.contains('#'))
+            .cloned()
+            .unwrap_or_else(|| "no PR ref provided".to_string());
+        let mut task = Task::new(format!(
+            "[Mission Review] {}\n\nMission: {}\nWork item: {}\nLatest PR/ref: {}\n\nReview the changes. Approve with `tt task complete <task-id> --result \"approved: ...\"` or request changes with `tt task complete <task-id> --result \"rejected: ...\"`.",
+            item.title, mission.id, item.id, pr_hint
+        ))
+        .with_tags([
+            "mission-review-task".to_string(),
+            "mission-task:review".to_string(),
+            format!("mission:{}", mission.id),
+            format!("work-item:{}", item.id),
+        ]);
+        task.assign(reviewer.id);
+        let task_id = task.id;
+        self.channel.set_task(&task).await?;
+
+        let msg = Message::new(
+            AgentId::supervisor(),
+            reviewer.id,
+            MessageType::TaskAssign {
+                task_id: task_id.to_string(),
+            },
+        );
+        self.channel.send(&msg).await?;
+
+        self.storage
+            .log_event(
+                mission.id,
+                &format!(
+                    "Assigned review task {} for '{}' to reviewer '{}'",
+                    task_id, item.title, reviewer.name
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn ensure_fix_task(
+        &self,
+        mission: &MissionRun,
+        item: &WorkItem,
+        reason: &str,
+    ) -> Result<()> {
+        if self
+            .find_open_mission_task(mission.id, item.id, "mission-fix-task")
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        let agents = self.channel.list_agents().await?;
+        let assigned_agent = if let Some(agent_id) = item.assigned_to {
+            agents.iter().find(|agent| agent.id == agent_id)
+        } else {
+            let idle_agents: Vec<&Agent> = agents.iter().filter(|agent| agent.state.can_accept_work()).collect();
+            self.find_best_agent(item, &idle_agents, &[])
+        };
+        let Some(owner) = assigned_agent else {
+            warn!("No agent available to fix '{}'", item.title);
+            return Ok(());
+        };
+
+        let mut task = Task::new(format!(
+            "[Mission Fix] {}\n\nMission: {}\nWork item: {}\nReason: {}\n\nUpdate the changes, refresh the PR if needed, and complete this task with the updated PR URL or ref.",
+            item.title, mission.id, item.id, reason
+        ))
+        .with_tags([
+            "mission-fix-task".to_string(),
+            "mission-task:fix".to_string(),
+            format!("mission:{}", mission.id),
+            format!("work-item:{}", item.id),
+        ]);
+        task.assign(owner.id);
+        let task_id = task.id;
+        self.channel.set_task(&task).await?;
+
+        let msg = Message::new(
+            AgentId::supervisor(),
+            owner.id,
+            MessageType::TaskAssign {
+                task_id: task_id.to_string(),
+            },
+        );
+        self.channel.send(&msg).await?;
+
+        self.storage
+            .log_event(
+                mission.id,
+                &format!(
+                    "Assigned fix task {} for '{}' to '{}'",
+                    task_id, item.title, owner.name
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn find_open_mission_task(
+        &self,
+        mission_id: MissionId,
+        work_item_id: WorkItemId,
+        required_tag: &str,
+    ) -> Result<Option<Task>> {
+        let tasks = self.channel.list_tasks().await?;
+        Ok(tasks.into_iter().find(|task| {
+            !task.state.is_terminal()
+                && task.tags.iter().any(|tag| tag == required_tag)
+                && task
+                    .tags
+                    .iter()
+                    .any(|tag| tag == &format!("mission:{}", mission_id))
+                && task
+                    .tags
+                    .iter()
+                    .any(|tag| tag == &format!("work-item:{}", work_item_id))
+        }))
+    }
+}
+
+fn extract_pr_refs(artifacts: &[String]) -> Vec<String> {
+    let mut refs = Vec::new();
+    let pr_url = regex::Regex::new(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+").expect("valid regex");
+    let pr_short = regex::Regex::new(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+").expect("valid regex");
+
+    for artifact in artifacts {
+        refs.extend(
+            pr_url
+                .find_iter(artifact)
+                .map(|m| m.as_str().to_string()),
+        );
+        refs.extend(
+            pr_short
+                .find_iter(artifact)
+                .map(|m| m.as_str().to_string()),
+        );
+    }
+
+    refs.sort();
+    refs.dedup();
+    refs
 }
 
 // ==================== Tests ====================

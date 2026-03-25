@@ -56,6 +56,7 @@
 //! ```
 
 pub mod compiler;
+pub mod dispatcher;
 pub mod scheduler;
 pub mod storage;
 pub mod types;
@@ -63,6 +64,7 @@ pub mod watch;
 
 // Re-export commonly used types
 pub use compiler::{MissionManifest, ParsedIssue, WorkGraph, WorkGraphCompiler};
+pub use dispatcher::{DispatcherConfig, DispatcherTickResult, MissionDispatcher};
 pub use scheduler::{
     AgentMatchScore, MissionScheduler, MissionTickResult, SchedulerConfig, SchedulerTickResult,
     WorkItemCompletion,
@@ -73,7 +75,7 @@ pub use types::{
     WatchItem, WatchKind, WatchStatus, WorkItem, WorkItemId, WorkKind, WorkStatus,
 };
 pub use watch::{
-    BugbotComment, CheckDetail, CheckStatus, GitHubClient, MockGitHubClient, PrCheckResult,
-    ReviewComment, ReviewState, WatchEngine, WatchEngineConfig, WatchEngineTickResult,
-    WatchTickResult,
+    BugbotComment, CheckDetail, CheckStatus, GhCliGitHubClient, GitHubClient,
+    MockGitHubClient, PrCheckResult, ReviewComment, ReviewState, WatchEngine,
+    WatchEngineConfig, WatchEngineTickResult, WatchTickResult,
 };

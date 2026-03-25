@@ -167,6 +167,7 @@ Simple role-fit scoring:
 
 ```bash
 tt mission start --issue <n|url>... --doc <path>...   # Start new mission
+tt mission dispatch [--run <id>] [--once]             # Run dispatcher loop
 tt mission status [--run <id>]                         # Show mission status
 tt mission resume <run_id>                             # Resume stopped mission
 tt mission stop <run_id>                               # Stop mission gracefully
@@ -193,8 +194,8 @@ src/
 │   ├── types.rs         # MissionRun, WorkItem, WatchItem, IDs
 │   ├── storage.rs       # Redis persistence layer
 │   ├── compiler.rs      # Work graph compiler (issues/docs -> DAG)
+│   ├── dispatcher.rs    # Persistent mission dispatcher loop
 │   ├── scheduler.rs     # Scheduler loop and ready-queue logic
-│   ├── router.rs        # Agent routing/matching
 │   └── watch.rs         # Watch engine for PR/CI monitoring
 ├── app/
 │   ├── mcp/
@@ -262,4 +263,3 @@ When a work item reaches done:
 - Persistent failures: mark watch as blocked, log reason
 - Agent crashes: reclaim tasks via existing recovery service
 - Mission failure: preserve state for debugging, allow manual resume
-

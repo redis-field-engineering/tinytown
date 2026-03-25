@@ -80,6 +80,9 @@ Output:
 ## Step 4: Monitor Progress
 
 ```bash
+# Run the persistent dispatcher loop
+tt mission dispatch
+
 # Check overall status
 tt mission status
 
@@ -90,15 +93,15 @@ tt mission status --work
 tt mission status --work --watch
 ```
 
-## Step 5: Understand the Scheduler
+## Step 5: Understand the Dispatcher
 
-The mission scheduler runs every 30 seconds and:
+The mission dispatcher runs every 30 seconds and:
 
 1. **Promotes work items**: Issue #1 starts immediately (no deps)
 2. **Assigns to agents**: Designer gets Issue #1
 3. **Monitors completion**: When #1 done, #2 becomes ready
-4. **Watches PRs**: Creates watch items for CI status
-5. **Enforces gates**: Reviewer approval before merge
+4. **Watches PRs**: Creates watch items for CI/Bugbot/review status
+5. **Enforces gates**: Reviewer approval before final completion
 
 ```
 Round 1: Issue #1 → ready → assigned to designer
@@ -122,8 +125,8 @@ tt mission status --watch
 
 The mission will:
 - Auto-retry CI checks
-- Create fix tasks if bugbot comments
-- Wait for human review if reviewer_required
+- Create persisted fix tasks if CI or Bugbot comments fail
+- Create reviewer tasks and wait for approval if `reviewer_required`
 
 ## Step 7: Stop and Resume
 

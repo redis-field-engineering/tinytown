@@ -8,6 +8,7 @@ Autonomous multi-issue mission mode commands.
 tt mission start [OPTIONS]
 tt mission status [OPTIONS]
 tt mission resume <RUN_ID>
+tt mission dispatch [--run <RUN_ID>] [--once]
 tt mission stop <RUN_ID> [OPTIONS]
 tt mission list [OPTIONS]
 ```
@@ -15,6 +16,8 @@ tt mission list [OPTIONS]
 ## Description
 
 Mission mode enables durable, dependency-aware orchestration of multiple GitHub issues with automatic PR/CI monitoring. Use these commands to start, monitor, and control missions.
+
+`tt mission start` bootstraps the mission graph and performs an initial scheduling pass. `tt mission dispatch` is the persistent runtime loop that keeps the mission moving, monitors watches, and assigns follow-up work.
 
 ## Subcommands
 
@@ -111,6 +114,8 @@ tt mission status -r abc123 --work --watch
    Auto-merge: false
    Watch interval: 180s
 
+⏰ Next Wake: 2024-01-15 11:48:00 UTC
+
 📦 Work Items: 5
    🔵 ready    Issue #23: Implement auth flow
    🔄 running  Issue #24: Add rate limiting (→ backend)
@@ -129,6 +134,34 @@ tt mission resume <RUN_ID>
 
 ```bash
 tt mission resume abc123-def456-...
+```
+
+### tt mission dispatch
+
+Run the persistent dispatcher loop that owns mission progression.
+
+```bash
+tt mission dispatch [--run <RUN_ID>] [--once]
+```
+
+**Options:**
+
+| Option | Short | Description |
+|--------|-------|-------------|
+| `--run <RUN_ID>` | `-r` | Restrict dispatch to one mission |
+| `--once` | | Run a single dispatcher tick and exit |
+
+**Examples:**
+
+```bash
+# Run dispatcher for all active missions
+tt mission dispatch
+
+# Single mission only
+tt mission dispatch --run abc123-def456-...
+
+# One-shot tick for debugging/tests
+tt mission dispatch --run abc123-def456-... --once
 ```
 
 ### tt mission stop
@@ -196,4 +229,3 @@ tt mission list --all
 - [Mission Mode Tutorial](../tutorials/mission-mode.md)
 - [tt status](./status.md)
 - [tt conductor](./conductor.md)
-

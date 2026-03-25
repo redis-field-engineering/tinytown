@@ -361,6 +361,8 @@ impl MissionRun {
     /// Transition to running state.
     pub fn start(&mut self) {
         self.state = MissionState::Running;
+        self.next_wake_at = None;
+        self.blocked_reason = None;
         self.updated_at = Utc::now();
     }
 
@@ -371,9 +373,16 @@ impl MissionRun {
         self.updated_at = Utc::now();
     }
 
+    /// Update the next wake-up time without changing mission state.
+    pub fn set_next_wake_at(&mut self, next_wake_at: Option<DateTime<Utc>>) {
+        self.next_wake_at = next_wake_at;
+        self.updated_at = Utc::now();
+    }
+
     /// Transition to completed state.
     pub fn complete(&mut self) {
         self.state = MissionState::Completed;
+        self.next_wake_at = None;
         self.blocked_reason = None;
         self.updated_at = Utc::now();
     }
@@ -381,6 +390,7 @@ impl MissionRun {
     /// Transition to failed state with reason.
     pub fn fail(&mut self, reason: impl Into<String>) {
         self.state = MissionState::Failed;
+        self.next_wake_at = None;
         self.blocked_reason = Some(reason.into());
         self.updated_at = Utc::now();
     }
@@ -410,6 +420,9 @@ pub struct WorkItem {
     pub assigned_to: Option<AgentId>,
     /// Artifact references (PR URLs, commit SHAs)
     pub artifact_refs: Vec<String>,
+    /// Whether reviewer approval has been recorded for this item
+    #[serde(default)]
+    pub reviewer_approved: bool,
     /// Source objective reference
     pub source_ref: Option<String>,
     /// When work item was created
@@ -433,6 +446,7 @@ impl WorkItem {
             status: WorkStatus::Pending,
             assigned_to: None,
             artifact_refs: Vec::new(),
+            reviewer_approved: false,
             source_ref: None,
             created_at: now,
             updated_at: now,
@@ -470,6 +484,7 @@ impl WorkItem {
     pub fn assign(&mut self, agent_id: AgentId) {
         self.assigned_to = Some(agent_id);
         self.status = WorkStatus::Assigned;
+        self.reviewer_approved = false;
         self.updated_at = Utc::now();
     }
 
@@ -482,6 +497,25 @@ impl WorkItem {
     /// Mark as blocked with artifact reference.
     pub fn block(&mut self) {
         self.status = WorkStatus::Blocked;
+        self.updated_at = Utc::now();
+    }
+
+    /// Record new evidence without completing the work item.
+    pub fn record_artifacts(&mut self, artifacts: impl IntoIterator<Item = impl Into<String>>) {
+        self.artifact_refs
+            .extend(artifacts.into_iter().map(Into::into));
+        self.updated_at = Utc::now();
+    }
+
+    /// Mark reviewer approval for the item.
+    pub fn approve_review(&mut self) {
+        self.reviewer_approved = true;
+        self.updated_at = Utc::now();
+    }
+
+    /// Clear reviewer approval, typically when new changes are required.
+    pub fn clear_review_approval(&mut self) {
+        self.reviewer_approved = false;
         self.updated_at = Utc::now();
     }
 

@@ -13,6 +13,8 @@ Think of a mission as a "project manager" that:
 - Monitors PRs, CI, and review status
 - Persists state for restart/resume capability
 
+In practice, missions are progressed by the `tt mission dispatch` loop. That dispatcher is the autonomous runtime: it processes due watches, assigns ready work, and advances missions without requiring the conductor to keep re-prompting the system.
+
 ## Core Concepts
 
 ### MissionRun
@@ -97,6 +99,9 @@ Control execution behavior with policy settings:
 # Start a mission from multiple issues
 tt mission start --issue 23 --issue 24 --issue 25
 
+# Run the autonomous dispatcher
+tt mission dispatch
+
 # Check mission status
 tt mission status
 
@@ -110,9 +115,9 @@ tt mission stop <run-id>
 tt mission resume <run-id>
 ```
 
-## Scheduler Loop
+## Dispatcher Loop
 
-The scheduler runs every 30 seconds (configurable) and:
+The mission dispatcher runs every 30 seconds (configurable) and:
 1. Loads active missions from Redis
 2. Checks due watch items, executes triggers
 3. Promotes pending work items to ready when dependencies satisfied
@@ -146,4 +151,3 @@ tt:{town}:mission:active            # Set of active MissionIds
 - [Mission Mode Tutorial](../tutorials/mission-mode.md)
 - [Tasks Concept](./tasks.md)
 - [Coordination](./coordination.md)
-

@@ -17,6 +17,7 @@
 
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
+use redis::Script;
 use tracing::{debug, instrument};
 
 use crate::error::Result;
@@ -68,6 +69,11 @@ impl MissionStorage {
     /// Generate active missions set key: tt:{town}:mission:active
     fn active_key(&self) -> String {
         format!("tt:{}:mission:active", self.town_name)
+    }
+
+    /// Generate dispatcher lock key for a mission.
+    fn dispatch_lock_key(&self, id: MissionId) -> String {
+        format!("tt:{}:mission:{}:dispatch_lock", self.town_name, id)
     }
 
     /// Generate mission key pattern for scanning.
@@ -162,6 +168,80 @@ impl MissionStorage {
             }
         }
         Ok(missions)
+    }
+
+    /// Try to acquire a dispatcher lease for a mission.
+    #[instrument(skip(self))]
+    pub async fn try_acquire_dispatch_lock(
+        &self,
+        mission_id: MissionId,
+        owner_token: &str,
+        ttl_secs: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let key = self.dispatch_lock_key(mission_id);
+        let acquired: Option<String> = redis::cmd("SET")
+            .arg(&key)
+            .arg(owner_token)
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_secs)
+            .query_async(&mut conn)
+            .await?;
+        Ok(acquired.is_some())
+    }
+
+    /// Refresh a dispatcher lease if still owned by the given token.
+    #[instrument(skip(self))]
+    pub async fn refresh_dispatch_lock(
+        &self,
+        mission_id: MissionId,
+        owner_token: &str,
+        ttl_secs: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let key = self.dispatch_lock_key(mission_id);
+        let script = Script::new(
+            r#"
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  redis.call("EXPIRE", KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+"#,
+        );
+        let refreshed: i32 = script
+            .key(&key)
+            .arg(owner_token)
+            .arg(ttl_secs)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(refreshed == 1)
+    }
+
+    /// Release a dispatcher lease if still owned by the given token.
+    #[instrument(skip(self))]
+    pub async fn release_dispatch_lock(
+        &self,
+        mission_id: MissionId,
+        owner_token: &str,
+    ) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let key = self.dispatch_lock_key(mission_id);
+        let script = Script::new(
+            r#"
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+"#,
+        );
+        let released: i32 = script
+            .key(&key)
+            .arg(owner_token)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(released == 1)
     }
 
     // ==================== WorkItem Operations ====================
