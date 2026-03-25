@@ -71,11 +71,12 @@ pub use scheduler::{
 };
 pub use storage::MissionStorage;
 pub use types::{
-    MissionId, MissionPolicy, MissionRun, MissionState, ObjectiveRef, TriggerAction, WatchId,
-    WatchItem, WatchKind, WatchStatus, WorkItem, WorkItemId, WorkKind, WorkStatus,
+    MissionControlMessage, MissionId, MissionPolicy, MissionRun, MissionState, ObjectiveRef,
+    TriggerAction, WatchId, WatchItem, WatchKind, WatchStatus, WorkItem, WorkItemId, WorkKind,
+    WorkStatus,
 };
 pub use watch::{
-    BugbotComment, CheckDetail, CheckStatus, GhCliGitHubClient, GitHubClient,
-    MockGitHubClient, PrCheckResult, ReviewComment, ReviewState, WatchEngine,
-    WatchEngineConfig, WatchEngineTickResult, WatchTickResult,
+    BugbotComment, CheckDetail, CheckStatus, GhCliGitHubClient, GitHubClient, MockGitHubClient,
+    PrCheckResult, ReviewComment, ReviewState, WatchEngine, WatchEngineConfig,
+    WatchEngineTickResult, WatchTickResult,
 };

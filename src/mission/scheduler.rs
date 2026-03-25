@@ -283,9 +283,7 @@ impl MissionScheduler {
             .iter()
             .any(|w| w.status == WorkStatus::Running || w.status == WorkStatus::Assigned);
 
-        let all_watches_done = watches
-            .iter()
-            .all(|w| w.status == WatchStatus::Done);
+        let all_watches_done = watches.iter().all(|w| w.status == WatchStatus::Done);
         let has_active_watches = watches
             .iter()
             .any(|w| w.status == WatchStatus::Active || w.status == WatchStatus::Snoozed);
@@ -319,9 +317,11 @@ impl MissionScheduler {
             self.storage.save_mission(&mission).await?;
         } else if !has_ready && !has_running {
             // All items are pending or blocked - compute next wake time
-            let next_wake = next_watch_due
-                .unwrap_or_else(|| Utc::now() + Duration::seconds(self.config.tick_interval_secs as i64));
-            mission.blocked_reason = Some("Waiting on dependency, review, or external watch".into());
+            let next_wake = next_watch_due.unwrap_or_else(|| {
+                Utc::now() + Duration::seconds(self.config.tick_interval_secs as i64)
+            });
+            mission.blocked_reason =
+                Some("Waiting on dependency, review, or external watch".into());
             mission.set_next_wake_at(Some(next_wake));
             self.storage.save_mission(&mission).await?;
             result.next_wake_at = Some(next_wake);
@@ -388,7 +388,10 @@ impl MissionScheduler {
             }
 
             let item_watches = watches.iter().filter(|watch| watch.work_item_id == item.id);
-            if item_watches.clone().any(|watch| watch.status != WatchStatus::Done) {
+            if item_watches
+                .clone()
+                .any(|watch| watch.status != WatchStatus::Done)
+            {
                 continue;
             }
 
@@ -737,7 +740,8 @@ impl MissionScheduler {
             return Ok(WorkItemCompletion::WaitingForReview);
         }
 
-        self.complete_work_item(mission_id, work_item_id, artifacts, true).await
+        self.complete_work_item(mission_id, work_item_id, artifacts, true)
+            .await
     }
 
     /// Record reviewer approval and finalize the work item if all watches are satisfied.
@@ -756,13 +760,11 @@ impl MissionScheduler {
         item.block();
         self.storage.save_work_item(&item).await?;
         self.storage
-            .log_event(
-                mission_id,
-                &format!("Reviewer approved '{}'", item.title),
-            )
+            .log_event(mission_id, &format!("Reviewer approved '{}'", item.title))
             .await?;
 
-        self.finalize_work_item_if_ready(mission_id, work_item_id).await
+        self.finalize_work_item_if_ready(mission_id, work_item_id)
+            .await
     }
 
     /// Record reviewer rejection and create a persisted fix task.
@@ -786,7 +788,10 @@ impl MissionScheduler {
         self.storage
             .log_event(
                 mission_id,
-                &format!("Reviewer requested changes for '{}': {}", item.title, reason),
+                &format!(
+                    "Reviewer requested changes for '{}': {}",
+                    item.title, reason
+                ),
             )
             .await?;
 
@@ -827,7 +832,10 @@ impl MissionScheduler {
         self.storage
             .log_event(
                 mission_id,
-                &format!("Work item '{}' finalized after review/watch gates", item.title),
+                &format!(
+                    "Work item '{}' finalized after review/watch gates",
+                    item.title
+                ),
             )
             .await?;
         Ok(WorkItemCompletion::Completed)
@@ -932,7 +940,8 @@ impl MissionScheduler {
     }
 
     async fn ensure_review_task(&self, mission: &MissionRun, item: &WorkItem) -> Result<()> {
-        if self.find_open_mission_task(mission.id, item.id, "mission-review-task")
+        if self
+            .find_open_mission_task(mission.id, item.id, "mission-review-task")
             .await?
             .is_some()
         {
@@ -1008,7 +1017,10 @@ impl MissionScheduler {
         let assigned_agent = if let Some(agent_id) = item.assigned_to {
             agents.iter().find(|agent| agent.id == agent_id)
         } else {
-            let idle_agents: Vec<&Agent> = agents.iter().filter(|agent| agent.state.can_accept_work()).collect();
+            let idle_agents: Vec<&Agent> = agents
+                .iter()
+                .filter(|agent| agent.state.can_accept_work())
+                .collect();
             self.find_best_agent(item, &idle_agents, &[])
         };
         let Some(owner) = assigned_agent else {
@@ -1075,20 +1087,13 @@ impl MissionScheduler {
 
 fn extract_pr_refs(artifacts: &[String]) -> Vec<String> {
     let mut refs = Vec::new();
-    let pr_url = regex::Regex::new(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+").expect("valid regex");
+    let pr_url =
+        regex::Regex::new(r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+").expect("valid regex");
     let pr_short = regex::Regex::new(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#\d+").expect("valid regex");
 
     for artifact in artifacts {
-        refs.extend(
-            pr_url
-                .find_iter(artifact)
-                .map(|m| m.as_str().to_string()),
-        );
-        refs.extend(
-            pr_short
-                .find_iter(artifact)
-                .map(|m| m.as_str().to_string()),
-        );
+        refs.extend(pr_url.find_iter(artifact).map(|m| m.as_str().to_string()));
+        refs.extend(pr_short.find_iter(artifact).map(|m| m.as_str().to_string()));
     }
 
     refs.sort();

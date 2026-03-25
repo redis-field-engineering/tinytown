@@ -332,6 +332,14 @@ pub struct MissionRun {
     pub next_wake_at: Option<DateTime<Utc>>,
     /// Reason if blocked
     pub blocked_reason: Option<String>,
+    /// Last time the dispatcher ticked this mission
+    pub dispatcher_last_tick_at: Option<DateTime<Utc>>,
+    /// Last time the dispatcher observed progress on this mission
+    pub dispatcher_last_progress_at: Option<DateTime<Utc>>,
+    /// Last time the dispatcher asked the conductor for help
+    pub dispatcher_last_help_request_at: Option<DateTime<Utc>>,
+    /// Most recent help-request reason sent to the conductor
+    pub dispatcher_last_help_request_reason: Option<String>,
 }
 
 impl MissionRun {
@@ -348,6 +356,10 @@ impl MissionRun {
             updated_at: now,
             next_wake_at: None,
             blocked_reason: None,
+            dispatcher_last_tick_at: None,
+            dispatcher_last_progress_at: None,
+            dispatcher_last_help_request_at: None,
+            dispatcher_last_help_request_reason: None,
         }
     }
 
@@ -377,6 +389,28 @@ impl MissionRun {
     pub fn set_next_wake_at(&mut self, next_wake_at: Option<DateTime<Utc>>) {
         self.next_wake_at = next_wake_at;
         self.updated_at = Utc::now();
+    }
+
+    /// Record that the dispatcher ticked this mission.
+    pub fn record_dispatch_tick(&mut self) {
+        self.dispatcher_last_tick_at = Some(Utc::now());
+        self.updated_at = Utc::now();
+    }
+
+    /// Record mission progress seen by the dispatcher.
+    pub fn record_dispatch_progress(&mut self) {
+        let now = Utc::now();
+        self.dispatcher_last_tick_at = Some(now);
+        self.dispatcher_last_progress_at = Some(now);
+        self.updated_at = now;
+    }
+
+    /// Record that the dispatcher escalated to the conductor.
+    pub fn record_help_request(&mut self, reason: impl Into<String>) {
+        let now = Utc::now();
+        self.dispatcher_last_help_request_at = Some(now);
+        self.dispatcher_last_help_request_reason = Some(reason.into());
+        self.updated_at = now;
     }
 
     /// Transition to completed state.
@@ -624,5 +658,49 @@ impl WatchItem {
     /// Mark as done.
     pub fn complete(&mut self) {
         self.status = WatchStatus::Done;
+    }
+}
+
+/// Operator-to-dispatcher note for a mission.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionControlMessage {
+    /// Unique control message identifier
+    pub id: String,
+    /// Parent mission
+    pub mission_id: MissionId,
+    /// Human-readable sender label
+    pub sender: String,
+    /// Free-form note/directive body
+    pub body: String,
+    /// Creation timestamp
+    pub created_at: DateTime<Utc>,
+    /// Processing timestamp when dispatcher consumes it
+    #[serde(default)]
+    pub processed_at: Option<DateTime<Utc>>,
+}
+
+impl MissionControlMessage {
+    /// Create a new control message.
+    #[must_use]
+    pub fn new(mission_id: MissionId, sender: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            id: Uuid::new_v4().to_string(),
+            mission_id,
+            sender: sender.into(),
+            body: body.into(),
+            created_at: Utc::now(),
+            processed_at: None,
+        }
+    }
+
+    /// Mark the control message as processed.
+    pub fn mark_processed(&mut self) {
+        self.processed_at = Some(Utc::now());
+    }
+
+    /// Whether the message is still pending dispatcher handling.
+    #[must_use]
+    pub fn is_pending(&self) -> bool {
+        self.processed_at.is_none()
     }
 }

@@ -14,6 +14,7 @@ Think of a mission as a "project manager" that:
 - Persists state for restart/resume capability
 
 In practice, missions are progressed by the `tt mission dispatch` loop. That dispatcher is the autonomous runtime: it processes due watches, assigns ready work, and advances missions without requiring the conductor to keep re-prompting the system.
+When the dispatcher cannot make progress, it can escalate by sending a help query to the conductor and waiting for an operator directive via `tt mission note`.
 
 ## Core Concepts
 
@@ -105,8 +106,14 @@ tt mission dispatch
 # Check mission status
 tt mission status
 
+# Include dispatcher heartbeat/help state
+tt mission status --dispatcher
+
 # View detailed work items
 tt mission status --work
+
+# Send a directive back to the dispatcher
+tt mission note <run-id> "resume and retry now"
 
 # Stop a mission gracefully
 tt mission stop <run-id>
@@ -119,11 +126,13 @@ tt mission resume <run-id>
 
 The mission dispatcher runs every 30 seconds (configurable) and:
 1. Loads active missions from Redis
-2. Checks due watch items, executes triggers
-3. Promotes pending work items to ready when dependencies satisfied
-4. Matches ready items to idle agents by role fit
-5. Enforces reviewer gates before advancing
-6. Marks mission completed when no items remain
+2. Applies queued conductor control notes
+3. Checks due watch items, executes triggers
+4. Promotes pending work items to ready when dependencies satisfied
+5. Matches ready items to idle agents by role fit
+6. Enforces reviewer gates before advancing
+7. Persists heartbeat/help-needed state for status queries
+8. Marks mission completed when no items remain
 
 ## Agent Routing
 
@@ -141,6 +150,7 @@ Missions persist in Redis with these keys:
 tt:{town}:mission:{run_id}          # MissionRun metadata
 tt:{town}:mission:{run_id}:work     # WorkItem collection
 tt:{town}:mission:{run_id}:watch    # WatchItem collection
+tt:{town}:mission:{run_id}:control  # Conductor/operator notes for dispatcher
 tt:{town}:mission:{run_id}:events   # Activity log (last 100)
 tt:{town}:mission:active            # Set of active MissionIds
 ```

@@ -9,6 +9,7 @@ tt mission start [OPTIONS]
 tt mission status [OPTIONS]
 tt mission resume <RUN_ID>
 tt mission dispatch [--run <RUN_ID>] [--once]
+tt mission note <RUN_ID> <MESSAGE>
 tt mission stop <RUN_ID> [OPTIONS]
 tt mission list [OPTIONS]
 ```
@@ -70,7 +71,7 @@ tt mission start -i 23 --no-reviewer
 Show status of missions.
 
 ```bash
-tt mission status [--run <ID>] [--work] [--watch]
+tt mission status [--run <ID>] [--work] [--watch] [--dispatcher]
 ```
 
 **Options:**
@@ -80,6 +81,7 @@ tt mission status [--run <ID>] [--work] [--watch]
 | `--run <ID>` | `-r` | Show specific mission by ID |
 | `--work` | | Show detailed work item status |
 | `--watch` | | Show watch items (PR/CI monitors) |
+| `--dispatcher` | | Show dispatcher heartbeat, help requests, and control notes |
 
 **Examples:**
 
@@ -92,6 +94,9 @@ tt mission status --run abc123 --work
 
 # Include watch items
 tt mission status -r abc123 --work --watch
+
+# Include dispatcher/operator-control details
+tt mission status -r abc123 --dispatcher
 ```
 
 **Output:**
@@ -162,6 +167,24 @@ tt mission dispatch --run abc123-def456-...
 
 # One-shot tick for debugging/tests
 tt mission dispatch --run abc123-def456-... --once
+```
+
+### tt mission note
+
+Queue a conductor/operator note for the dispatcher to consume on its next tick.
+
+```bash
+tt mission note <RUN_ID> <MESSAGE>
+```
+
+**Examples:**
+
+```bash
+# Ask the dispatcher to retry now
+tt mission note abc123-def456-... "resume and retry now"
+
+# Pause a mission with operator context
+tt mission note abc123-def456-... "pause until product decision is made"
 ```
 
 ### tt mission stop

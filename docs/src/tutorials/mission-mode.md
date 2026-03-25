@@ -86,6 +86,9 @@ tt mission dispatch
 # Check overall status
 tt mission status
 
+# Include dispatcher heartbeat/help state
+tt mission status --dispatcher
+
 # Detailed work item view
 tt mission status --work
 
@@ -102,6 +105,7 @@ The mission dispatcher runs every 30 seconds and:
 3. **Monitors completion**: When #1 done, #2 becomes ready
 4. **Watches PRs**: Creates watch items for CI/Bugbot/review status
 5. **Enforces gates**: Reviewer approval before final completion
+6. **Escalates when stuck**: Sends a help query to the conductor if work is ready but no agent can take it, or if a mission remains stalled
 
 ```
 Round 1: Issue #1 → ready → assigned to designer
@@ -127,6 +131,7 @@ The mission will:
 - Auto-retry CI checks
 - Create persisted fix tasks if CI or Bugbot comments fail
 - Create reviewer tasks and wait for approval if `reviewer_required`
+- Ask the conductor for help when it stays stuck; respond with `tt mission note <run-id> "resume ..."` or `tt mission note <run-id> "pause ..."`
 
 ## Step 7: Stop and Resume
 
@@ -179,6 +184,7 @@ Then reference it (feature coming soon).
 | Work item never ready | Verify dependency markers parsed |
 | Agent not assigned | Spawn agent with matching role |
 | CI watch failing | Check GitHub API permissions |
+| Dispatcher asked for help | Inspect `tt mission status --dispatcher` and send a note with `tt mission note <run-id> "<directive>"` |
 
 ## Best Practices
 

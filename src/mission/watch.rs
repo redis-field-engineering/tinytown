@@ -253,7 +253,10 @@ impl<G: GitHubClient> WatchEngine<G> {
         self.process_due_watches(due_watches).await
     }
 
-    async fn process_due_watches(&self, due_watches: Vec<WatchItem>) -> Result<WatchEngineTickResult> {
+    async fn process_due_watches(
+        &self,
+        due_watches: Vec<WatchItem>,
+    ) -> Result<WatchEngineTickResult> {
         let mut result = WatchEngineTickResult::default();
         debug!("Watch engine tick: {} due watches", due_watches.len());
 
@@ -718,11 +721,7 @@ impl GhCliGitHubClient {
     }
 
     fn parse_review_state(value: Option<String>) -> ReviewState {
-        match value
-            .as_deref()
-            .map(str::to_ascii_uppercase)
-            .as_deref()
-        {
+        match value.as_deref().map(str::to_ascii_uppercase).as_deref() {
             Some("APPROVED") => ReviewState::Approved,
             Some("CHANGES_REQUESTED") => ReviewState::ChangesRequested,
             Some("REVIEW_REQUIRED") => ReviewState::Pending,
@@ -791,7 +790,7 @@ impl GitHubClient for GhCliGitHubClient {
             "--json".to_string(),
             "reviews,reviewDecision".to_string(),
         ])
-            .await?;
+        .await?;
 
         Ok(payload
             .reviews
@@ -821,7 +820,7 @@ impl GitHubClient for GhCliGitHubClient {
             "api".to_string(),
             format!("repos/{owner}/{repo}/issues/{pr_number}/comments"),
         ])
-            .await?;
+        .await?;
 
         Ok(comments
             .into_iter()

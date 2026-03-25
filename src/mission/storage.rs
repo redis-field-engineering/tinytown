@@ -16,12 +16,14 @@
 //! - `tt:{town}:mission:active` - Active mission IDs (Set)
 
 use redis::AsyncCommands;
-use redis::aio::ConnectionManager;
 use redis::Script;
+use redis::aio::ConnectionManager;
 use tracing::{debug, instrument};
 
 use crate::error::Result;
-use crate::mission::types::{MissionId, MissionRun, WatchId, WatchItem, WorkItem, WorkItemId};
+use crate::mission::types::{
+    MissionControlMessage, MissionId, MissionRun, WatchId, WatchItem, WorkItem, WorkItemId,
+};
 
 /// Maximum events to keep in the activity log.
 const MAX_EVENTS: isize = 100;
@@ -64,6 +66,11 @@ impl MissionStorage {
     /// Generate events key: tt:{town}:mission:{run_id}:events
     fn events_key(&self, id: MissionId) -> String {
         format!("tt:{}:mission:{}:events", self.town_name, id)
+    }
+
+    /// Generate control messages key: tt:{town}:mission:{run_id}:control
+    fn control_key(&self, id: MissionId) -> String {
+        format!("tt:{}:mission:{}:control", self.town_name, id)
     }
 
     /// Generate active missions set key: tt:{town}:mission:active
@@ -124,6 +131,7 @@ impl MissionStorage {
             self.work_key(id),
             self.watch_key(id),
             self.events_key(id),
+            self.control_key(id),
         ];
 
         let deleted: i64 = redis::cmd("DEL").arg(&keys).query_async(&mut conn).await?;
@@ -387,6 +395,52 @@ return 0
         Ok(deleted > 0)
     }
 
+    // ==================== Control Message Operations ====================
+
+    /// Save a control message.
+    #[instrument(skip(self, message), fields(mission_id = %message.mission_id))]
+    pub async fn save_control_message(&self, message: &MissionControlMessage) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let key = self.control_key(message.mission_id);
+        let json = serde_json::to_string(message)?;
+        let _: () = conn.hset(&key, &message.id, json).await?;
+        Ok(())
+    }
+
+    /// List all control messages for a mission.
+    #[instrument(skip(self))]
+    pub async fn list_control_messages(
+        &self,
+        mission_id: MissionId,
+    ) -> Result<Vec<MissionControlMessage>> {
+        let mut conn = self.conn.clone();
+        let key = self.control_key(mission_id);
+        let messages: std::collections::HashMap<String, String> = conn.hgetall(&key).await?;
+
+        let mut control_messages = Vec::new();
+        for (_id, json) in messages {
+            if let Ok(message) = serde_json::from_str::<MissionControlMessage>(&json) {
+                control_messages.push(message);
+            }
+        }
+        control_messages.sort_by_key(|message| message.created_at);
+        Ok(control_messages)
+    }
+
+    /// List pending control messages for a mission.
+    #[instrument(skip(self))]
+    pub async fn list_pending_control_messages(
+        &self,
+        mission_id: MissionId,
+    ) -> Result<Vec<MissionControlMessage>> {
+        Ok(self
+            .list_control_messages(mission_id)
+            .await?
+            .into_iter()
+            .filter(MissionControlMessage::is_pending)
+            .collect())
+    }
+
     // ==================== Events ====================
 
     /// Log an event for a mission.
@@ -440,6 +494,7 @@ return 0
             if key.contains(":work")
                 || key.contains(":watch")
                 || key.contains(":events")
+                || key.contains(":control")
                 || key.contains(":active")
             {
                 continue;

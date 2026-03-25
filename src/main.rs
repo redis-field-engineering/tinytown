@@ -570,6 +570,10 @@ enum MissionAction {
         /// Show watch items
         #[arg(long)]
         watch: bool,
+
+        /// Show dispatcher/operator-control details
+        #[arg(long)]
+        dispatcher: bool,
     },
 
     /// Resume a stopped or blocked mission
@@ -587,6 +591,15 @@ enum MissionAction {
         /// Run a single dispatcher tick and exit
         #[arg(long)]
         once: bool,
+    },
+
+    /// Send an operator note/directive to the dispatcher for a mission
+    Note {
+        /// Mission run ID to target
+        run_id: String,
+
+        /// Note or directive body
+        message: String,
     },
 
     /// Stop an active mission
@@ -2217,7 +2230,10 @@ async fn main() -> Result<()> {
                                 }
                                 MissionTaskKind::Review => {
                                     if result_msg.trim().to_lowercase().starts_with("rejected:")
-                                        || result_msg.trim().to_lowercase().starts_with("changes requested:")
+                                        || result_msg
+                                            .trim()
+                                            .to_lowercase()
+                                            .starts_with("changes requested:")
                                     {
                                         scheduler
                                             .request_changes(
@@ -4324,7 +4340,12 @@ Now, help the user orchestrate their project!
                     );
                 }
 
-                MissionAction::Status { run, work, watch } => {
+                MissionAction::Status {
+                    run,
+                    work,
+                    watch,
+                    dispatcher,
+                } => {
                     if let Some(run_id) = run {
                         // Show specific mission
                         let mission_id: MissionId = run_id
@@ -4336,7 +4357,7 @@ Now, help the user orchestrate their project!
                             return Ok(());
                         };
 
-                        print_mission_status(&storage, &mission, work, watch).await?;
+                        print_mission_status(&storage, &mission, work, watch, dispatcher).await?;
                     } else {
                         // Show all active missions
                         let active_ids = storage.list_active().await?;
@@ -4352,7 +4373,14 @@ Now, help the user orchestrate their project!
 
                         for mission_id in active_ids {
                             if let Some(mission) = storage.get_mission(mission_id).await? {
-                                print_mission_summary(&mission);
+                                if work || watch || dispatcher {
+                                    print_mission_status(
+                                        &storage, &mission, work, watch, dispatcher,
+                                    )
+                                    .await?;
+                                } else {
+                                    print_mission_summary(&mission);
+                                }
                             }
                         }
                     }
@@ -4389,15 +4417,14 @@ Now, help the user orchestrate their project!
                 }
 
                 MissionAction::Dispatch { run, once } => {
-                    let run_id = if let Some(run_id) = run {
-                        Some(
-                            run_id
-                                .parse()
-                                .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?,
-                        )
-                    } else {
-                        None
-                    };
+                    let run_id =
+                        if let Some(run_id) = run {
+                            Some(run_id.parse().map_err(|_| {
+                                tinytown::Error::Config("Invalid mission ID".into())
+                            })?)
+                        } else {
+                            None
+                        };
 
                     let dispatcher = MissionDispatcher::new(
                         storage.clone(),
@@ -4424,6 +4451,28 @@ Now, help the user orchestrate their project!
                         }
                         dispatcher.run(run_id).await?;
                     }
+                }
+
+                MissionAction::Note { run_id, message } => {
+                    use tinytown::mission::MissionControlMessage;
+
+                    let mission_id: MissionId = run_id
+                        .parse()
+                        .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?;
+                    let Some(_mission) = storage.get_mission(mission_id).await? else {
+                        info!("❌ Mission {} not found", run_id);
+                        return Ok(());
+                    };
+
+                    let note = MissionControlMessage::new(mission_id, "conductor", message.clone());
+                    storage.save_control_message(&note).await?;
+                    storage
+                        .log_event(
+                            mission_id,
+                            &format!("Conductor note queued for dispatcher: {}", message),
+                        )
+                        .await?;
+                    info!("📝 Queued dispatcher note for mission {}", run_id);
                 }
 
                 MissionAction::Stop { run_id, force } => {
@@ -4740,6 +4789,7 @@ async fn print_mission_status(
     mission: &tinytown::mission::MissionRun,
     show_work: bool,
     show_watch: bool,
+    show_dispatcher: bool,
 ) -> tinytown::Result<()> {
     let state_emoji = match mission.state {
         tinytown::mission::MissionState::Planning => "📝",
@@ -4784,6 +4834,43 @@ async fn print_mission_status(
             "⏰ Next Wake: {}",
             next_wake_at.format("%Y-%m-%d %H:%M:%S UTC")
         );
+        info!("");
+    }
+
+    if show_dispatcher {
+        info!("🛰️  Dispatcher:");
+        match mission.dispatcher_last_tick_at {
+            Some(ts) => info!("   Last tick: {}", ts.format("%Y-%m-%d %H:%M:%S UTC")),
+            None => info!("   Last tick: never"),
+        }
+        match mission.dispatcher_last_progress_at {
+            Some(ts) => info!("   Last progress: {}", ts.format("%Y-%m-%d %H:%M:%S UTC")),
+            None => info!("   Last progress: none recorded"),
+        }
+        if let Some(ts) = mission.dispatcher_last_help_request_at {
+            info!(
+                "   Last help request: {}",
+                ts.format("%Y-%m-%d %H:%M:%S UTC")
+            );
+        }
+        if let Some(reason) = &mission.dispatcher_last_help_request_reason {
+            info!("   Help reason: {}", reason);
+        }
+
+        let control_messages = storage.list_control_messages(mission.id).await?;
+        let pending_controls: Vec<_> = control_messages
+            .iter()
+            .filter(|message| message.is_pending())
+            .collect();
+        info!("   Control messages: {} total", control_messages.len());
+        info!("   Pending control messages: {}", pending_controls.len());
+        for message in pending_controls.iter().take(3) {
+            info!(
+                "      - {}: {}",
+                message.sender,
+                truncate_summary(&message.body, 100)
+            );
+        }
         info!("");
     }
 
