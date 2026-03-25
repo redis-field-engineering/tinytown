@@ -75,7 +75,8 @@ fn unique_town_name(prefix: &str) -> String {
 async fn test_town_initialization() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let town_path = temp_dir.path();
-    let town = Town::init(town_path, "test-town").await?;
+    let town_name = unique_town_name("test-town");
+    let town = Town::init(town_path, &town_name).await?;
 
     // All runtime artifacts go under .tt/
     assert!(town_path.join(".tt").exists());
@@ -85,7 +86,7 @@ async fn test_town_initialization() -> Result<(), Box<dyn std::error::Error>> {
     assert!(town_path.join("tinytown.toml").exists());
 
     let config = town.config();
-    assert_eq!(config.name, "test-town");
+    assert_eq!(config.name, town_name);
     assert_eq!(config.root, town_path);
 
     drop(town);
@@ -98,12 +99,13 @@ async fn test_town_initialization() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_town_connect() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let town_path = temp_dir.path();
+    let town_name = unique_town_name("connect-test");
 
-    let _town1 = Town::init(town_path, "connect-test").await?;
+    let _town1 = Town::init(town_path, &town_name).await?;
     let town2 = Town::connect(town_path).await?;
 
     let config = town2.config();
-    assert_eq!(config.name, "connect-test");
+    assert_eq!(config.name, town_name);
 
     drop(town2);
     drop(_town1);
@@ -1340,8 +1342,9 @@ conductor_cli = "codex"
 async fn test_town_init_creates_structure() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let town_path = temp_dir.path();
+    let town_name = unique_town_name("init-structure-test");
 
-    let _town = Town::init(town_path, "init-structure-test").await?;
+    let _town = Town::init(town_path, &town_name).await?;
 
     // Verify expected directories exist (all under .tt/)
     assert!(town_path.join(".tt").exists());

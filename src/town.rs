@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use redis::Client;
 use redis::aio::ConnectionManager;
@@ -122,10 +123,18 @@ impl Town {
         let path = path.as_ref();
         let name = name.into();
 
+        let config = Config::new(&name, path);
+        Self::init_with_config(config).await
+    }
+
+    /// Initialize a new town using an explicit configuration.
+    pub async fn init_with_config(config: Config) -> Result<Self> {
+        let path = &config.root;
+
         // Check Redis version first
         Self::check_redis_version()?;
 
-        info!("Initializing town '{}' at {}", name, path.display());
+        info!("Initializing town '{}' at {}", config.name, path.display());
 
         // Create directory structure - all artifacts go under .tt/
         std::fs::create_dir_all(path)?;
@@ -134,8 +143,7 @@ impl Town {
         std::fs::create_dir_all(path.join(LOGS_DIR))?;
         std::fs::create_dir_all(path.join(TASKS_DIR))?;
 
-        // Create config
-        let config = Config::new(&name, path);
+        // Persist config
         config.save()?;
 
         // Start Redis (daemonized - stays running after we exit) and connect
@@ -367,31 +375,50 @@ impl Town {
     }
 
     async fn wait_for_redis_ready(config: &Config) -> Result<()> {
-        if config.redis.use_socket {
-            let socket_path = config.socket_path();
-            for _ in 0..50 {
-                if socket_path.exists() {
-                    debug!("Redis socket ready");
-                    return Ok(());
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let endpoint_ready = if config.redis.use_socket {
+                config.socket_path().exists()
+            } else {
+                std::net::TcpStream::connect(format!("{}:{}", config.redis.bind, config.redis.port))
+                    .is_ok()
+            };
+
+            if endpoint_ready && Self::ping_redis(config).await.is_ok() {
+                debug!("Redis ready");
+                return Ok(());
             }
-        } else {
-            for _ in 0..50 {
-                if std::net::TcpStream::connect(format!(
-                    "{}:{}",
-                    config.redis.bind, config.redis.port
-                ))
-                .is_ok()
-                {
-                    debug!("Redis TCP port ready");
-                    return Ok(());
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
 
         Err(Error::Timeout("Redis failed to start".into()))
+    }
+
+    async fn ping_redis(config: &Config) -> Result<()> {
+        let client = Client::open(config.redis_url())?;
+        let mut conn = tokio::time::timeout(
+            Duration::from_secs(1),
+            client.get_multiplexed_async_connection(),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis connection timed out".into()))??;
+
+        let response: String = tokio::time::timeout(
+            Duration::from_secs(1),
+            redis::cmd("PING").query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis ping timed out".into()))??;
+
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(Error::Timeout(format!(
+                "Unexpected Redis PING response: {}",
+                response
+            )))
+        }
     }
 
     /// Spawn a new worker agent.

@@ -51,7 +51,7 @@ jobs:
           redis-version: "8.x"
 
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test --verbose -- --test-threads=1
 
   fmt:
     name: Format
@@ -113,4 +113,3 @@ jobs:
 
       - name: Test binary
         run: ./target/release/tt --help
-
