@@ -495,6 +495,7 @@ return 0
                 || key.contains(":watch")
                 || key.contains(":events")
                 || key.contains(":control")
+                || key.contains(":dispatch_lock")
                 || key.contains(":active")
             {
                 continue;

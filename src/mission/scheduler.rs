@@ -377,7 +377,7 @@ impl MissionScheduler {
         let mut completed = Vec::new();
 
         for item in work_items.iter_mut() {
-            if item.status == WorkStatus::Done {
+            if item.status != WorkStatus::Blocked {
                 continue;
             }
             if item.artifact_refs.is_empty() && !item.reviewer_approved {

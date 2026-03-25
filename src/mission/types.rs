@@ -626,11 +626,13 @@ impl WatchItem {
     /// Check if watch is due.
     #[must_use]
     pub fn is_due(&self) -> bool {
-        self.status == WatchStatus::Active && Utc::now() >= self.next_due_at
+        matches!(self.status, WatchStatus::Active | WatchStatus::Snoozed)
+            && Utc::now() >= self.next_due_at
     }
 
     /// Record a successful check.
     pub fn record_check(&mut self) {
+        self.status = WatchStatus::Active;
         self.last_check_at = Some(Utc::now());
         self.next_due_at = Utc::now() + chrono::Duration::seconds(self.interval_secs as i64);
         self.consecutive_failures = 0;
@@ -638,6 +640,7 @@ impl WatchItem {
 
     /// Record a failed check.
     pub fn record_failure(&mut self) {
+        self.status = WatchStatus::Active;
         self.last_check_at = Some(Utc::now());
         self.consecutive_failures += 1;
         // Backoff: 1m, 2m, 5m, then stay at 5m

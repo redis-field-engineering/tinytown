@@ -328,18 +328,22 @@ impl<G: GitHubClient> WatchEngine<G> {
                     result.triggered = true;
                     result.action_taken = Some(watch.on_trigger);
 
-                    // Execute trigger action
-                    self.execute_trigger_action(watch).await?;
+                    // AdvancePipeline completion is enforced by scheduler gates once
+                    // the watch completes; avoid bypassing reviewer/watch state here.
+                    if watch.on_trigger != TriggerAction::AdvancePipeline || !should_complete {
+                        self.execute_trigger_action(watch).await?;
+                    }
 
                     if !should_complete {
                         updated_watch.snooze(self.config.default_interval_secs);
+                        result.new_status = WatchStatus::Snoozed;
                     }
                 }
 
                 if should_complete {
                     updated_watch.complete();
                     result.new_status = WatchStatus::Done;
-                } else {
+                } else if !triggered {
                     updated_watch.record_check();
                 }
 
@@ -560,27 +564,32 @@ impl<G: GitHubClient> WatchEngine<G> {
 
     /// Advance the pipeline (mark work item ready for next step).
     async fn advance_pipeline(&self, watch: &WatchItem) -> Result<()> {
-        // Get the work item and mark it as done
         if let Some(mut work_item) = self
             .storage
             .get_work_item(watch.mission_id, watch.work_item_id)
             .await?
         {
-            work_item.complete(vec![watch.target_ref.clone()]);
+            if !work_item
+                .artifact_refs
+                .iter()
+                .any(|artifact| artifact == &watch.target_ref)
+            {
+                work_item.artifact_refs.push(watch.target_ref.clone());
+            }
             self.storage.save_work_item(&work_item).await?;
 
             self.storage
                 .log_event(
                     watch.mission_id,
                     &format!(
-                        "Work item '{}' completed via pipeline advance",
+                        "Work item '{}' is eligible for scheduler-driven pipeline advance",
                         work_item.title
                     ),
                 )
                 .await?;
 
             info!(
-                "Advanced pipeline: work item '{}' completed",
+                "Advanced pipeline: work item '{}' is ready for scheduler gates",
                 work_item.title
             );
         }

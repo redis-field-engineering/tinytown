@@ -3086,6 +3086,226 @@ async fn test_mission_dispatcher_finalizes_after_successful_watch()
     Ok(())
 }
 
+/// Test that snoozed watches are picked up again once their due time arrives.
+#[tokio::test]
+async fn test_mission_dispatcher_rechecks_snoozed_watch() -> Result<(), Box<dyn std::error::Error>>
+{
+    use tinytown::mission::{
+        CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun, MissionStorage,
+        MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewState, TriggerAction, WatchItem,
+        WatchKind, WatchStatus, WorkItem, WorkKind,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-snooze");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/99"]);
+    storage.save_work_item(&item).await?;
+
+    let watch = WatchItem::new(mission.id, item.id, WatchKind::PrChecks, "test/repo#99", 60)
+        .with_trigger(TriggerAction::CreateFixTask);
+    storage.save_watch_item(&watch).await?;
+
+    let mut failing_github = MockGitHubClient::new();
+    failing_github.set_pr_checks(
+        "test",
+        "repo",
+        99,
+        PrCheckResult {
+            pr_number: 99,
+            repo: "test/repo".into(),
+            status: CheckStatus::Failure,
+            checks: vec![],
+            mergeable: false,
+            review_state: ReviewState::Pending,
+            blocking_comments: vec!["CI failed".into()],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        failing_github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(None).await?;
+
+    let mut snoozed_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(snoozed_watch.status, WatchStatus::Snoozed);
+
+    snoozed_watch.next_due_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    storage.save_watch_item(&snoozed_watch).await?;
+
+    let mut succeeding_github = MockGitHubClient::new();
+    succeeding_github.set_pr_checks(
+        "test",
+        "repo",
+        99,
+        PrCheckResult {
+            pr_number: 99,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::NotRequired,
+            blocking_comments: vec![],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        succeeding_github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(None).await?;
+
+    let updated_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(updated_watch.status, WatchStatus::Done);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that mergeability watches do not bypass reviewer approval gates.
+#[tokio::test]
+async fn test_mission_dispatcher_mergeability_respects_reviewer_gate()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun, MissionState, MissionStorage,
+        MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewState, TriggerAction, WatchItem,
+        WatchKind, WatchStatus, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-mergeability");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = true;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/7"]);
+    storage.save_work_item(&item).await?;
+
+    let watch = WatchItem::new(
+        mission.id,
+        item.id,
+        WatchKind::Mergeability,
+        "test/repo#7",
+        0,
+    )
+    .with_trigger(TriggerAction::AdvancePipeline);
+    storage.save_watch_item(&watch).await?;
+
+    let mut github = MockGitHubClient::new();
+    github.set_pr_checks(
+        "test",
+        "repo",
+        7,
+        PrCheckResult {
+            pr_number: 7,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::Pending,
+            blocking_comments: vec![],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(None).await?;
+
+    let updated_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(updated_watch.status, WatchStatus::Done);
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Blocked);
+    assert!(!updated_item.reviewer_approved);
+
+    let updated_mission = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated_mission.state, MissionState::Running);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that scheduler completion only applies to blocked waiting items.
+#[tokio::test]
+async fn test_mission_scheduler_does_not_finalize_running_items_with_artifacts()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionState, MissionStorage, ObjectiveRef, WorkItem,
+        WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-running-item");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.status = WorkStatus::Running;
+    item.record_artifacts(["https://github.com/test/repo/pull/11"]);
+    storage.save_work_item(&item).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    scheduler.tick_missions(&[mission.id]).await?;
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Running);
+
+    let updated_mission = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated_mission.state, MissionState::Running);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
 /// Test that the dispatcher asks the conductor for help when ready work cannot be assigned.
 #[tokio::test]
 async fn test_mission_dispatcher_escalates_to_conductor_when_stuck()
