@@ -7,8 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use redis::Client;
 use redis::aio::ConnectionManager;
@@ -45,6 +44,7 @@ pub struct Town {
 
 /// PID file name for tracking Redis process (under .tt/)
 const REDIS_PID_FILE: &str = ".tt/redis.pid";
+static CENTRAL_REDIS_START_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// Find the redis-server binary, preferring ~/.tt/bin over PATH.
 fn find_redis_server() -> std::path::PathBuf {
@@ -219,9 +219,22 @@ impl Town {
         // Check if using central Redis mode
         let is_central = config.is_central_redis();
 
-        // For central Redis, check if already running
+        let _central_guard = if is_central {
+            Some(
+                CENTRAL_REDIS_START_LOCK
+                    .get_or_init(|| tokio::sync::Mutex::new(()))
+                    .lock()
+                    .await,
+            )
+        } else {
+            None
+        };
+
+        // For central Redis, another test may have started the daemon just before
+        // we acquired the lock. Wait for it to become reachable before returning.
         if is_central && GlobalConfig::is_central_redis_running() {
             debug!("Central Redis already running");
+            Self::wait_for_redis_ready(config).await?;
             return Ok(());
         }
 
@@ -330,9 +343,31 @@ impl Town {
             return Err(Error::Timeout("Redis failed to start".into()));
         }
 
-        // Wait for Redis to be ready
+        Self::wait_for_redis_ready(config).await
+    }
+
+    /// Connect to Redis.
+    async fn connect_redis(config: &Config) -> Result<Channel> {
+        let url = config.redis_url();
+        // Use redacted URL for logging to avoid exposing password
+        debug!("Connecting to Redis: {}", config.redis_url_redacted());
+
+        let client = Client::open(url)?;
+
+        // Short timeout - Redis should connect in milliseconds if healthy
+        // Stale sockets can hang indefinitely, so fail fast and restart Redis
+        let conn = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ConnectionManager::new(client),
+        )
+        .await
+        .map_err(|_| Error::Timeout("Redis connection timed out".into()))??;
+
+        Ok(Channel::new(conn, &config.name))
+    }
+
+    async fn wait_for_redis_ready(config: &Config) -> Result<()> {
         if config.redis.use_socket {
-            // Wait for socket file
             let socket_path = config.socket_path();
             for _ in 0..50 {
                 if socket_path.exists() {
@@ -342,7 +377,6 @@ impl Town {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
         } else {
-            // Wait for TCP port to be ready
             for _ in 0..50 {
                 if std::net::TcpStream::connect(format!(
                     "{}:{}",
@@ -358,26 +392,6 @@ impl Town {
         }
 
         Err(Error::Timeout("Redis failed to start".into()))
-    }
-
-    /// Connect to Redis.
-    async fn connect_redis(config: &Config) -> Result<Channel> {
-        let url = config.redis_url();
-        // Use redacted URL for logging to avoid exposing password
-        debug!("Connecting to Redis: {}", config.redis_url_redacted());
-
-        let client = Client::open(url)?;
-
-        // Short timeout - Redis should connect in milliseconds if healthy
-        // Stale sockets can hang indefinitely, so fail fast and restart Redis
-        let conn = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            ConnectionManager::new(client),
-        )
-        .await
-        .map_err(|_| Error::Timeout("Redis connection timed out".into()))??;
-
-        Ok(Channel::new(conn, &config.name))
     }
 
     /// Spawn a new worker agent.

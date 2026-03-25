@@ -20,6 +20,7 @@
 use tempfile::TempDir;
 use tinytown::town::AgentHandle;
 use tinytown::{Task, Town};
+use uuid::Uuid;
 
 // ============================================================================
 // TEST FIXTURES AND HELPERS
@@ -41,7 +42,8 @@ impl TownhallTestServer {
     /// Uses the default Redis mode so CI does not depend on per-test socket startup.
     pub async fn new(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let temp_dir = TempDir::new()?;
-        let town = Town::init(temp_dir.path(), name).await?;
+        let town_name = unique_town_name(name);
+        let town = Town::init(temp_dir.path(), &town_name).await?;
 
         Ok(Self {
             town,
@@ -76,6 +78,10 @@ impl TownhallTestServer {
         self.channel().backlog_push(task_id).await?;
         Ok(task_id)
     }
+}
+
+fn unique_town_name(prefix: &str) -> String {
+    format!("{prefix}-{}", Uuid::new_v4())
 }
 
 impl Drop for TownhallTestServer {
@@ -191,7 +197,7 @@ async fn test_townhall_test_server_creation() -> Result<(), Box<dyn std::error::
     let server = TownhallTestServer::new("townhall-infra-test").await?;
 
     // Verify town was created
-    assert_eq!(server.config().name, "townhall-infra-test");
+    assert!(server.config().name.starts_with("townhall-infra-test-"));
 
     // Verify we can spawn agents through the test server
     let agent = server.spawn_test_agent("test-worker").await?;
@@ -256,7 +262,7 @@ async fn test_services_status() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test AgentService::status (what /v1/status uses)
     let status = tinytown::AgentService::status(&server.town).await?;
-    assert_eq!(status.name, "townhall-status-test");
+    assert!(status.name.starts_with("townhall-status-test-"));
     assert_eq!(status.agent_count, 0);
 
     Ok(())
@@ -510,10 +516,8 @@ async fn test_health_endpoint_no_auth_required() -> Result<(), Box<dyn std::erro
     use tinytown::{AppState, AuthConfig, create_router};
 
     let temp_dir = tempfile::TempDir::new()?;
-    unsafe {
-        std::env::set_var("TT_USE_SOCKET", "1");
-    }
-    let town = tinytown::Town::init(temp_dir.path(), "auth-health-test").await?;
+    let town_name = unique_town_name("auth-health-test");
+    let town = tinytown::Town::init(temp_dir.path(), &town_name).await?;
 
     // Create router with API key auth mode (but health should still work)
     let auth_config = Arc::new(AuthConfig {
@@ -539,10 +543,8 @@ async fn test_protected_endpoints_require_auth() -> Result<(), Box<dyn std::erro
     use tinytown::{AppState, AuthConfig, create_router};
 
     let temp_dir = tempfile::TempDir::new()?;
-    unsafe {
-        std::env::set_var("TT_USE_SOCKET", "1");
-    }
-    let town = tinytown::Town::init(temp_dir.path(), "auth-protected-test").await?;
+    let town_name = unique_town_name("auth-protected-test");
+    let town = tinytown::Town::init(temp_dir.path(), &town_name).await?;
 
     // Create router with API key auth mode
     let (raw_key, hash) = tinytown::generate_api_key();
@@ -589,10 +591,8 @@ async fn test_x_api_key_header_auth() -> Result<(), Box<dyn std::error::Error>> 
     use tinytown::{AppState, AuthConfig, create_router};
 
     let temp_dir = tempfile::TempDir::new()?;
-    unsafe {
-        std::env::set_var("TT_USE_SOCKET", "1");
-    }
-    let town = tinytown::Town::init(temp_dir.path(), "auth-x-api-key-test").await?;
+    let town_name = unique_town_name("auth-x-api-key-test");
+    let town = tinytown::Town::init(temp_dir.path(), &town_name).await?;
 
     let (raw_key, hash) = tinytown::generate_api_key();
     let auth_config = Arc::new(AuthConfig {
@@ -622,10 +622,8 @@ async fn test_auth_mode_none_allows_all() -> Result<(), Box<dyn std::error::Erro
     use tinytown::{AppState, AuthConfig, create_router};
 
     let temp_dir = tempfile::TempDir::new()?;
-    unsafe {
-        std::env::set_var("TT_USE_SOCKET", "1");
-    }
-    let town = tinytown::Town::init(temp_dir.path(), "auth-none-test").await?;
+    let town_name = unique_town_name("auth-none-test");
+    let town = tinytown::Town::init(temp_dir.path(), &town_name).await?;
 
     // auth.mode = none (default)
     let auth_config = Arc::new(AuthConfig::default());

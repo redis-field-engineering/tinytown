@@ -44,7 +44,8 @@ impl std::ops::Deref for TownGuard {
 /// Uses the default Redis mode so CI does not depend on per-test socket startup.
 async fn create_test_town(name: &str) -> Result<TownGuard, Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
-    let town = Town::init(temp_dir.path(), name).await?;
+    let town_name = unique_town_name(name);
+    let town = Town::init(temp_dir.path(), &town_name).await?;
     Ok(TownGuard { town, temp_dir })
 }
 
@@ -1373,7 +1374,7 @@ async fn test_town_status_info() -> Result<(), Box<dyn std::error::Error>> {
 
     // Config should have expected values
     let config = town.config();
-    assert_eq!(config.name, "status-info-test");
+    assert!(config.name.starts_with("status-info-test-"));
 
     Ok(())
 }
@@ -2389,7 +2390,7 @@ async fn test_mission_storage_save_and_get_mission() -> Result<(), Box<dyn std::
     use tinytown::mission::{MissionRun, MissionState, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-basic").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-basic");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let objectives = vec![ObjectiveRef::Issue {
         owner: "owner".into(),
@@ -2420,7 +2421,7 @@ async fn test_mission_storage_delete_mission() -> Result<(), Box<dyn std::error:
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-delete").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-delete");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2452,7 +2453,7 @@ async fn test_mission_storage_active_set() -> Result<(), Box<dyn std::error::Err
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-active").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-active");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Initially empty
     let active = storage.list_active().await?;
@@ -2495,7 +2496,7 @@ async fn test_mission_storage_work_items() -> Result<(), Box<dyn std::error::Err
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef, WorkItem, WorkKind};
 
     let town = create_test_town("mission-storage-work").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-work");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2548,10 +2549,7 @@ async fn test_mission_scheduler_assigns_persisted_tasks() -> Result<(), Box<dyn 
     agent.state = AgentState::Idle;
     town.channel().set_agent_state(&agent).await?;
 
-    let storage = MissionStorage::new(
-        town.channel().conn().clone(),
-        "mission-scheduler-task-assign",
-    );
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
         owner: "owner".into(),
@@ -2613,7 +2611,7 @@ async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Er
     };
 
     let town = create_test_town("mission-storage-watch").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-watch");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2653,7 +2651,7 @@ async fn test_mission_storage_events() -> Result<(), Box<dyn std::error::Error>>
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-events").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-events");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2684,7 +2682,7 @@ async fn test_mission_storage_list_all() -> Result<(), Box<dyn std::error::Error
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-list-all").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-list-all");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Create multiple missions
     let mission1 = MissionRun::new(vec![ObjectiveRef::Doc {
@@ -2722,7 +2720,7 @@ async fn test_mission_storage_list_due_watches() -> Result<(), Box<dyn std::erro
     };
 
     let town = create_test_town("mission-storage-due-watches").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-due-watches");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Create mission with watch items
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
@@ -2756,7 +2754,7 @@ async fn test_mission_storage_update_flow() -> Result<(), Box<dyn std::error::Er
     };
 
     let town = create_test_town("mission-storage-update").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-update");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Create and save mission
     let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
