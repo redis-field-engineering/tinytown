@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tinytown::{McpState, Town, create_mcp_router};
+use uuid::Uuid;
 
 // ============================================================================
 // TEST FIXTURES AND HELPERS
@@ -34,11 +35,6 @@ pub struct McpTestContext {
 impl McpTestContext {
     /// Create a new MCP test context with a fresh town and Redis instance.
     pub async fn new(name: &str) -> Result<Self, Box<dyn std::error::Error>> {
-        // Force Unix socket mode for test isolation
-        unsafe {
-            std::env::set_var("TT_USE_SOCKET", "1");
-        }
-
         let temp_dir = TempDir::new()?;
         let town = Town::init(temp_dir.path(), name).await?;
         let mcp_state = Arc::new(McpState::new(town.clone()));
@@ -55,6 +51,10 @@ impl McpTestContext {
         self.town.spawn_agent(name, "test-cli").await?;
         Ok(())
     }
+}
+
+fn unique_town_name(prefix: &str) -> String {
+    format!("{prefix}-{}", Uuid::new_v4())
 }
 
 impl Drop for McpTestContext {
@@ -78,7 +78,8 @@ impl Drop for McpTestContext {
 /// Test that MCP router can be created successfully.
 #[tokio::test]
 async fn test_mcp_router_creation() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-router-test").await?;
+    let town_name = unique_town_name("mcp-router-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Create the MCP router - this verifies all tools, resources, and prompts register correctly
     let _router = create_mcp_router(ctx.mcp_state.clone(), "test-server", "0.1.0");
@@ -90,7 +91,8 @@ async fn test_mcp_router_creation() -> Result<(), Box<dyn std::error::Error>> {
 /// Test that MCP router can be created with agents present.
 #[tokio::test]
 async fn test_mcp_router_with_agents() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-router-agents-test").await?;
+    let town_name = unique_town_name("mcp-router-agents-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Spawn some agents
     ctx.spawn_test_agent("worker-1").await?;
@@ -113,11 +115,12 @@ async fn test_mcp_router_with_agents() -> Result<(), Box<dyn std::error::Error>>
 /// Test that AgentService (used by MCP tools) works correctly.
 #[tokio::test]
 async fn test_mcp_service_agent_operations() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-svc-agent-test").await?;
+    let town_name = unique_town_name("mcp-svc-agent-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Test status (used by town.get_status tool)
     let status = tinytown::AgentService::status(&ctx.town).await?;
-    assert_eq!(status.name, "mcp-svc-agent-test");
+    assert_eq!(status.name, town_name);
     assert_eq!(status.agent_count, 0);
 
     // Test spawn (used by agent.spawn tool)
@@ -148,7 +151,8 @@ async fn test_mcp_service_agent_operations() -> Result<(), Box<dyn std::error::E
 /// Test that TaskService (used by MCP tools) works correctly.
 #[tokio::test]
 async fn test_mcp_service_task_operations() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-svc-task-test").await?;
+    let town_name = unique_town_name("mcp-svc-task-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Spawn an agent
     ctx.spawn_test_agent("worker").await?;
@@ -183,7 +187,8 @@ async fn test_mcp_service_task_operations() -> Result<(), Box<dyn std::error::Er
 /// Test that MessageService (used by MCP tools) works correctly.
 #[tokio::test]
 async fn test_mcp_service_message_operations() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-svc-message-test").await?;
+    let town_name = unique_town_name("mcp-svc-message-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Spawn an agent
     ctx.spawn_test_agent("receiver").await?;
@@ -209,7 +214,8 @@ async fn test_mcp_service_message_operations() -> Result<(), Box<dyn std::error:
 /// Test that BacklogService (used by MCP tools) works correctly.
 #[tokio::test]
 async fn test_mcp_service_backlog_operations() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-svc-backlog-test").await?;
+    let town_name = unique_town_name("mcp-svc-backlog-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Test add (used by backlog.add tool)
     let add_result = tinytown::BacklogService::add(
@@ -255,7 +261,8 @@ async fn test_mcp_service_backlog_operations() -> Result<(), Box<dyn std::error:
 /// Test that RecoveryService (used by MCP tools) works correctly.
 #[tokio::test]
 async fn test_mcp_service_recovery_operations() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-svc-recovery-test").await?;
+    let town_name = unique_town_name("mcp-svc-recovery-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Test recover (used by recovery.recover_agents tool)
     let recover_result = tinytown::RecoveryService::recover(&ctx.town, ctx.town.root()).await?;
@@ -277,7 +284,8 @@ async fn test_mcp_service_recovery_operations() -> Result<(), Box<dyn std::error
 /// Test that the MCP router is configured correctly.
 #[tokio::test]
 async fn test_mcp_router_is_configured() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-config-test").await?;
+    let town_name = unique_town_name("mcp-config-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     // Create router with server info - if this doesn't panic, it's configured correctly
     let _router = create_mcp_router(ctx.mcp_state.clone(), "tinytown-mcp", "0.5.0");
@@ -290,7 +298,8 @@ async fn test_mcp_router_is_configured() -> Result<(), Box<dyn std::error::Error
 /// Test that parity tools are registered in the MCP router inventory.
 #[tokio::test]
 async fn test_mcp_tool_inventory_includes_parity_tools() -> Result<(), Box<dyn std::error::Error>> {
-    let ctx = McpTestContext::new("mcp-tool-inventory-test").await?;
+    let town_name = unique_town_name("mcp-tool-inventory-test");
+    let ctx = McpTestContext::new(&town_name).await?;
 
     let tool_names: HashSet<_> = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
         .into_iter()

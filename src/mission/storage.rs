@@ -16,11 +16,14 @@
 //! - `tt:{town}:mission:active` - Active mission IDs (Set)
 
 use redis::AsyncCommands;
+use redis::Script;
 use redis::aio::ConnectionManager;
 use tracing::{debug, instrument};
 
 use crate::error::Result;
-use crate::mission::types::{MissionId, MissionRun, WatchId, WatchItem, WorkItem, WorkItemId};
+use crate::mission::types::{
+    MissionControlMessage, MissionId, MissionRun, WatchId, WatchItem, WorkItem, WorkItemId,
+};
 
 /// Maximum events to keep in the activity log.
 const MAX_EVENTS: isize = 100;
@@ -65,9 +68,19 @@ impl MissionStorage {
         format!("tt:{}:mission:{}:events", self.town_name, id)
     }
 
+    /// Generate control messages key: tt:{town}:mission:{run_id}:control
+    fn control_key(&self, id: MissionId) -> String {
+        format!("tt:{}:mission:{}:control", self.town_name, id)
+    }
+
     /// Generate active missions set key: tt:{town}:mission:active
     fn active_key(&self) -> String {
         format!("tt:{}:mission:active", self.town_name)
+    }
+
+    /// Generate dispatcher lock key for a mission.
+    fn dispatch_lock_key(&self, id: MissionId) -> String {
+        format!("tt:{}:mission:{}:dispatch_lock", self.town_name, id)
     }
 
     /// Generate mission key pattern for scanning.
@@ -118,6 +131,7 @@ impl MissionStorage {
             self.work_key(id),
             self.watch_key(id),
             self.events_key(id),
+            self.control_key(id),
         ];
 
         let deleted: i64 = redis::cmd("DEL").arg(&keys).query_async(&mut conn).await?;
@@ -162,6 +176,80 @@ impl MissionStorage {
             }
         }
         Ok(missions)
+    }
+
+    /// Try to acquire a dispatcher lease for a mission.
+    #[instrument(skip(self))]
+    pub async fn try_acquire_dispatch_lock(
+        &self,
+        mission_id: MissionId,
+        owner_token: &str,
+        ttl_secs: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let key = self.dispatch_lock_key(mission_id);
+        let acquired: Option<String> = redis::cmd("SET")
+            .arg(&key)
+            .arg(owner_token)
+            .arg("NX")
+            .arg("EX")
+            .arg(ttl_secs)
+            .query_async(&mut conn)
+            .await?;
+        Ok(acquired.is_some())
+    }
+
+    /// Refresh a dispatcher lease if still owned by the given token.
+    #[instrument(skip(self))]
+    pub async fn refresh_dispatch_lock(
+        &self,
+        mission_id: MissionId,
+        owner_token: &str,
+        ttl_secs: u64,
+    ) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let key = self.dispatch_lock_key(mission_id);
+        let script = Script::new(
+            r#"
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  redis.call("EXPIRE", KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+"#,
+        );
+        let refreshed: i32 = script
+            .key(&key)
+            .arg(owner_token)
+            .arg(ttl_secs)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(refreshed == 1)
+    }
+
+    /// Release a dispatcher lease if still owned by the given token.
+    #[instrument(skip(self))]
+    pub async fn release_dispatch_lock(
+        &self,
+        mission_id: MissionId,
+        owner_token: &str,
+    ) -> Result<bool> {
+        let mut conn = self.conn.clone();
+        let key = self.dispatch_lock_key(mission_id);
+        let script = Script::new(
+            r#"
+if redis.call("GET", KEYS[1]) == ARGV[1] then
+  return redis.call("DEL", KEYS[1])
+end
+return 0
+"#,
+        );
+        let released: i32 = script
+            .key(&key)
+            .arg(owner_token)
+            .invoke_async(&mut conn)
+            .await?;
+        Ok(released == 1)
     }
 
     // ==================== WorkItem Operations ====================
@@ -307,6 +395,52 @@ impl MissionStorage {
         Ok(deleted > 0)
     }
 
+    // ==================== Control Message Operations ====================
+
+    /// Save a control message.
+    #[instrument(skip(self, message), fields(mission_id = %message.mission_id))]
+    pub async fn save_control_message(&self, message: &MissionControlMessage) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let key = self.control_key(message.mission_id);
+        let json = serde_json::to_string(message)?;
+        let _: () = conn.hset(&key, &message.id, json).await?;
+        Ok(())
+    }
+
+    /// List all control messages for a mission.
+    #[instrument(skip(self))]
+    pub async fn list_control_messages(
+        &self,
+        mission_id: MissionId,
+    ) -> Result<Vec<MissionControlMessage>> {
+        let mut conn = self.conn.clone();
+        let key = self.control_key(mission_id);
+        let messages: std::collections::HashMap<String, String> = conn.hgetall(&key).await?;
+
+        let mut control_messages = Vec::new();
+        for (_id, json) in messages {
+            if let Ok(message) = serde_json::from_str::<MissionControlMessage>(&json) {
+                control_messages.push(message);
+            }
+        }
+        control_messages.sort_by_key(|message| message.created_at);
+        Ok(control_messages)
+    }
+
+    /// List pending control messages for a mission.
+    #[instrument(skip(self))]
+    pub async fn list_pending_control_messages(
+        &self,
+        mission_id: MissionId,
+    ) -> Result<Vec<MissionControlMessage>> {
+        Ok(self
+            .list_control_messages(mission_id)
+            .await?
+            .into_iter()
+            .filter(MissionControlMessage::is_pending)
+            .collect())
+    }
+
     // ==================== Events ====================
 
     /// Log an event for a mission.
@@ -360,6 +494,8 @@ impl MissionStorage {
             if key.contains(":work")
                 || key.contains(":watch")
                 || key.contains(":events")
+                || key.contains(":control")
+                || key.contains(":dispatch_lock")
                 || key.contains(":active")
             {
                 continue;

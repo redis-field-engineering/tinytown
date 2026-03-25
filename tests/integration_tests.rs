@@ -18,6 +18,7 @@ use tinytown::{
     Agent, AgentId, AgentState, AgentType, Message, Priority, Task, TaskId, TaskService, TaskState,
     Town,
 };
+use uuid::Uuid;
 
 /// Wrapper that holds both Town and TempDir, cleaning up Redis on drop
 struct TownGuard {
@@ -40,16 +41,11 @@ impl std::ops::Deref for TownGuard {
 
 /// Helper function to create a temporary town for testing.
 /// Returns a TownGuard that cleans up Redis when dropped.
-/// Uses TT_USE_SOCKET=1 to ensure tests use isolated per-town Redis instances.
+/// Uses the default Redis mode so CI does not depend on per-test socket startup.
 async fn create_test_town(name: &str) -> Result<TownGuard, Box<dyn std::error::Error>> {
-    // Force Unix socket mode for test isolation
-    // Safety: Tests are run serially via serial_test where this matters
-    unsafe {
-        std::env::set_var("TT_USE_SOCKET", "1");
-    }
-
     let temp_dir = TempDir::new()?;
-    let town = Town::init(temp_dir.path(), name).await?;
+    let town_name = unique_town_name(name);
+    let town = Town::init(temp_dir.path(), &town_name).await?;
     Ok(TownGuard { town, temp_dir })
 }
 
@@ -66,6 +62,10 @@ fn cleanup_redis(temp_dir: &TempDir) {
     }
 }
 
+fn unique_town_name(prefix: &str) -> String {
+    format!("{prefix}-{}", Uuid::new_v4())
+}
+
 // ============================================================================
 // TOWN INITIALIZATION AND CONFIGURATION TESTS
 // ============================================================================
@@ -75,7 +75,8 @@ fn cleanup_redis(temp_dir: &TempDir) {
 async fn test_town_initialization() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let town_path = temp_dir.path();
-    let town = Town::init(town_path, "test-town").await?;
+    let town_name = unique_town_name("test-town");
+    let town = Town::init(town_path, &town_name).await?;
 
     // All runtime artifacts go under .tt/
     assert!(town_path.join(".tt").exists());
@@ -85,7 +86,7 @@ async fn test_town_initialization() -> Result<(), Box<dyn std::error::Error>> {
     assert!(town_path.join("tinytown.toml").exists());
 
     let config = town.config();
-    assert_eq!(config.name, "test-town");
+    assert_eq!(config.name, town_name);
     assert_eq!(config.root, town_path);
 
     drop(town);
@@ -98,12 +99,13 @@ async fn test_town_initialization() -> Result<(), Box<dyn std::error::Error>> {
 async fn test_town_connect() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let town_path = temp_dir.path();
+    let town_name = unique_town_name("connect-test");
 
-    let _town1 = Town::init(town_path, "connect-test").await?;
+    let _town1 = Town::init(town_path, &town_name).await?;
     let town2 = Town::connect(town_path).await?;
 
     let config = town2.config();
-    assert_eq!(config.name, "connect-test");
+    assert_eq!(config.name, town_name);
 
     drop(town2);
     drop(_town1);
@@ -1340,8 +1342,9 @@ conductor_cli = "codex"
 async fn test_town_init_creates_structure() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let town_path = temp_dir.path();
+    let town_name = unique_town_name("init-structure-test");
 
-    let _town = Town::init(town_path, "init-structure-test").await?;
+    let _town = Town::init(town_path, &town_name).await?;
 
     // Verify expected directories exist (all under .tt/)
     assert!(town_path.join(".tt").exists());
@@ -1374,7 +1377,7 @@ async fn test_town_status_info() -> Result<(), Box<dyn std::error::Error>> {
 
     // Config should have expected values
     let config = town.config();
-    assert_eq!(config.name, "status-info-test");
+    assert!(config.name.starts_with("status-info-test-"));
 
     Ok(())
 }
@@ -2390,7 +2393,7 @@ async fn test_mission_storage_save_and_get_mission() -> Result<(), Box<dyn std::
     use tinytown::mission::{MissionRun, MissionState, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-basic").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-basic");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let objectives = vec![ObjectiveRef::Issue {
         owner: "owner".into(),
@@ -2421,7 +2424,7 @@ async fn test_mission_storage_delete_mission() -> Result<(), Box<dyn std::error:
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-delete").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-delete");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2453,7 +2456,7 @@ async fn test_mission_storage_active_set() -> Result<(), Box<dyn std::error::Err
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-active").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-active");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Initially empty
     let active = storage.list_active().await?;
@@ -2496,7 +2499,7 @@ async fn test_mission_storage_work_items() -> Result<(), Box<dyn std::error::Err
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef, WorkItem, WorkKind};
 
     let town = create_test_town("mission-storage-work").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-work");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2549,10 +2552,7 @@ async fn test_mission_scheduler_assigns_persisted_tasks() -> Result<(), Box<dyn 
     agent.state = AgentState::Idle;
     town.channel().set_agent_state(&agent).await?;
 
-    let storage = MissionStorage::new(
-        town.channel().conn().clone(),
-        "mission-scheduler-task-assign",
-    );
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
         owner: "owner".into(),
@@ -2614,7 +2614,7 @@ async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Er
     };
 
     let town = create_test_town("mission-storage-watch").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-watch");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2654,7 +2654,7 @@ async fn test_mission_storage_events() -> Result<(), Box<dyn std::error::Error>>
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-events").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-events");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
         path: "test.md".into(),
@@ -2685,7 +2685,7 @@ async fn test_mission_storage_list_all() -> Result<(), Box<dyn std::error::Error
     use tinytown::mission::{MissionRun, MissionStorage, ObjectiveRef};
 
     let town = create_test_town("mission-storage-list-all").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-list-all");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Create multiple missions
     let mission1 = MissionRun::new(vec![ObjectiveRef::Doc {
@@ -2723,7 +2723,7 @@ async fn test_mission_storage_list_due_watches() -> Result<(), Box<dyn std::erro
     };
 
     let town = create_test_town("mission-storage-due-watches").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-due-watches");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Create mission with watch items
     let mission = MissionRun::new(vec![ObjectiveRef::Doc {
@@ -2757,7 +2757,7 @@ async fn test_mission_storage_update_flow() -> Result<(), Box<dyn std::error::Er
     };
 
     let town = create_test_town("mission-storage-update").await?;
-    let storage = MissionStorage::new(town.channel().conn().clone(), "mission-storage-update");
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
 
     // Create and save mission
     let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
@@ -2786,5 +2786,622 @@ async fn test_mission_storage_update_flow() -> Result<(), Box<dyn std::error::Er
     let retrieved_work = storage.get_work_item(mission_id, work_id).await?.unwrap();
     assert_eq!(retrieved_work.status, WorkStatus::Ready);
 
+    Ok(())
+}
+
+/// Test that a worker submission creates review work and PR watches.
+#[tokio::test]
+async fn test_mission_record_submission_creates_review_task_and_watches()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionStorage, ObjectiveRef, WatchKind, WorkItem,
+        WorkItemCompletion, WorkKind,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-record-submission");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let worker = town.spawn_agent("backend-worker", "claude").await?;
+    let reviewer = town.spawn_agent("reviewer", "claude").await?;
+
+    let mut worker_state = Agent::new("backend-worker", "claude", AgentType::Worker);
+    worker_state.id = worker.id();
+    worker_state.state = AgentState::Idle;
+    town.channel().set_agent_state(&worker_state).await?;
+
+    let mut reviewer_state = Agent::new("reviewer", "claude", AgentType::Worker);
+    reviewer_state.id = reviewer.id();
+    reviewer_state.state = AgentState::Idle;
+    town.channel().set_agent_state(&reviewer_state).await?;
+
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
+        owner: "owner".into(),
+        repo: "repo".into(),
+        number: 1,
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.assign(worker.id());
+    storage.save_work_item(&item).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    let completion = scheduler
+        .record_submission(
+            mission.id,
+            item.id,
+            vec![
+                "task:123".into(),
+                "Opened PR https://github.com/test/repo/pull/42".into(),
+            ],
+        )
+        .await?;
+    assert_eq!(completion, WorkItemCompletion::WaitingForReview);
+
+    let watches = storage.list_watch_items(mission.id).await?;
+    assert_eq!(watches.len(), 4);
+    assert!(
+        watches
+            .iter()
+            .any(|watch| watch.kind == WatchKind::PrChecks)
+    );
+    assert!(
+        watches
+            .iter()
+            .any(|watch| watch.kind == WatchKind::BugbotComments)
+    );
+    assert!(
+        watches
+            .iter()
+            .any(|watch| watch.kind == WatchKind::ReviewComments)
+    );
+    assert!(
+        watches
+            .iter()
+            .any(|watch| watch.kind == WatchKind::Mergeability)
+    );
+
+    let review_tasks: Vec<_> = town
+        .channel()
+        .list_tasks()
+        .await?
+        .into_iter()
+        .filter(|task| task.tags.iter().any(|tag| tag == "mission-review-task"))
+        .collect();
+    assert_eq!(review_tasks.len(), 1);
+    assert_eq!(review_tasks[0].assigned_to, Some(reviewer.id()));
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that reviewer approval finalizes a work item when no watches remain.
+#[tokio::test]
+async fn test_mission_reviewer_approval_finalizes_item() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionStorage, ObjectiveRef, WorkItem, WorkItemCompletion,
+        WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-review-approve");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["task:1"]);
+    storage.save_work_item(&item).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    let completion = scheduler
+        .approve_submission(mission.id, item.id, vec!["approved: looks good".into()])
+        .await?;
+    assert_eq!(completion, WorkItemCompletion::Completed);
+
+    let updated = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated.status, WorkStatus::Done);
+    assert!(updated.reviewer_approved);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that a failing watch creates a persisted fix task through the dispatcher.
+#[tokio::test]
+async fn test_mission_dispatcher_creates_fix_task_from_failing_watch()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun, MissionStorage,
+        MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewState, WatchItem, WatchKind, WorkItem,
+        WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-fix");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let worker = town.spawn_agent("backend-worker", "claude").await?;
+    let mut worker_state = Agent::new("backend-worker", "claude", AgentType::Worker);
+    worker_state.id = worker.id();
+    worker_state.state = AgentState::Idle;
+    town.channel().set_agent_state(&worker_state).await?;
+
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.assign(worker.id());
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/99"]);
+    storage.save_work_item(&item).await?;
+
+    let watch = WatchItem::new(mission.id, item.id, WatchKind::PrChecks, "test/repo#99", 0);
+    storage.save_watch_item(&watch).await?;
+
+    let mut github = MockGitHubClient::new();
+    github.set_pr_checks(
+        "test",
+        "repo",
+        99,
+        PrCheckResult {
+            pr_number: 99,
+            repo: "test/repo".into(),
+            status: CheckStatus::Failure,
+            checks: vec![],
+            mergeable: false,
+            review_state: ReviewState::Pending,
+            blocking_comments: vec!["CI failed".into()],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    let result = dispatcher.tick(None).await?;
+    assert_eq!(result.watch_result.watches_triggered, 1);
+
+    let fix_tasks: Vec<_> = town
+        .channel()
+        .list_tasks()
+        .await?
+        .into_iter()
+        .filter(|task| task.tags.iter().any(|tag| tag == "mission-fix-task"))
+        .collect();
+    assert_eq!(fix_tasks.len(), 1);
+    assert_eq!(fix_tasks[0].assigned_to, Some(worker.id()));
+
+    let updated_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_ne!(updated_watch.status, tinytown::mission::WatchStatus::Active);
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Blocked);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that the dispatcher finalizes a submitted item after CI passes.
+#[tokio::test]
+async fn test_mission_dispatcher_finalizes_after_successful_watch()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun, MissionStorage,
+        MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewState, TriggerAction, WatchItem,
+        WatchKind, WatchStatus, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-success");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/7"]);
+    storage.save_work_item(&item).await?;
+
+    let watch = WatchItem::new(mission.id, item.id, WatchKind::PrChecks, "test/repo#7", 0)
+        .with_trigger(TriggerAction::AdvancePipeline);
+    storage.save_watch_item(&watch).await?;
+
+    let mut github = MockGitHubClient::new();
+    github.set_pr_checks(
+        "test",
+        "repo",
+        7,
+        PrCheckResult {
+            pr_number: 7,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::NotRequired,
+            blocking_comments: vec![],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    let result = dispatcher.tick(None).await?;
+    assert_eq!(result.watch_result.watches_completed, 1);
+
+    let updated_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(updated_watch.status, WatchStatus::Done);
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Done);
+
+    let updated_mission = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(
+        updated_mission.state,
+        tinytown::mission::MissionState::Completed
+    );
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that snoozed watches are picked up again once their due time arrives.
+#[tokio::test]
+async fn test_mission_dispatcher_rechecks_snoozed_watch() -> Result<(), Box<dyn std::error::Error>>
+{
+    use tinytown::mission::{
+        CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun, MissionStorage,
+        MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewState, TriggerAction, WatchItem,
+        WatchKind, WatchStatus, WorkItem, WorkKind,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-snooze");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/99"]);
+    storage.save_work_item(&item).await?;
+
+    let watch = WatchItem::new(mission.id, item.id, WatchKind::PrChecks, "test/repo#99", 60)
+        .with_trigger(TriggerAction::CreateFixTask);
+    storage.save_watch_item(&watch).await?;
+
+    let mut failing_github = MockGitHubClient::new();
+    failing_github.set_pr_checks(
+        "test",
+        "repo",
+        99,
+        PrCheckResult {
+            pr_number: 99,
+            repo: "test/repo".into(),
+            status: CheckStatus::Failure,
+            checks: vec![],
+            mergeable: false,
+            review_state: ReviewState::Pending,
+            blocking_comments: vec!["CI failed".into()],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        failing_github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(None).await?;
+
+    let mut snoozed_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(snoozed_watch.status, WatchStatus::Snoozed);
+
+    snoozed_watch.next_due_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    storage.save_watch_item(&snoozed_watch).await?;
+
+    let mut succeeding_github = MockGitHubClient::new();
+    succeeding_github.set_pr_checks(
+        "test",
+        "repo",
+        99,
+        PrCheckResult {
+            pr_number: 99,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::NotRequired,
+            blocking_comments: vec![],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        succeeding_github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(None).await?;
+
+    let updated_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(updated_watch.status, WatchStatus::Done);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that mergeability watches do not bypass reviewer approval gates.
+#[tokio::test]
+async fn test_mission_dispatcher_mergeability_respects_reviewer_gate()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun, MissionState, MissionStorage,
+        MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewState, TriggerAction, WatchItem,
+        WatchKind, WatchStatus, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-mergeability");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = true;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/7"]);
+    storage.save_work_item(&item).await?;
+
+    let watch = WatchItem::new(
+        mission.id,
+        item.id,
+        WatchKind::Mergeability,
+        "test/repo#7",
+        0,
+    )
+    .with_trigger(TriggerAction::AdvancePipeline);
+    storage.save_watch_item(&watch).await?;
+
+    let mut github = MockGitHubClient::new();
+    github.set_pr_checks(
+        "test",
+        "repo",
+        7,
+        PrCheckResult {
+            pr_number: 7,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::Pending,
+            blocking_comments: vec![],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(None).await?;
+
+    let updated_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(updated_watch.status, WatchStatus::Done);
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Blocked);
+    assert!(!updated_item.reviewer_approved);
+
+    let updated_mission = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated_mission.state, MissionState::Running);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that scheduler completion only applies to blocked waiting items.
+#[tokio::test]
+async fn test_mission_scheduler_does_not_finalize_running_items_with_artifacts()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionState, MissionStorage, ObjectiveRef, WorkItem,
+        WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-running-item");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.status = WorkStatus::Running;
+    item.record_artifacts(["https://github.com/test/repo/pull/11"]);
+    storage.save_work_item(&item).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    scheduler.tick_missions(&[mission.id]).await?;
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Running);
+
+    let updated_mission = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated_mission.state, MissionState::Running);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that the dispatcher asks the conductor for help when ready work cannot be assigned.
+#[tokio::test]
+async fn test_mission_dispatcher_escalates_to_conductor_when_stuck()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        DispatcherConfig, MissionDispatcher, MissionRun, MissionStorage, MockGitHubClient,
+        ObjectiveRef, WorkItem, WorkKind,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-help");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.mark_ready();
+    storage.save_work_item(&item).await?;
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        MockGitHubClient::new(),
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(None).await?;
+
+    let inbox = town.channel().peek_inbox(AgentId::supervisor(), 10).await?;
+    assert!(inbox.iter().any(|message| {
+        matches!(
+            &message.msg_type,
+            MessageType::Query { question } if question.contains("[Mission Help Needed]")
+        )
+    }));
+
+    let updated = storage.get_mission(mission.id).await?.unwrap();
+    assert!(updated.dispatcher_last_help_request_at.is_some());
+    assert!(updated.dispatcher_last_help_request_reason.is_some());
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that the dispatcher consumes conductor notes from the control channel.
+#[tokio::test]
+async fn test_mission_dispatcher_processes_conductor_note() -> Result<(), Box<dyn std::error::Error>>
+{
+    use tinytown::mission::{
+        DispatcherConfig, MissionControlMessage, MissionDispatcher, MissionRun, MissionState,
+        MissionStorage, MockGitHubClient, ObjectiveRef,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-note");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.block("Waiting on operator");
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let note = MissionControlMessage::new(mission.id, "conductor", "resume and retry now");
+    let note_id = note.id.clone();
+    storage.save_control_message(&note).await?;
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        MockGitHubClient::new(),
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(Some(mission.id)).await?;
+
+    let updated = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated.state, MissionState::Running);
+    assert!(updated.dispatcher_last_progress_at.is_some());
+
+    let messages = storage.list_control_messages(mission.id).await?;
+    let processed = messages
+        .into_iter()
+        .find(|message| message.id == note_id)
+        .expect("control note should exist");
+    assert!(processed.processed_at.is_some());
+
+    drop(town);
+    cleanup_redis(&temp_dir);
     Ok(())
 }

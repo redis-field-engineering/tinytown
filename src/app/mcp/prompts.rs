@@ -74,7 +74,15 @@ pub fn conductor_startup_context_prompt(state: Arc<McpState>) -> Prompt {
                 context.push_str("- `task.complete` - Mark task as completed\n");
                 context.push_str("- `message.send` - Send message to agent\n");
                 context.push_str("- `backlog.list/add/claim` - Manage backlog\n");
+                context.push_str("- `mission.*` - Start, inspect, supervise, and control mission runs\n");
                 context.push_str("- `recovery.*` - Recovery operations\n");
+
+                context.push_str("\n## Mission Mode Supervision\n");
+                context.push_str("- `tt mission dispatch` is the persistent mission runtime\n");
+                context.push_str("- Use `tt mission status --run <id> --dispatcher` to inspect dispatcher heartbeat and stuck reasons\n");
+                context.push_str("- Watch the conductor mailbox for `[Mission Help Needed]` queries from the dispatcher\n");
+                context.push_str("- Reply to dispatcher escalations with `tt mission note <id> \"resume ...\"` or `tt mission note <id> \"pause ...\"`\n");
+                context.push_str("- Treat the dispatcher as the default orchestrator for mission-owned work; step in for staffing, blockers, and scope decisions\n");
 
                 Ok(GetPromptResult::builder()
                     .description(

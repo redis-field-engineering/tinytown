@@ -570,12 +570,36 @@ enum MissionAction {
         /// Show watch items
         #[arg(long)]
         watch: bool,
+
+        /// Show dispatcher/operator-control details
+        #[arg(long)]
+        dispatcher: bool,
     },
 
     /// Resume a stopped or blocked mission
     Resume {
         /// Mission run ID to resume
         run_id: String,
+    },
+
+    /// Run the persistent mission dispatcher loop
+    Dispatch {
+        /// Specific mission run ID to dispatch
+        #[arg(long, short = 'r')]
+        run: Option<String>,
+
+        /// Run a single dispatcher tick and exit
+        #[arg(long)]
+        once: bool,
+    },
+
+    /// Send an operator note/directive to the dispatcher for a mission
+    Note {
+        /// Mission run ID to target
+        run_id: String,
+
+        /// Note or directive body
+        message: String,
     },
 
     /// Stop an active mission
@@ -891,9 +915,21 @@ async fn describe_message(channel: &tinytown::Channel, msg_type: &tinytown::Mess
     }
 }
 
-fn mission_task_binding(
-    tags: &[String],
-) -> Option<(tinytown::mission::MissionId, tinytown::mission::WorkItemId)> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MissionTaskKind {
+    Work,
+    Review,
+    Fix,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MissionTaskBinding {
+    mission_id: tinytown::mission::MissionId,
+    work_item_id: tinytown::mission::WorkItemId,
+    kind: MissionTaskKind,
+}
+
+fn mission_task_binding(tags: &[String]) -> Option<MissionTaskBinding> {
     let mission_id = tags
         .iter()
         .find_map(|tag| tag.strip_prefix("mission:"))
@@ -902,7 +938,18 @@ fn mission_task_binding(
         .iter()
         .find_map(|tag| tag.strip_prefix("work-item:"))
         .and_then(|value| value.parse().ok())?;
-    Some((mission_id, work_item_id))
+    let kind = if tags.iter().any(|tag| tag == "mission-review-task") {
+        MissionTaskKind::Review
+    } else if tags.iter().any(|tag| tag == "mission-fix-task") {
+        MissionTaskKind::Fix
+    } else {
+        MissionTaskKind::Work
+    };
+    Some(MissionTaskBinding {
+        mission_id,
+        work_item_id,
+        kind,
+    })
 }
 
 fn truncate_summary(text: &str, max_chars: usize) -> String {
@@ -2156,7 +2203,7 @@ async fn main() -> Result<()> {
                         let task = completed.task;
                         let result_msg = completed.result;
 
-                        if let Some((mission_id, work_item_id)) = mission_task_binding(&task.tags) {
+                        if let Some(binding) = mission_task_binding(&task.tags) {
                             use tinytown::mission::{MissionScheduler, MissionStorage};
 
                             let storage = MissionStorage::new(
@@ -2167,14 +2214,45 @@ async fn main() -> Result<()> {
                                 storage.clone(),
                                 town.channel().clone(),
                             );
-                            let completion = scheduler
-                                .complete_work_item(
-                                    mission_id,
-                                    work_item_id,
-                                    vec![format!("task:{}", tid)],
-                                    false,
-                                )
-                                .await?;
+                            let mut artifacts = vec![format!("task:{}", tid)];
+                            if !result_msg.trim().is_empty() {
+                                artifacts.push(result_msg.clone());
+                            }
+                            let completion = match binding.kind {
+                                MissionTaskKind::Work | MissionTaskKind::Fix => {
+                                    scheduler
+                                        .record_submission(
+                                            binding.mission_id,
+                                            binding.work_item_id,
+                                            artifacts,
+                                        )
+                                        .await?
+                                }
+                                MissionTaskKind::Review => {
+                                    if result_msg.trim().to_lowercase().starts_with("rejected:")
+                                        || result_msg
+                                            .trim()
+                                            .to_lowercase()
+                                            .starts_with("changes requested:")
+                                    {
+                                        scheduler
+                                            .request_changes(
+                                                binding.mission_id,
+                                                binding.work_item_id,
+                                                result_msg.trim(),
+                                            )
+                                            .await?
+                                    } else {
+                                        scheduler
+                                            .approve_submission(
+                                                binding.mission_id,
+                                                binding.work_item_id,
+                                                artifacts,
+                                            )
+                                            .await?
+                                    }
+                                }
+                            };
                             match completion {
                                 tinytown::mission::WorkItemCompletion::Completed => {
                                     let tick_result = scheduler.tick().await?;
@@ -2183,21 +2261,27 @@ async fn main() -> Result<()> {
                                         tick_result.total_promoted, tick_result.total_assigned
                                     );
                                 }
-                                tinytown::mission::WorkItemCompletion::ReviewerApprovalRequired => {
+                                tinytown::mission::WorkItemCompletion::ReviewerApprovalRequired
+                                | tinytown::mission::WorkItemCompletion::WaitingForReview => {
                                     info!(
-                                        "   Mission sync: reviewer approval is still required before the work item can be completed"
+                                        "   Mission sync: work item is waiting on reviewer approval"
+                                    );
+                                }
+                                tinytown::mission::WorkItemCompletion::WaitingForExternal => {
+                                    info!(
+                                        "   Mission sync: work item is waiting on PR/CI/Bugbot/merge watches"
                                     );
                                 }
                                 tinytown::mission::WorkItemCompletion::MissionNotFound => {
                                     warn!(
                                         "   Mission sync: mission {} no longer exists; skipping work item completion sync",
-                                        mission_id
+                                        binding.mission_id
                                     );
                                 }
                                 tinytown::mission::WorkItemCompletion::WorkItemNotFound => {
                                     warn!(
                                         "   Mission sync: work item {} was not found in mission {}; skipping completion sync",
-                                        work_item_id, mission_id
+                                        binding.work_item_id, binding.mission_id
                                     );
                                 }
                             }
@@ -3197,6 +3281,20 @@ tt inbox <agent>                   # Check agent's inbox
   - `tt status --deep`
 - When work tied to a real Tinytown task is done, workers should still run `tt task complete <task_id> --result "what changed"` instead of only sending an informational message.
 
+### Mission Mode Supervision
+
+- `tt mission start ...` bootstraps a mission, but `tt mission dispatch` is the persistent runtime that keeps it moving.
+- If you are supervising a mission, make sure the dispatcher is running before you start manually prodding agents.
+- Treat the dispatcher as the default orchestrator for mission-owned work. Do not manually reassign mission tasks unless you are intentionally intervening.
+- Watch the conductor inbox for dispatcher escalations such as `[Mission Help Needed] ...`.
+- When the dispatcher asks for help:
+  - inspect status with `tt mission status --run <mission-id> --dispatcher`
+  - review detailed work/watch state with `tt mission status --run <mission-id> --work --watch`
+  - if staffing is the problem, spawn or free the needed agent(s)
+  - reply to the dispatcher with `tt mission note <mission-id> "resume ..."` or `tt mission note <mission-id> "pause ..."`
+- Use `tt mission note` for operator directives to the dispatcher; do not rely on free-form inbox messages for dispatcher control.
+- Your role in mission mode is to supervise exceptions, staffing, and scope decisions, while the dispatcher owns routine progression.
+
 ### Check status and stats
 ```bash
 tt status         # Overview of town and agents
@@ -3218,6 +3316,14 @@ tt sync pull                # Save Redis state to tasks.toml (for git)
 tt save                     # Save Redis AOF snapshot (for version control)
 ```
 
+### Mission mode
+```bash
+tt mission start --issue <N> [--issue <N> ...]
+tt mission dispatch [--run <mission-id>] [--once]
+tt mission status [--run <mission-id>] [--work] [--watch] [--dispatcher]
+tt mission note <mission-id> "<directive>"
+```
+
 ## Your Role
 
 1. **Understand** what the user wants to accomplish
@@ -3228,7 +3334,8 @@ tt save                     # Save Redis AOF snapshot (for version control)
 6. **Monitor** progress with `tt status --deep` (shows rounds, uptime, activity)
 7. **Coordinate** handoffs between agents without becoming the bottleneck
 8. **Use reviewer outcomes** to decide when work is complete
-9. **Cleanup**: When done, stop agents with `tt kill <agent>`
+9. **Supervise mission mode** by keeping the dispatcher running, responding to dispatcher help requests, and using `tt mission note` / `tt mission status --dispatcher` when missions escalate
+10. **Cleanup**: When done, stop agents with `tt kill <agent>`
 
 ## The Reviewer Pattern
 
@@ -3250,7 +3357,9 @@ This keeps execution flowing: agents hand off obvious next steps directly, revie
 - Prefer direct worker/reviewer/worker coordination when the next handoff is obvious
 - Keep the conductor in the loop with `tt send supervisor --info ...` when humans need visibility without blocking execution
 - Check `tt status` frequently to monitor progress
+- Check `tt inbox conductor` for blocker queries and mission dispatcher help requests
 - Keep backlog flowing: if an agent goes idle, have it review backlog and claim role-matching work
+- In mission mode, prefer `tt mission status --dispatcher` and `tt mission note` over ad hoc manual nudges when the dispatcher is already managing the run
 - **Save state to git**: Run `tt sync pull` periodically to save task state to tasks.toml, then suggest committing it
 
 ## Example Workflow
@@ -4159,8 +4268,8 @@ Now, help the user orchestrate their project!
 
         Commands::Mission { action } => {
             use tinytown::mission::{
-                MissionId, MissionPolicy, MissionRun, MissionScheduler, MissionState,
-                MissionStorage, ObjectiveRef,
+                DispatcherConfig, GhCliGitHubClient, MissionDispatcher, MissionId, MissionPolicy,
+                MissionRun, MissionScheduler, MissionState, MissionStorage, ObjectiveRef,
             };
 
             let town = Town::connect(&cli.town).await?;
@@ -4256,7 +4365,12 @@ Now, help the user orchestrate their project!
                     );
                 }
 
-                MissionAction::Status { run, work, watch } => {
+                MissionAction::Status {
+                    run,
+                    work,
+                    watch,
+                    dispatcher,
+                } => {
                     if let Some(run_id) = run {
                         // Show specific mission
                         let mission_id: MissionId = run_id
@@ -4268,7 +4382,7 @@ Now, help the user orchestrate their project!
                             return Ok(());
                         };
 
-                        print_mission_status(&storage, &mission, work, watch).await?;
+                        print_mission_status(&storage, &mission, work, watch, dispatcher).await?;
                     } else {
                         // Show all active missions
                         let active_ids = storage.list_active().await?;
@@ -4284,7 +4398,14 @@ Now, help the user orchestrate their project!
 
                         for mission_id in active_ids {
                             if let Some(mission) = storage.get_mission(mission_id).await? {
-                                print_mission_summary(&mission);
+                                if work || watch || dispatcher {
+                                    print_mission_status(
+                                        &storage, &mission, work, watch, dispatcher,
+                                    )
+                                    .await?;
+                                } else {
+                                    print_mission_summary(&mission);
+                                }
                             }
                         }
                     }
@@ -4318,6 +4439,65 @@ Now, help the user orchestrate their project!
                         .await?;
 
                     info!("▶️  Mission {} resumed", run_id);
+                }
+
+                MissionAction::Dispatch { run, once } => {
+                    let run_id =
+                        if let Some(run_id) = run {
+                            Some(run_id.parse().map_err(|_| {
+                                tinytown::Error::Config("Invalid mission ID".into())
+                            })?)
+                        } else {
+                            None
+                        };
+
+                    let dispatcher = MissionDispatcher::new(
+                        storage.clone(),
+                        town.channel().clone(),
+                        GhCliGitHubClient,
+                        DispatcherConfig::default(),
+                    );
+
+                    if once {
+                        let result = dispatcher.tick(run_id).await?;
+                        info!(
+                            "🛰️  Dispatcher tick: claimed {} mission(s), processed {} watch(es), promoted {}, assigned {}",
+                            result.claimed_missions.len(),
+                            result.watch_result.watches_processed,
+                            result.scheduler_result.total_promoted,
+                            result.scheduler_result.total_assigned
+                        );
+                    } else {
+                        info!("🛰️  Mission dispatcher running");
+                        if let Some(run_id) = run_id {
+                            info!("   Run filter: {}", run_id);
+                        } else {
+                            info!("   Scope: all active missions");
+                        }
+                        dispatcher.run(run_id).await?;
+                    }
+                }
+
+                MissionAction::Note { run_id, message } => {
+                    use tinytown::mission::MissionControlMessage;
+
+                    let mission_id: MissionId = run_id
+                        .parse()
+                        .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?;
+                    let Some(_mission) = storage.get_mission(mission_id).await? else {
+                        info!("❌ Mission {} not found", run_id);
+                        return Ok(());
+                    };
+
+                    let note = MissionControlMessage::new(mission_id, "conductor", message.clone());
+                    storage.save_control_message(&note).await?;
+                    storage
+                        .log_event(
+                            mission_id,
+                            &format!("Conductor note queued for dispatcher: {}", message),
+                        )
+                        .await?;
+                    info!("📝 Queued dispatcher note for mission {}", run_id);
                 }
 
                 MissionAction::Stop { run_id, force } => {
@@ -4634,6 +4814,7 @@ async fn print_mission_status(
     mission: &tinytown::mission::MissionRun,
     show_work: bool,
     show_watch: bool,
+    show_dispatcher: bool,
 ) -> tinytown::Result<()> {
     let state_emoji = match mission.state {
         tinytown::mission::MissionState::Planning => "📝",
@@ -4673,6 +4854,50 @@ async fn print_mission_status(
         info!("🚧 Blocked Reason: {}", reason);
         info!("");
     }
+    if let Some(next_wake_at) = mission.next_wake_at {
+        info!(
+            "⏰ Next Wake: {}",
+            next_wake_at.format("%Y-%m-%d %H:%M:%S UTC")
+        );
+        info!("");
+    }
+
+    if show_dispatcher {
+        info!("🛰️  Dispatcher:");
+        match mission.dispatcher_last_tick_at {
+            Some(ts) => info!("   Last tick: {}", ts.format("%Y-%m-%d %H:%M:%S UTC")),
+            None => info!("   Last tick: never"),
+        }
+        match mission.dispatcher_last_progress_at {
+            Some(ts) => info!("   Last progress: {}", ts.format("%Y-%m-%d %H:%M:%S UTC")),
+            None => info!("   Last progress: none recorded"),
+        }
+        if let Some(ts) = mission.dispatcher_last_help_request_at {
+            info!(
+                "   Last help request: {}",
+                ts.format("%Y-%m-%d %H:%M:%S UTC")
+            );
+        }
+        if let Some(reason) = &mission.dispatcher_last_help_request_reason {
+            info!("   Help reason: {}", reason);
+        }
+
+        let control_messages = storage.list_control_messages(mission.id).await?;
+        let pending_controls: Vec<_> = control_messages
+            .iter()
+            .filter(|message| message.is_pending())
+            .collect();
+        info!("   Control messages: {} total", control_messages.len());
+        info!("   Pending control messages: {}", pending_controls.len());
+        for message in pending_controls.iter().take(3) {
+            info!(
+                "      - {}: {}",
+                message.sender,
+                truncate_summary(&message.body, 100)
+            );
+        }
+        info!("");
+    }
 
     // Work items
     let work_items = storage.list_work_items(mission.id).await?;
@@ -4694,6 +4919,9 @@ async fn print_mission_status(
             );
             if let Some(agent) = item.assigned_to {
                 info!("      └─ Assigned to: {}", agent);
+            }
+            if item.reviewer_approved {
+                info!("      └─ Reviewer approved");
             }
         }
     } else {

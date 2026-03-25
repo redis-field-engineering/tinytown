@@ -80,8 +80,14 @@ Output:
 ## Step 4: Monitor Progress
 
 ```bash
+# Run the persistent dispatcher loop
+tt mission dispatch
+
 # Check overall status
 tt mission status
+
+# Include dispatcher heartbeat/help state
+tt mission status --dispatcher
 
 # Detailed work item view
 tt mission status --work
@@ -90,15 +96,16 @@ tt mission status --work
 tt mission status --work --watch
 ```
 
-## Step 5: Understand the Scheduler
+## Step 5: Understand the Dispatcher
 
-The mission scheduler runs every 30 seconds and:
+The mission dispatcher runs every 30 seconds and:
 
 1. **Promotes work items**: Issue #1 starts immediately (no deps)
 2. **Assigns to agents**: Designer gets Issue #1
 3. **Monitors completion**: When #1 done, #2 becomes ready
-4. **Watches PRs**: Creates watch items for CI status
-5. **Enforces gates**: Reviewer approval before merge
+4. **Watches PRs**: Creates watch items for CI/Bugbot/review status
+5. **Enforces gates**: Reviewer approval before final completion
+6. **Escalates when stuck**: Sends a help query to the conductor if work is ready but no agent can take it, or if a mission remains stalled
 
 ```
 Round 1: Issue #1 → ready → assigned to designer
@@ -122,8 +129,9 @@ tt mission status --watch
 
 The mission will:
 - Auto-retry CI checks
-- Create fix tasks if bugbot comments
-- Wait for human review if reviewer_required
+- Create persisted fix tasks if CI or Bugbot comments fail
+- Create reviewer tasks and wait for approval if `reviewer_required`
+- Ask the conductor for help when it stays stuck; respond with `tt mission note <run-id> "resume ..."` or `tt mission note <run-id> "pause ..."`
 
 ## Step 7: Stop and Resume
 
@@ -176,6 +184,7 @@ Then reference it (feature coming soon).
 | Work item never ready | Verify dependency markers parsed |
 | Agent not assigned | Spawn agent with matching role |
 | CI watch failing | Check GitHub API permissions |
+| Dispatcher asked for help | Inspect `tt mission status --dispatcher` and send a note with `tt mission note <run-id> "<directive>"` |
 
 ## Best Practices
 

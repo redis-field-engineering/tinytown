@@ -23,6 +23,8 @@ Like the train conductor guiding the miniature train through Tiny Town, Colorado
 
 The conductor knows how to use the `tt` CLI to orchestrate your project.
 
+When you use mission mode, the conductor is also responsible for supervising the persistent mission dispatcher: keeping it running, responding to dispatcher help requests, and sending operator directives back with `tt mission note`.
+
 ## Options
 
 | Option | Short | Description |
@@ -161,6 +163,36 @@ When the next execution handoff is obvious, prefer direct agent-to-agent messagi
 
 Keep the conductor in the loop with `tt send supervisor --info ...` when a human should stay informed, but do not force routine execution routing through the conductor.
 
+## Mission Mode Supervision
+
+When mission mode is active, the conductor should treat `tt mission dispatch` as the routine orchestrator for mission-owned work.
+
+Recommended loop:
+
+```bash
+# Start the mission runtime
+tt mission dispatch
+
+# Watch for dispatcher escalations in the conductor mailbox
+tt inbox conductor
+
+# Inspect dispatcher heartbeat / stuck reason / pending control notes
+tt mission status --run <mission-id> --dispatcher
+
+# Inspect work and watches before intervening
+tt mission status --run <mission-id> --work --watch
+
+# Send an operator directive back to the dispatcher
+tt mission note <mission-id> "resume and retry now"
+tt mission note <mission-id> "pause until product decision is made"
+```
+
+Mission-mode rules:
+- Let the dispatcher own routine progression once it is running.
+- Intervene when the dispatcher asks for help, staffing changes are needed, or scope/human judgment is required.
+- If the dispatcher reports no idle agents, spawn or free the needed agent before telling it to resume.
+- Use `tt mission note` for dispatcher control; do not assume free-form inbox messages will be consumed by the dispatcher.
+
 ## How Workers Report Back
 
 Use `conductor` as the user-facing name for the human-in-the-loop orchestrator. `supervisor` is the same well-known mailbox internally, so the names are interchangeable in CLI commands.
@@ -216,6 +248,7 @@ You are the **conductor** of Tinytown "my-project"...
 - tt backlog claim <task_id> <agent> - Claim backlog task
 - tt task complete <task_id> --result "summary" - Mark task done
 - tt status - Check progress
+- tt mission dispatch / status / note - Supervise mission runs and answer dispatcher escalations
 
 ## The Reviewer Pattern
 Always spawn a reviewer. They decide when work is done, but they should route concrete feedback directly to the owning worker whenever possible.
@@ -225,7 +258,8 @@ Always spawn a reviewer. They decide when work is done, but they should route co
 2. Spawn workers + reviewer
 3. Assign initial work and keep direct handoffs flowing
 4. Step in for human decisions, priority changes, escalation, or broader sequencing
-5. Save state with `tt sync pull`, suggest git commit
+5. In mission mode, monitor dispatcher escalations and answer them with `tt mission note`
+6. Save state with `tt sync pull`, suggest git commit
 ```
 
 ## Comparison with `gt mayor attach`

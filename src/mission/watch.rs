@@ -21,6 +21,8 @@
 
 use std::collections::HashMap;
 
+use serde_json::Value;
+use tokio::process::Command;
 use tracing::{debug, info, instrument, warn};
 
 use crate::agent::AgentId;
@@ -29,6 +31,7 @@ use crate::error::Result;
 use crate::message::{Message, MessageType};
 use crate::mission::storage::MissionStorage;
 use crate::mission::types::{MissionId, TriggerAction, WatchId, WatchItem, WatchKind, WatchStatus};
+use crate::task::Task;
 
 // ==================== Watch Check Results ====================
 
@@ -232,10 +235,29 @@ impl<G: GitHubClient> WatchEngine<G> {
     /// Processes all due watch items across active missions.
     #[instrument(skip(self))]
     pub async fn tick(&self) -> Result<WatchEngineTickResult> {
-        let mut result = WatchEngineTickResult::default();
-
-        // Get all due watches
         let due_watches = self.storage.list_due_watches().await?;
+        self.process_due_watches(due_watches).await
+    }
+
+    /// Run a watch tick for the provided mission IDs only.
+    #[instrument(skip(self, mission_ids))]
+    pub async fn tick_missions(&self, mission_ids: &[MissionId]) -> Result<WatchEngineTickResult> {
+        let mut due_watches = Vec::new();
+        for mission_id in mission_ids {
+            for watch in self.storage.list_watch_items(*mission_id).await? {
+                if watch.is_due() {
+                    due_watches.push(watch);
+                }
+            }
+        }
+        self.process_due_watches(due_watches).await
+    }
+
+    async fn process_due_watches(
+        &self,
+        due_watches: Vec<WatchItem>,
+    ) -> Result<WatchEngineTickResult> {
+        let mut result = WatchEngineTickResult::default();
         debug!("Watch engine tick: {} due watches", due_watches.len());
 
         for watch in due_watches {
@@ -306,14 +328,22 @@ impl<G: GitHubClient> WatchEngine<G> {
                     result.triggered = true;
                     result.action_taken = Some(watch.on_trigger);
 
-                    // Execute trigger action
-                    self.execute_trigger_action(watch).await?;
+                    // AdvancePipeline completion is enforced by scheduler gates once
+                    // the watch completes; avoid bypassing reviewer/watch state here.
+                    if watch.on_trigger != TriggerAction::AdvancePipeline || !should_complete {
+                        self.execute_trigger_action(watch).await?;
+                    }
+
+                    if !should_complete {
+                        updated_watch.snooze(self.config.default_interval_secs);
+                        result.new_status = WatchStatus::Snoozed;
+                    }
                 }
 
                 if should_complete {
                     updated_watch.complete();
                     result.new_status = WatchStatus::Done;
-                } else {
+                } else if !triggered {
                     updated_watch.record_check();
                 }
 
@@ -453,19 +483,38 @@ impl<G: GitHubClient> WatchEngine<G> {
 
         // If the work item has an assigned agent, send them a fix task
         if let Some(agent_id) = work_item.assigned_to {
-            let task_description = format!(
-                "[Mission Fix Required] {}\n\nWatch type: {:?}\nTarget: {}\n\nPlease investigate and fix the issues.",
+            let mut task = Task::new(format!(
+                "[Mission Fix Required] {}\n\nWatch type: {:?}\nTarget: {}\n\nInvestigate the reported issue, update the branch/PR, and complete this task with the refreshed PR URL or ref.",
                 work_item.title, watch.kind, watch.target_ref
-            );
+            ))
+            .with_tags([
+                "mission-fix-task".to_string(),
+                format!("mission:{}", watch.mission_id),
+                format!("work-item:{}", watch.work_item_id),
+                format!("watch:{}", watch.id),
+            ]);
+            task.assign(agent_id);
+            let task_id = task.id;
+            self.channel.set_task(&task).await?;
 
             let msg = Message::new(
                 AgentId::supervisor(),
                 agent_id,
-                MessageType::Task {
-                    description: task_description,
+                MessageType::TaskAssign {
+                    task_id: task_id.to_string(),
                 },
             );
             self.channel.send(&msg).await?;
+
+            self.storage
+                .log_event(
+                    watch.mission_id,
+                    &format!(
+                        "Created fix task {} for work item '{}' due to {:?}",
+                        task_id, work_item.title, watch.kind
+                    ),
+                )
+                .await?;
 
             info!(
                 "Created fix task for work item '{}' assigned to agent {:?}",
@@ -515,27 +564,32 @@ impl<G: GitHubClient> WatchEngine<G> {
 
     /// Advance the pipeline (mark work item ready for next step).
     async fn advance_pipeline(&self, watch: &WatchItem) -> Result<()> {
-        // Get the work item and mark it as done
         if let Some(mut work_item) = self
             .storage
             .get_work_item(watch.mission_id, watch.work_item_id)
             .await?
         {
-            work_item.complete(vec![watch.target_ref.clone()]);
+            if !work_item
+                .artifact_refs
+                .iter()
+                .any(|artifact| artifact == &watch.target_ref)
+            {
+                work_item.artifact_refs.push(watch.target_ref.clone());
+            }
             self.storage.save_work_item(&work_item).await?;
 
             self.storage
                 .log_event(
                     watch.mission_id,
                     &format!(
-                        "Work item '{}' completed via pipeline advance",
+                        "Work item '{}' is eligible for scheduler-driven pipeline advance",
                         work_item.title
                     ),
                 )
                 .await?;
 
             info!(
-                "Advanced pipeline: work item '{}' completed",
+                "Advanced pipeline: work item '{}' is ready for scheduler gates",
                 work_item.title
             );
         }
@@ -564,6 +618,248 @@ impl<G: GitHubClient> WatchEngine<G> {
         }
 
         Ok(())
+    }
+}
+
+/// GitHub client backed by the local `gh` CLI.
+///
+/// The runtime uses `gh`, consistent with other mission commands, while tests
+/// continue to rely on `MockGitHubClient`.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct GhCliGitHubClient;
+
+#[derive(serde::Deserialize)]
+struct GhPrView {
+    #[serde(rename = "statusCheckRollup", default)]
+    status_check_rollup: Vec<Value>,
+    #[serde(default)]
+    mergeable: Option<String>,
+    #[serde(rename = "reviewDecision", default)]
+    review_decision: Option<String>,
+    #[serde(default)]
+    reviews: Vec<GhReview>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhReview {
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    author: Option<GhNamedAuthor>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhNamedAuthor {
+    #[serde(default)]
+    login: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhIssueComment {
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    user: Option<GhNamedAuthor>,
+}
+
+impl GhCliGitHubClient {
+    async fn gh_json<T: serde::de::DeserializeOwned>(args: &[String]) -> Result<T> {
+        let output = Command::new("gh").args(args).output().await?;
+        if !output.status.success() {
+            return Err(crate::error::Error::Config(format!(
+                "gh command failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        Ok(serde_json::from_slice(&output.stdout)?)
+    }
+
+    fn parse_check_status(checks: &[Value]) -> (CheckStatus, Vec<CheckDetail>) {
+        let mut overall = CheckStatus::Unknown;
+        let mut details = Vec::new();
+
+        for check in checks {
+            let name = check
+                .get("name")
+                .and_then(Value::as_str)
+                .or_else(|| check.get("context").and_then(Value::as_str))
+                .unwrap_or("check")
+                .to_string();
+            let raw = check
+                .get("conclusion")
+                .and_then(Value::as_str)
+                .or_else(|| check.get("state").and_then(Value::as_str))
+                .or_else(|| check.get("status").and_then(Value::as_str))
+                .unwrap_or("unknown")
+                .to_lowercase();
+            let status = match raw.as_str() {
+                "success" => CheckStatus::Success,
+                "neutral" | "skipped" => CheckStatus::Success,
+                "queued" | "pending" | "in_progress" | "expected" => CheckStatus::Pending,
+                "failure" | "failed" | "timed_out" | "action_required" | "cancelled" => {
+                    CheckStatus::Failure
+                }
+                _ => CheckStatus::Unknown,
+            };
+
+            overall = match (overall, status) {
+                (_, CheckStatus::Failure) => CheckStatus::Failure,
+                (CheckStatus::Unknown, other) => other,
+                (CheckStatus::Success, CheckStatus::Pending)
+                | (CheckStatus::Pending, CheckStatus::Success) => CheckStatus::Pending,
+                (current, _) => current,
+            };
+
+            details.push(CheckDetail {
+                name,
+                status,
+                details: None,
+            });
+        }
+
+        (overall, details)
+    }
+
+    fn parse_mergeable(value: Option<String>) -> bool {
+        matches!(
+            value.as_deref().map(str::to_ascii_uppercase).as_deref(),
+            Some("MERGEABLE") | Some("CLEAN") | Some("HAS_HOOKS") | Some("UNSTABLE")
+        )
+    }
+
+    fn parse_review_state(value: Option<String>) -> ReviewState {
+        match value.as_deref().map(str::to_ascii_uppercase).as_deref() {
+            Some("APPROVED") => ReviewState::Approved,
+            Some("CHANGES_REQUESTED") => ReviewState::ChangesRequested,
+            Some("REVIEW_REQUIRED") => ReviewState::Pending,
+            _ => ReviewState::Pending,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl GitHubClient for GhCliGitHubClient {
+    async fn get_pr_checks(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<PrCheckResult> {
+        let payload: GhPrView = Self::gh_json(&[
+            "pr".to_string(),
+            "view".to_string(),
+            pr_number.to_string(),
+            "--repo".to_string(),
+            format!("{owner}/{repo}"),
+            "--json".to_string(),
+            "statusCheckRollup,mergeable,reviewDecision,reviews".to_string(),
+        ])
+        .await?;
+
+        let (status, checks) = Self::parse_check_status(&payload.status_check_rollup);
+        let review_state = Self::parse_review_state(payload.review_decision);
+        let blocking_comments = payload
+            .reviews
+            .iter()
+            .filter_map(|review| {
+                let state = review.state.as_deref()?.to_ascii_uppercase();
+                if state == "CHANGES_REQUESTED" {
+                    review.body.clone()
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(PrCheckResult {
+            pr_number,
+            repo: format!("{owner}/{repo}"),
+            status,
+            checks,
+            mergeable: Self::parse_mergeable(payload.mergeable),
+            review_state,
+            blocking_comments,
+        })
+    }
+
+    async fn get_pr_reviews(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<ReviewComment>> {
+        let payload: GhPrView = Self::gh_json(&[
+            "pr".to_string(),
+            "view".to_string(),
+            pr_number.to_string(),
+            "--repo".to_string(),
+            format!("{owner}/{repo}"),
+            "--json".to_string(),
+            "reviews,reviewDecision".to_string(),
+        ])
+        .await?;
+
+        Ok(payload
+            .reviews
+            .into_iter()
+            .map(|review| {
+                let state = review.state.unwrap_or_default().to_ascii_uppercase();
+                let body = review.body.unwrap_or_default();
+                ReviewComment {
+                    author: review
+                        .author
+                        .and_then(|author| author.login)
+                        .unwrap_or_else(|| "reviewer".to_string()),
+                    is_actionable: state == "CHANGES_REQUESTED",
+                    body,
+                }
+            })
+            .collect())
+    }
+
+    async fn get_bugbot_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> Result<Vec<BugbotComment>> {
+        let comments: Vec<GhIssueComment> = Self::gh_json(&[
+            "api".to_string(),
+            format!("repos/{owner}/{repo}/issues/{pr_number}/comments"),
+        ])
+        .await?;
+
+        Ok(comments
+            .into_iter()
+            .filter_map(|comment| {
+                let author = comment.user.and_then(|user| user.login)?;
+                let body = comment.body.unwrap_or_default();
+                let lower_author = author.to_ascii_lowercase();
+                let lower_body = body.to_ascii_lowercase();
+                if lower_author.contains("bugbot")
+                    || lower_author.contains("cursor")
+                    || lower_body.contains("bugbot")
+                    || lower_body.contains("cursor bugbot")
+                {
+                    Some(BugbotComment {
+                        bot_name: author,
+                        severity: if lower_body.contains("critical") {
+                            "critical".to_string()
+                        } else if lower_body.contains("high") {
+                            "high".to_string()
+                        } else {
+                            "unknown".to_string()
+                        },
+                        description: body,
+                        file_path: None,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect())
     }
 }
 
