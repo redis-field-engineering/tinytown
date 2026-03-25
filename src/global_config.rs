@@ -27,6 +27,10 @@ pub struct GlobalConfig {
     #[serde(default = "default_cli")]
     pub default_cli: String,
 
+    /// CLI to use for the interactive conductor (defaults to default_cli)
+    #[serde(default)]
+    pub conductor_cli: Option<String>,
+
     /// Custom CLI definitions (name -> command)
     #[serde(default)]
     pub agent_clis: std::collections::HashMap<String, String>,
@@ -87,6 +91,7 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             default_cli: default_cli(),
+            conductor_cli: None,
             agent_clis: std::collections::HashMap::new(),
             redis: GlobalRedisConfig::default(),
         }
@@ -205,6 +210,10 @@ impl GlobalConfig {
                 self.default_cli = value.to_string();
                 Ok(())
             }
+            "conductor_cli" => {
+                self.conductor_cli = Some(value.to_string());
+                Ok(())
+            }
             "redis.host" => {
                 self.redis.host = value.to_string();
                 Ok(())
@@ -248,6 +257,11 @@ impl GlobalConfig {
     pub fn get(&self, key: &str) -> Option<String> {
         match key {
             "default_cli" => Some(self.default_cli.clone()),
+            "conductor_cli" => Some(
+                self.conductor_cli
+                    .clone()
+                    .unwrap_or_else(|| self.default_cli.clone()),
+            ),
             "redis.host" => Some(self.redis.host.clone()),
             "redis.port" => Some(self.redis.port.to_string()),
             "redis.password" => self.redis.password.clone(),

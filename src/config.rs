@@ -46,6 +46,10 @@ pub struct Config {
     #[serde(default = "default_cli")]
     pub default_cli: String,
 
+    /// CLI to use for the interactive conductor
+    #[serde(default)]
+    pub conductor_cli: Option<String>,
+
     /// Maximum concurrent agents
     #[serde(default = "default_max_agents")]
     pub max_agents: usize,
@@ -516,6 +520,7 @@ impl Config {
             redis,
             agent_clis,
             default_cli: global.default_cli.clone(),
+            conductor_cli: global.conductor_cli.clone(),
             max_agents: 10,
             use_central_redis,
             townhall: TownhallConfig::default(),
@@ -541,6 +546,15 @@ impl Config {
         config.root = root.to_path_buf();
 
         Ok(config)
+    }
+
+    /// Get the CLI to use for the interactive conductor.
+    #[must_use]
+    pub fn conductor_cli_name(&self) -> &str {
+        self.conductor_cli
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&self.default_cli)
     }
 
     /// Save configuration to the town directory.

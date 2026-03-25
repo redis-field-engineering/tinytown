@@ -1023,6 +1023,7 @@ async fn test_default_cli_config() -> Result<(), Box<dyn std::error::Error>> {
     let global = GlobalConfig::load().unwrap_or_default();
     assert!(!config.default_cli.is_empty());
     assert_eq!(config.default_cli, global.default_cli); // Should match global config
+    assert_eq!(config.conductor_cli_name(), global.default_cli);
 
     // Agent CLIs should include built-in presets
     assert!(config.agent_clis.contains_key("claude"));
@@ -1298,9 +1299,38 @@ async fn test_global_config_defaults() -> Result<(), Box<dyn std::error::Error>>
     // We can test that GlobalConfig can be serialized/deserialized with defaults
     let toml_str = r#"
 default_cli = "claude"
+conductor_cli = "codex"
 "#;
     let parsed: GlobalConfig = toml::from_str(toml_str)?;
     assert_eq!(parsed.default_cli, "claude");
+    assert_eq!(parsed.conductor_cli.as_deref(), Some("codex"));
+
+    Ok(())
+}
+
+/// Test that a town config can override the conductor CLI separately from worker defaults.
+#[tokio::test]
+async fn test_town_config_supports_separate_conductor_cli() -> Result<(), Box<dyn std::error::Error>>
+{
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let town_path = temp_dir.path();
+    let config_path = town_path.join("tinytown.toml");
+
+    std::fs::write(
+        &config_path,
+        r#"
+name = "split-cli-test"
+default_cli = "codex-mini"
+conductor_cli = "codex"
+"#,
+    )?;
+
+    let config = Config::load(town_path)?;
+    assert_eq!(config.default_cli, "codex-mini");
+    assert_eq!(config.conductor_cli.as_deref(), Some("codex"));
+    assert_eq!(config.conductor_cli_name(), "codex");
 
     Ok(())
 }

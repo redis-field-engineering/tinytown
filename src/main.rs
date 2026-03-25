@@ -3285,7 +3285,7 @@ Now, help the user orchestrate their project!
             std::fs::write(&context_file, &context)?;
 
             // Get the CLI name (conductor runs interactively, not in --print mode)
-            let cli_name = &config.default_cli;
+            let cli_name = config.conductor_cli_name();
 
             info!("🚂 Starting conductor with {} CLI...", cli_name);
             info!("   Context: {}", context_file.display());
@@ -3293,7 +3293,7 @@ Now, help the user orchestrate their project!
 
             // Build the interactive command (no --print flag)
             // For conductor, we want full interactive mode
-            let exec_cmd = match cli_name.as_str() {
+            let exec_cmd = match cli_name {
                 "auggie" => format!(
                     "exec auggie --instruction-file '{}'",
                     context_file.display()
@@ -3439,6 +3439,9 @@ Now, help the user orchestrate their project!
                     info!("⚙️  Global config: {}", config_path.display());
                     info!("");
                     info!("default_cli = \"{}\"", config.default_cli);
+                    if let Some(conductor_cli) = &config.conductor_cli {
+                        info!("conductor_cli = \"{}\"", conductor_cli);
+                    }
                     if !config.agent_clis.is_empty() {
                         info!("");
                         info!("[agent_clis]");
@@ -3458,7 +3461,7 @@ Now, help the user orchestrate their project!
                         println!("{}", val);
                     } else {
                         info!("❌ Unknown config key: {}", key);
-                        info!("   Available keys: default_cli, agent_clis.<name>");
+                        info!("   Available keys: default_cli, conductor_cli, agent_clis.<name>");
                     }
                 }
                 // Key and value: set it
