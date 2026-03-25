@@ -3281,6 +3281,20 @@ tt inbox <agent>                   # Check agent's inbox
   - `tt status --deep`
 - When work tied to a real Tinytown task is done, workers should still run `tt task complete <task_id> --result "what changed"` instead of only sending an informational message.
 
+### Mission Mode Supervision
+
+- `tt mission start ...` bootstraps a mission, but `tt mission dispatch` is the persistent runtime that keeps it moving.
+- If you are supervising a mission, make sure the dispatcher is running before you start manually prodding agents.
+- Treat the dispatcher as the default orchestrator for mission-owned work. Do not manually reassign mission tasks unless you are intentionally intervening.
+- Watch the conductor inbox for dispatcher escalations such as `[Mission Help Needed] ...`.
+- When the dispatcher asks for help:
+  - inspect status with `tt mission status --run <mission-id> --dispatcher`
+  - review detailed work/watch state with `tt mission status --run <mission-id> --work --watch`
+  - if staffing is the problem, spawn or free the needed agent(s)
+  - reply to the dispatcher with `tt mission note <mission-id> "resume ..."` or `tt mission note <mission-id> "pause ..."`
+- Use `tt mission note` for operator directives to the dispatcher; do not rely on free-form inbox messages for dispatcher control.
+- Your role in mission mode is to supervise exceptions, staffing, and scope decisions, while the dispatcher owns routine progression.
+
 ### Check status and stats
 ```bash
 tt status         # Overview of town and agents
@@ -3302,6 +3316,14 @@ tt sync pull                # Save Redis state to tasks.toml (for git)
 tt save                     # Save Redis AOF snapshot (for version control)
 ```
 
+### Mission mode
+```bash
+tt mission start --issue <N> [--issue <N> ...]
+tt mission dispatch [--run <mission-id>] [--once]
+tt mission status [--run <mission-id>] [--work] [--watch] [--dispatcher]
+tt mission note <mission-id> "<directive>"
+```
+
 ## Your Role
 
 1. **Understand** what the user wants to accomplish
@@ -3312,7 +3334,8 @@ tt save                     # Save Redis AOF snapshot (for version control)
 6. **Monitor** progress with `tt status --deep` (shows rounds, uptime, activity)
 7. **Coordinate** handoffs between agents without becoming the bottleneck
 8. **Use reviewer outcomes** to decide when work is complete
-9. **Cleanup**: When done, stop agents with `tt kill <agent>`
+9. **Supervise mission mode** by keeping the dispatcher running, responding to dispatcher help requests, and using `tt mission note` / `tt mission status --dispatcher` when missions escalate
+10. **Cleanup**: When done, stop agents with `tt kill <agent>`
 
 ## The Reviewer Pattern
 
@@ -3334,7 +3357,9 @@ This keeps execution flowing: agents hand off obvious next steps directly, revie
 - Prefer direct worker/reviewer/worker coordination when the next handoff is obvious
 - Keep the conductor in the loop with `tt send supervisor --info ...` when humans need visibility without blocking execution
 - Check `tt status` frequently to monitor progress
+- Check `tt inbox conductor` for blocker queries and mission dispatcher help requests
 - Keep backlog flowing: if an agent goes idle, have it review backlog and claim role-matching work
+- In mission mode, prefer `tt mission status --dispatcher` and `tt mission note` over ad hoc manual nudges when the dispatcher is already managing the run
 - **Save state to git**: Run `tt sync pull` periodically to save task state to tasks.toml, then suggest committing it
 
 ## Example Workflow
