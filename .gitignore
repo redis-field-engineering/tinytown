@@ -18,6 +18,12 @@ tinytown.json
 .agent_*.md
 .conductor_context.md
 
+# Internal planning / scratch docs
+/.ai/
+/COMPLEXITY.md
+/docs/design/
+/docs/designs/
+
 # Development symlinks / scratch artifacts
 issue-37-link
 issue-37-clone-link
@@ -25,6 +31,3 @@ issue-37-clone-link
 # OS
 .DS_Store
 Thumbs.db
-
-# Tinytown runtime artifacts
-.tt

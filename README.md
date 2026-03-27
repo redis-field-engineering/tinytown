@@ -1,6 +1,6 @@
 # 🏘️ Tinytown
 
-> **Simple multi-agent orchestration using Redis** — All the power of complex systems, none of the complexity.
+> **Redis-native multi-agent orchestration** built for fast feedback, direct control, and practical coordination.
 
 [![Rust](https://img.shields.io/badge/Rust-1.85+-orange?logo=rust)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -13,23 +13,30 @@
 
 ## What is Tinytown?
 
-Tinytown is a **minimal, blazing-fast multi-agent orchestration system** that lets you coordinate AI agents with Redis. It's designed for developers who want agent orchestration **without the bloat**.
+Tinytown is a **compact, fast multi-agent orchestration system** that lets you coordinate AI agents with Redis. It started as a deliberately small alternative to larger orchestration systems, and it is still fast because Redis keeps the runtime simple and responsive.
 
 Think of it as:
-- **Gastown, but 100x simpler** ✨
+- **A smaller, easier-to-inspect orchestration stack**
 - **Temporal, but for humans** 🧠
 - **Airflow, but actually fun to use** 🎉
 
+Tinytown is no longer a tiny prototype, and the repo should not pretend otherwise. Building real agent-to-agent coding workflows turned out to require some durable state, recovery paths, scheduling, and coordination logic. The project goal is not "no complexity"; it is keeping the necessary complexity visible, local, and understandable.
+
 ### Why Tinytown?
 
-| Feature | Tinytown | Complex Systems |
+| Feature | Tinytown | Larger Systems |
 |---------|----------|-----------------|
 | **Setup time** | 30 seconds | Hours |
 | **Config files** | 1 TOML | 10+ YAML files |
-| **Core concepts** | 5 types | 50+ concepts |
-| **CLI commands** | 14 | 50+ |
+| **Core concepts** | 7 core concepts | 50+ concepts |
+| **CLI commands** | 30+ | 50+ |
 | **Message latency** | <1ms (Unix socket) | 10-100ms |
-| **Lines of code** | ~2,600 | 50,000+ |
+| **Production Rust code** | ~15,000 lines | 50,000+ |
+
+Current repo size, as of March 27, 2026:
+- ~15.4K lines of Rust code in `src/`
+- ~18.7K lines of Rust code across `src/` and `tests/`
+- 173 tests
 
 ## 📦 Install
 

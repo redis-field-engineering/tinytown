@@ -1,6 +1,6 @@
 # Migration Guide: From Gastown to Tinytown
 
-Tried Gastown and found it overwhelming? You're not alone. Here's how to get the same results with Tinytown.
+If Gastown feels heavier than what you need right now, Tinytown is the smaller Redis-based alternative. This guide shows how the mental model maps over.
 
 ## Why You're Here
 
@@ -11,7 +11,7 @@ Gastown is powerful but complex:
 - Daemon processes, patrols, and recovery mechanisms
 - Hours to set up, days to understand
 
-Tinytown gives you **90% of the value with 10% of the complexity**.
+Tinytown started as a quicker, smaller alternative. It has grown since then, but it still aims to keep the coordination model more direct and the runtime lighter.
 
 ## Quick Comparison
 
@@ -21,7 +21,7 @@ Tinytown gives you **90% of the value with 10% of the complexity**.
 | Create an agent | Complex Polecat setup | `tt spawn worker` |
 | Assign work | `gt sling` + convoys | `tt assign worker "task"` |
 | Check status | `gt convoy list`, `gt feed` | `tt status` |
-| Understand it | Read 300K lines | Read 1,400 lines |
+| Understand it | Read 300K lines | Work in ~15K lines of production Rust |
 
 ## Concept Mapping
 
@@ -41,7 +41,7 @@ Tinytown gives you **90% of the value with 10% of the complexity**.
 
 ### What Tinytown Doesn't Have
 
-Deliberately omitted for simplicity:
+Still intentionally lighter:
 
 | Gastown Feature | Tinytown Alternative |
 |-----------------|---------------------|
@@ -173,7 +173,7 @@ tokio::join!(
 ✅ You need something working in 30 seconds  
 ✅ You're coordinating 1-5 agents  
 ✅ You want to write your own orchestration logic  
-✅ Simple is better than feature-rich  
+✅ You want a more direct coordination model  
 
 ### Use Gastown When:
 
@@ -186,7 +186,7 @@ tokio::join!(
 ## Common Questions
 
 **Q: Can I use both?**
-A: Yes! Start with Tinytown for simplicity. If you outgrow it, Gastown's there.
+A: Yes. Start with whichever matches the amount of machinery you actually need today.
 
 **Q: Is Tinytown production-ready?**
 A: For small teams and projects, yes. For enterprise scale, consider Gastown.
@@ -195,4 +195,4 @@ A: For small teams and projects, yes. For enterprise scale, consider Gastown.
 A: Tasks are JSON. You could write a converter to Beads format.
 
 **Q: Does Tinytown support everything Gastown does?**
-A: No, and that's the point. Tinytown does less, but what it does is simple.
+A: No. Tinytown and Gastown make different tradeoffs, and Tinytown does not try to replace every part of a larger orchestration stack.

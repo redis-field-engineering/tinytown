@@ -1,27 +1,27 @@
 # Tinytown
 
-> **Simple multi-agent orchestration using Redis** — All the power, none of the complexity.
+> **Redis-native multi-agent orchestration** built for fast feedback, direct control, and practical coordination.
 
 Welcome to Tinytown! 🏘️
 
-Tinytown is a minimal, blazing-fast multi-agent orchestration system. It lets you coordinate AI coding agents (Claude, Augment, Codex, and more) using Redis for message passing.
+Tinytown is a compact, fast multi-agent orchestration system. It lets you coordinate AI coding agents (Claude, Augment, Codex, and more) using Redis for message passing.
 
 ## Why Tinytown?
 
-If you've tried to set up complex orchestration systems like Gastown and found yourself drowning in configuration files, agent taxonomies, and recovery mechanisms — Tinytown is for you.
+Tinytown started as a quick, intentionally small alternative to larger orchestration systems. It is still fast because Redis keeps the core runtime lightweight, but real multi-agent coding workflows have required some scheduling, recovery, and state-management complexity.
 
 | What you want | Complex systems | Tinytown |
 |---------------|-----------------|----------|
 | **Get started** | Hours of setup | 30 seconds |
-| **Understand it** | 50+ concepts | 5 types |
+| **Understand it** | 50+ concepts | 7 core concepts |
 | **Configure it** | 10+ config files | 1 TOML file |
-| **Debug it** | Navigate 300K+ lines | Read 1,400 lines |
+| **Debug it** | Navigate 300K+ lines | Work in ~15K lines of production Rust |
 
 ## Core Philosophy
 
-**Simplicity is a feature, not a limitation.**
+**Simplicity is still a feature, but this project is no longer pretending orchestration is trivial.**
 
-Tinytown does less, so you can do more. We include only what you need:
+Tinytown still tries to keep the core model tight. We include the pieces that have proven necessary in practice:
 
 ✅ Spawn and manage agents  
 ✅ Assign tasks and track state  
@@ -29,14 +29,14 @@ Tinytown does less, so you can do more. We include only what you need:
 ✅ Pass messages between agents  
 ✅ Persist work in Redis  
 
-And we deliberately leave out:
+And we still avoid a lot of heavier machinery:
 
 ❌ Complex workflow DAGs  
 ❌ Distributed transactions  
 ❌ Recovery daemons  
 ❌ Multi-layer databases  
 
-When you need those features, you'll know — and you can add them yourself in a few lines of code, or upgrade to a more complex system.
+Today the repo is roughly 15K lines of production Rust, about 19K including tests, with 173 tests. That is no longer "tiny," but it is still small enough for one team to understand end to end.
 
 ## Quick Example
 

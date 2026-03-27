@@ -1,6 +1,6 @@
 # Why Tinytown?
 
-A philosophical guide to choosing simplicity.
+A practical guide to why Tinytown exists and where it fits.
 
 ## The Problem with Complex Systems
 
@@ -17,13 +17,15 @@ But it also has:
 - **Hours of setup** before your first task
 - **Days of learning** before you're productive
 
-## The Tinytown Philosophy
+## The Tinytown Starting Point
 
 > "Make it work. Make it simple. Stop."
 
-Tinytown takes a different approach:
+Tinytown started with a simple idea: keep the orchestration stack small enough that one team could understand and modify it directly.
 
-### 1. You Don't Need Most Features
+That goal still matters, but the project has also shown that multi-agent coding systems pick up real complexity once you add durable state, backlog management, mission scheduling, recovery paths, and agent-to-agent coordination.
+
+### 1. Start with the Core Workflow
 
 90% of multi-agent orchestration is:
 1. Create agents
@@ -31,7 +33,7 @@ Tinytown takes a different approach:
 3. Wait for completion
 4. Check results
 
-Tinytown does exactly this. Nothing more.
+Tinytown was built to make that loop fast and direct, then add the extra machinery only when repeated operational problems justified it.
 
 ### 2. Complexity Compounds
 
@@ -41,7 +43,7 @@ Every feature adds:
 - Bugs to fix
 - Documentation to write
 
-Tinytown has **1,448 lines of code**. You can read the entire codebase in an afternoon.
+Tinytown has grown to roughly **15K lines of production Rust** and about **19K lines including tests**. That is no longer tiny, but it is still a size where one team can understand the whole system and keep the complexity grounded in the code instead of hiding it behind layers of infrastructure.
 
 ### 3. Explicit is Better Than Magic
 
@@ -72,7 +74,7 @@ if agent.state == AgentState::Error {
 }
 ```
 
-Is this more work? Yes. Is it simpler to understand? Also yes.
+Is this more work? Yes. Some orchestration complexity is unavoidable. Tinytown's approach is to keep that complexity explicit instead of pretending it does not exist.
 
 ## The Tradeoffs
 
@@ -80,9 +82,9 @@ Is this more work? Yes. Is it simpler to understand? Also yes.
 
 ✅ **Understanding** — You know how it works  
 ✅ **Speed** — Running in 30 seconds  
-✅ **Debuggability** — 1,400 lines to read  
+✅ **Debuggability** — ~15K lines of production Rust to inspect  
 ✅ **Control** — You decide everything  
-✅ **Simplicity** — 5 concepts total  
+✅ **Focused model** — 7 core concepts  
 
 ### What You Lose
 
@@ -136,12 +138,11 @@ Ask yourself:
 
 ## The Honest Answer
 
-Tinytown exists because Gastown is hard to start with.
+Tinytown exists because there was room for a smaller, faster-to-modify orchestration system built around Redis primitives.
 
-If you've bounced off Gastown, Tinytown gets you running. You can always graduate to Gastown later—and you'll appreciate its features more because you've felt the pain of not having them.
+If you've bounced off a larger system, Tinytown may be a better place to start. If you need the broader machinery later, that does not mean Tinytown failed; it means orchestration work has real complexity and different tools make different tradeoffs.
 
-Start simple. Add complexity only when you need it.
+Start with the smallest system that honestly fits the work. Add complexity when the work demands it, not because the marketing copy says you never will.
 
 > "Perfection is achieved not when there is nothing more to add, but when there is nothing left to take away."
 > — Antoine de Saint-Exupéry
-
