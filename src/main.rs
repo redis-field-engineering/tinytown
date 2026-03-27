@@ -1697,10 +1697,10 @@ async fn main() -> Result<()> {
             let agent_id = agent.id();
 
             // Apply control-plane metadata if provided
-            if role.is_some() || nickname.is_some() || parent.is_some() {
-                if let Some(mut agent_state) =
+            if (role.is_some() || nickname.is_some() || parent.is_some())
+                && let Some(mut agent_state) =
                     town.channel().get_agent_state(agent_id).await?
-                {
+            {
                     if let Some(ref r) = role {
                         agent_state.role_id = Some(r.clone());
                     }
@@ -1725,7 +1725,6 @@ async fn main() -> Result<()> {
                         agent_state.parent_agent_id = Some(parent_id);
                     }
                     town.channel().set_agent_state(&agent_state).await?;
-                }
             }
 
             let agent_id = agent_id.to_string();
