@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,7 +28,7 @@ jobs:
   build-and-upload:
     name: Build and Upload Release Assets
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.release-please.outputs.release_created }}
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -75,6 +76,7 @@ jobs:
           mv ${{ matrix.asset_name }}.tar.gz ../../..
 
       - name: Upload release asset
+        if: ${{ github.event_name != 'workflow_dispatch' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
