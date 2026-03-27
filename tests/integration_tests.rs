@@ -3405,3 +3405,325 @@ async fn test_mission_dispatcher_processes_conductor_note() -> Result<(), Box<dy
     cleanup_redis(&temp_dir);
     Ok(())
 }
+
+
+// ============================================================================
+// DOCKET STREAM (REDIS STREAMS) TESTS
+// ============================================================================
+
+/// Test that the docket consumer group can be created.
+#[tokio::test]
+async fn test_docket_ensure_group() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-group-test").await?;
+    let channel = town.channel();
+
+    // Creating the group should succeed
+    channel.docket_ensure_group().await?;
+
+    // Creating again should be idempotent (BUSYGROUP handled)
+    channel.docket_ensure_group().await?;
+
+    Ok(())
+}
+
+/// Test that tasks can be added to the docket stream via XADD.
+#[tokio::test]
+async fn test_docket_push() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-push-test").await?;
+    let channel = town.channel();
+
+    channel.docket_ensure_group().await?;
+
+    let task_id = TaskId::new();
+    let entry_id = channel
+        .docket_push(task_id, "Implement feature X", "normal", "conductor", "worker-1")
+        .await?;
+
+    // Entry ID should be a valid stream ID (e.g., "1234567890-0")
+    assert!(entry_id.contains('-'), "Entry ID should contain '-': {}", entry_id);
+
+    // Stream should have one entry
+    let len = channel.docket_len().await?;
+    assert_eq!(len, 1);
+
+    Ok(())
+}
+
+/// Test that multiple tasks can be pushed and counted.
+#[tokio::test]
+async fn test_docket_push_multiple() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-push-multi-test").await?;
+    let channel = town.channel();
+
+    channel.docket_ensure_group().await?;
+
+    for i in 0..5 {
+        let task_id = TaskId::new();
+        channel
+            .docket_push(task_id, &format!("Task {}", i), "normal", "conductor", "worker-1")
+            .await?;
+    }
+
+    let len = channel.docket_len().await?;
+    assert_eq!(len, 5);
+
+    Ok(())
+}
+
+/// Test that a consumer can read from the docket stream via XREADGROUP.
+#[tokio::test]
+async fn test_docket_read() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-read-test").await?;
+    let channel = town.channel();
+
+    channel.docket_ensure_group().await?;
+
+    let task_id = TaskId::new();
+    channel
+        .docket_push(task_id, "Build the API", "high", "conductor", "agent-1")
+        .await?;
+
+    // Read with a short block timeout
+    let result = channel.docket_read("agent-1", 100).await?;
+    assert!(result.is_some(), "Should have read an entry");
+
+    let (entry_id, fields) = result.unwrap();
+    assert!(entry_id.contains('-'));
+    assert_eq!(fields.get("task_id").unwrap(), &task_id.to_string());
+    assert_eq!(fields.get("type").unwrap(), "task_assign");
+    assert_eq!(fields.get("message").unwrap(), "Build the API");
+    assert_eq!(fields.get("priority").unwrap(), "high");
+    assert_eq!(fields.get("from").unwrap(), "conductor");
+    assert_eq!(fields.get("to").unwrap(), "agent-1");
+    assert!(fields.contains_key("timestamp"));
+
+    Ok(())
+}
+
+/// Test that XREADGROUP returns None when no entries are available.
+#[tokio::test]
+async fn test_docket_read_empty() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-read-empty-test").await?;
+    let channel = town.channel();
+
+    channel.docket_ensure_group().await?;
+
+    // Read with a very short timeout — should return None
+    let result = channel.docket_read("agent-1", 50).await?;
+    assert!(result.is_none(), "Should return None when stream is empty");
+
+    Ok(())
+}
+
+/// Test that XACK removes entries from the pending list.
+#[tokio::test]
+async fn test_docket_ack() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-ack-test").await?;
+    let channel = town.channel();
+
+    channel.docket_ensure_group().await?;
+
+    let task_id = TaskId::new();
+    channel
+        .docket_push(task_id, "Fix the bug", "normal", "conductor", "worker-1")
+        .await?;
+
+    // Read the entry (creates a pending entry)
+    let (entry_id, _fields) = channel
+        .docket_read("worker-1", 100)
+        .await?
+        .expect("should read entry");
+
+    // Before ACK, pending count should be 1
+    let pending_before = channel.docket_pending_count().await?;
+    assert_eq!(pending_before, 1, "Should have 1 pending entry before ACK");
+
+    // Acknowledge
+    channel.docket_ack(&entry_id).await?;
+
+    // After ACK, pending count should be 0
+    let pending_after = channel.docket_pending_count().await?;
+    assert_eq!(pending_after, 0, "Should have 0 pending entries after ACK");
+
+    Ok(())
+}
+
+/// Test that unacked entries show up in XPENDING.
+#[tokio::test]
+async fn test_docket_pending_visibility() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-pending-test").await?;
+    let channel = town.channel();
+
+    channel.docket_ensure_group().await?;
+
+    // Push 3 tasks
+    for i in 0..3 {
+        let task_id = TaskId::new();
+        channel
+            .docket_push(task_id, &format!("Task {}", i), "normal", "conductor", "worker-1")
+            .await?;
+    }
+
+    // Read all 3 (creates 3 pending entries)
+    for _ in 0..3 {
+        channel.docket_read("worker-1", 100).await?;
+    }
+
+    // All 3 should be pending
+    let pending = channel.docket_pending_count().await?;
+    assert_eq!(pending, 3, "Should have 3 pending entries");
+
+    Ok(())
+}
+
+/// Test that task lifecycle events can be logged to the docket events stream.
+#[tokio::test]
+async fn test_docket_log_event() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-event-test").await?;
+    let channel = town.channel();
+
+    let task_id = TaskId::new();
+
+    // Log various lifecycle events
+    let id1 = channel.docket_log_event(task_id, "assigned", "Assigned to worker-1").await?;
+    let id2 = channel.docket_log_event(task_id, "started", "Worker began processing").await?;
+    let id3 = channel.docket_log_event(task_id, "completed", "Task finished successfully").await?;
+
+    // All entries should have valid stream IDs
+    assert!(id1.contains('-'));
+    assert!(id2.contains('-'));
+    assert!(id3.contains('-'));
+
+    // IDs should be monotonically increasing
+    assert!(id2 > id1, "Event IDs should be ordered");
+    assert!(id3 > id2, "Event IDs should be ordered");
+
+    Ok(())
+}
+
+/// Test the full docket lifecycle: push → read → ack → events.
+#[tokio::test]
+async fn test_docket_full_lifecycle() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-lifecycle-test").await?;
+    let channel = town.channel();
+
+    // 1. Initialize consumer group
+    channel.docket_ensure_group().await?;
+
+    // 2. Push a task
+    let task_id = TaskId::new();
+    let _push_id = channel
+        .docket_push(task_id, "Deploy to production", "high", "conductor", "deployer")
+        .await?;
+
+    assert_eq!(channel.docket_len().await?, 1);
+
+    // 3. Consumer reads the task
+    let (entry_id, fields) = channel
+        .docket_read("deployer", 100)
+        .await?
+        .expect("should read the task");
+
+    assert_eq!(fields.get("task_id").unwrap(), &task_id.to_string());
+    assert_eq!(fields.get("message").unwrap(), "Deploy to production");
+
+    // 4. Task is now pending (in-flight)
+    assert_eq!(channel.docket_pending_count().await?, 1);
+
+    // 5. Log progress events
+    channel.docket_log_event(task_id, "started", "Beginning deployment").await?;
+    channel.docket_log_event(task_id, "progress", "50% complete").await?;
+
+    // 6. Acknowledge completion
+    channel.docket_ack(&entry_id).await?;
+    channel.docket_log_event(task_id, "completed", "Deployment successful").await?;
+
+    // 7. No more pending
+    assert_eq!(channel.docket_pending_count().await?, 0);
+
+    // 8. Stream still has the entry (for replay/audit)
+    assert_eq!(channel.docket_len().await?, 1);
+
+    Ok(())
+}
+
+/// Test that the use_streams config toggle exists and defaults to false.
+#[tokio::test]
+async fn test_use_streams_config_default() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("use-streams-config-test").await?;
+    let config = town.config();
+
+    // Default should be false (List-based backlog)
+    assert!(!config.use_streams, "use_streams should default to false");
+
+    Ok(())
+}
+
+/// Test that use_streams can be parsed from config TOML.
+#[tokio::test]
+async fn test_use_streams_config_parse() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("tinytown.toml");
+
+    std::fs::write(
+        &config_path,
+        r#"
+name = "stream-test"
+use_streams = true
+"#,
+    )?;
+
+    let config = Config::load(temp_dir.path())?;
+    assert!(config.use_streams, "use_streams should be true when set in config");
+
+    Ok(())
+}
+
+/// Test that multiple consumers can read from the same docket stream.
+#[tokio::test]
+async fn test_docket_multiple_consumers() -> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("docket-multi-consumer-test").await?;
+    let channel = town.channel();
+
+    channel.docket_ensure_group().await?;
+
+    // Push 2 tasks
+    let task1 = TaskId::new();
+    let task2 = TaskId::new();
+    channel
+        .docket_push(task1, "Task A", "normal", "conductor", "any")
+        .await?;
+    channel
+        .docket_push(task2, "Task B", "normal", "conductor", "any")
+        .await?;
+
+    // Two different consumers read from the same group
+    let read1 = channel.docket_read("consumer-1", 100).await?;
+    let read2 = channel.docket_read("consumer-2", 100).await?;
+
+    assert!(read1.is_some(), "Consumer 1 should get a task");
+    assert!(read2.is_some(), "Consumer 2 should get a task");
+
+    let (id1, fields1) = read1.unwrap();
+    let (id2, fields2) = read2.unwrap();
+
+    // They should get different tasks (consumer group distributes)
+    assert_ne!(
+        fields1.get("task_id"),
+        fields2.get("task_id"),
+        "Each consumer should get a different task"
+    );
+
+    // Both pending
+    assert_eq!(channel.docket_pending_count().await?, 2);
+
+    // Ack both
+    channel.docket_ack(&id1).await?;
+    channel.docket_ack(&id2).await?;
+    assert_eq!(channel.docket_pending_count().await?, 0);
+
+    Ok(())
+}

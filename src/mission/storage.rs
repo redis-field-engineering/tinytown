@@ -21,6 +21,8 @@ use redis::aio::ConnectionManager;
 use tracing::{debug, instrument};
 
 use crate::error::Result;
+use crate::events::{EventStream, EventType, TownEvent};
+use crate::keys::RedisKeys;
 use crate::mission::types::{
     MissionControlMessage, MissionId, MissionRun, WatchId, WatchItem, WorkItem, WorkItemId,
 };
@@ -31,61 +33,64 @@ const MAX_EVENTS: isize = 100;
 /// Mission storage operations.
 ///
 /// Wraps a Redis connection with town-namespaced key generation.
+/// Optionally holds an `EventStream` for emitting structured events
+/// to Redis Streams alongside the existing bounded List activity log.
 #[derive(Clone)]
 pub struct MissionStorage {
     conn: ConnectionManager,
-    town_name: String,
+    keys: RedisKeys,
+    event_stream: Option<EventStream>,
 }
 
 impl MissionStorage {
     /// Create a new MissionStorage.
     pub fn new(conn: ConnectionManager, town_name: impl Into<String>) -> Self {
+        let town = town_name.into();
+        let event_stream = EventStream::new(conn.clone(), &town);
         Self {
             conn,
-            town_name: town_name.into(),
+            keys: RedisKeys::new(town),
+            event_stream: Some(event_stream),
         }
     }
 
-    // ==================== Key Generation ====================
+    /// Get a reference to the event stream (if available).
+    pub fn event_stream(&self) -> Option<&EventStream> {
+        self.event_stream.as_ref()
+    }
 
-    /// Generate mission key: tt:{town}:mission:{run_id}
+    // ==================== Key Generation (delegates to RedisKeys) ====================
+
     fn mission_key(&self, id: MissionId) -> String {
-        format!("tt:{}:mission:{}", self.town_name, id)
+        self.keys.mission(id)
     }
 
-    /// Generate work items key: tt:{town}:mission:{run_id}:work
     fn work_key(&self, id: MissionId) -> String {
-        format!("tt:{}:mission:{}:work", self.town_name, id)
+        self.keys.mission_work(id)
     }
 
-    /// Generate watch items key: tt:{town}:mission:{run_id}:watch
     fn watch_key(&self, id: MissionId) -> String {
-        format!("tt:{}:mission:{}:watch", self.town_name, id)
+        self.keys.mission_watch(id)
     }
 
-    /// Generate events key: tt:{town}:mission:{run_id}:events
     fn events_key(&self, id: MissionId) -> String {
-        format!("tt:{}:mission:{}:events", self.town_name, id)
+        self.keys.mission_events(id)
     }
 
-    /// Generate control messages key: tt:{town}:mission:{run_id}:control
     fn control_key(&self, id: MissionId) -> String {
-        format!("tt:{}:mission:{}:control", self.town_name, id)
+        self.keys.mission_control(id)
     }
 
-    /// Generate active missions set key: tt:{town}:mission:active
     fn active_key(&self) -> String {
-        format!("tt:{}:mission:active", self.town_name)
+        self.keys.mission_active()
     }
 
-    /// Generate dispatcher lock key for a mission.
     fn dispatch_lock_key(&self, id: MissionId) -> String {
-        format!("tt:{}:mission:{}:dispatch_lock", self.town_name, id)
+        self.keys.mission_dispatch_lock(id)
     }
 
-    /// Generate mission key pattern for scanning.
     fn mission_pattern(&self) -> String {
-        format!("tt:{}:mission:*", self.town_name)
+        self.keys.pattern_missions()
     }
 
     // ==================== MissionRun Operations ====================
@@ -444,6 +449,9 @@ return 0
     // ==================== Events ====================
 
     /// Log an event for a mission.
+    ///
+    /// Writes to both the bounded List (backward compat) and the Redis Stream
+    /// (real-time feed) when an EventStream is available.
     #[instrument(skip(self, event))]
     pub async fn log_event(&self, mission_id: MissionId, event: &str) -> Result<()> {
         let mut conn = self.conn.clone();
@@ -456,11 +464,39 @@ return 0
             event
         );
 
-        // Push to list, trim to max
+        // Push to list, trim to max (backward compat)
         let _: () = conn.lpush(&key, &timestamped).await?;
         let _: () = conn.ltrim(&key, 0, MAX_EVENTS - 1).await?;
 
+        // Also emit to Redis Stream for real-time consumption
+        if let Some(ref es) = self.event_stream {
+            let town_event = TownEvent::new(EventType::MissionEvent, event)
+                .with_mission(mission_id);
+            // Best-effort: don't fail the whole operation if stream emit fails
+            if let Err(e) = es.emit(&town_event).await {
+                debug!("Failed to emit stream event: {}", e);
+            }
+        }
+
         debug!("Logged event for mission {}", mission_id);
+        Ok(())
+    }
+
+    /// Emit a typed event to the Redis Stream (and also log to the bounded list).
+    ///
+    /// Use this for structured events with full metadata (agent_id, task_id, etc.).
+    /// Falls back gracefully if no EventStream is configured.
+    #[instrument(skip(self, event))]
+    pub async fn emit_event(&self, mission_id: MissionId, event: TownEvent) -> Result<()> {
+        // Log to bounded list for backward compat
+        self.log_event(mission_id, &event.message).await?;
+
+        // Emit typed event to stream
+        if let Some(ref es) = self.event_stream {
+            if let Err(e) = es.emit(&event).await {
+                debug!("Failed to emit typed stream event: {}", e);
+            }
+        }
         Ok(())
     }
 

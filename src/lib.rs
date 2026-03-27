@@ -47,7 +47,9 @@ pub mod app;
 pub mod channel;
 pub mod config;
 pub mod error;
+pub mod events;
 pub mod global_config;
+pub mod keys;
 pub mod message;
 pub mod migration;
 pub mod mission;
@@ -68,6 +70,7 @@ pub use app::services::{
 pub use channel::Channel;
 pub use config::{AuthConfig, AuthMode, Config, MtlsConfig, Scope, TlsConfig, TownhallConfig};
 pub use error::{Error, Result};
+pub use keys::RedisKeys;
 pub use global_config::GlobalConfig;
 pub use message::{ConfirmationType, Message, MessageId, MessageType, Priority};
 pub use migration::{
@@ -76,5 +79,6 @@ pub use migration::{
 };
 pub use plan::{TaskEntry, TasksFile, TasksMeta};
 pub use redis_manager::RedisManager;
+pub use events::{EventStream, EventType, TownEvent};
 pub use task::{Task, TaskId, TaskState};
 pub use town::{TT_DIR, Town};
