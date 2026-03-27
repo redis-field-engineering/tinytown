@@ -271,11 +271,13 @@ impl AgentService {
             channel
                 .log_agent_activity(agent_id, "⏸️ Interrupted (paused)")
                 .await?;
-            channel.emit_event(
-                &TownEvent::new(EventType::AgentInterrupted, "Agent interrupted (paused)")
-                    .with_agent(agent_id)
-                    .with_transition(old_state, "Paused"),
-            ).await;
+            channel
+                .emit_event(
+                    &TownEvent::new(EventType::AgentInterrupted, "Agent interrupted (paused)")
+                        .with_agent(agent_id)
+                        .with_transition(old_state, "Paused"),
+                )
+                .await;
         } else {
             return Err(crate::Error::AgentNotFound(agent_id.to_string()));
         }
@@ -331,11 +333,13 @@ impl AgentService {
             channel.set_agent_state(&agent).await?;
             channel.clear_stop(agent_id).await?;
             channel.log_agent_activity(agent_id, "▶️ Resumed").await?;
-            channel.emit_event(
-                &TownEvent::new(EventType::AgentResumed, "Agent resumed")
-                    .with_agent(agent_id)
-                    .with_transition("Paused", "Idle"),
-            ).await;
+            channel
+                .emit_event(
+                    &TownEvent::new(EventType::AgentResumed, "Agent resumed")
+                        .with_agent(agent_id)
+                        .with_transition("Paused", "Idle"),
+                )
+                .await;
         } else {
             return Err(crate::Error::AgentNotFound(agent_id.to_string()));
         }
@@ -361,11 +365,16 @@ impl AgentService {
             channel
                 .log_agent_activity(agent_id, "🔻 Closing (draining then stop)")
                 .await?;
-            channel.emit_event(
-                &TownEvent::new(EventType::AgentStopped, "Agent closing (draining then stop)")
+            channel
+                .emit_event(
+                    &TownEvent::new(
+                        EventType::AgentStopped,
+                        "Agent closing (draining then stop)",
+                    )
                     .with_agent(agent_id)
                     .with_transition(old_state, "Draining"),
-            ).await;
+                )
+                .await;
         } else {
             return Err(crate::Error::AgentNotFound(agent_id.to_string()));
         }
