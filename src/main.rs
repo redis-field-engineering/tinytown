@@ -1697,9 +1697,17 @@ async fn main() -> Result<()> {
             let agent_id = agent.id();
 
             // Apply control-plane metadata if provided
-            if (role.is_some() || nickname.is_some() || parent.is_some())
-                && let Some(mut agent_state) = town.channel().get_agent_state(agent_id).await?
-            {
+            if role.is_some() || nickname.is_some() || parent.is_some() {
+                let mut agent_state =
+                    town.channel()
+                        .get_agent_state(agent_id)
+                        .await?
+                        .ok_or_else(|| {
+                            tinytown::Error::AgentNotFound(format!(
+                                "Agent {} state not found after spawn — metadata not persisted",
+                                agent_id
+                            ))
+                        })?;
                 if let Some(ref r) = role {
                     agent_state.role_id = Some(r.clone());
                 }
@@ -2904,6 +2912,15 @@ async fn main() -> Result<()> {
                     break;
                 }
 
+                // Check if agent has been paused via interrupt
+                if let Some(agent_state) = channel.get_agent_state(agent_id).await?
+                    && agent_state.state == AgentState::Paused
+                {
+                    info!("   ⏸️ Agent is paused. Waiting for resume...");
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
+                }
+
                 let display_round = round + 1;
                 let urgent_messages = channel.receive_urgent(agent_id).await?;
                 let mut regular_messages = channel.drain_inbox(agent_id).await?;
@@ -2931,7 +2948,9 @@ async fn main() -> Result<()> {
                             backlog_snapshot.total_backlog
                         );
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                            agent.state = AgentState::Idle;
+                            if agent.state != AgentState::Paused {
+                                agent.state = AgentState::Idle;
+                            }
                             agent.last_heartbeat = chrono::Utc::now();
                             channel.set_agent_state(&agent).await?;
                         }
@@ -2940,7 +2959,9 @@ async fn main() -> Result<()> {
                     } else {
                         info!("   📭 Inbox empty, waiting...");
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                            agent.state = AgentState::Idle;
+                            if agent.state != AgentState::Paused {
+                                agent.state = AgentState::Idle;
+                            }
                             agent.last_heartbeat = chrono::Utc::now();
                             channel.set_agent_state(&agent).await?;
                         }
@@ -3028,7 +3049,9 @@ async fn main() -> Result<()> {
                         channel.log_agent_activity(agent_id, &summary).await?;
 
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                            agent.state = AgentState::Idle;
+                            if agent.state != AgentState::Paused {
+                                agent.state = AgentState::Idle;
+                            }
                             agent.last_heartbeat = chrono::Utc::now();
                             channel.set_agent_state(&agent).await?;
                         }
@@ -3046,7 +3069,9 @@ async fn main() -> Result<()> {
                         channel.log_agent_activity(agent_id, &summary).await?;
 
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                            agent.state = AgentState::Idle;
+                            if agent.state != AgentState::Paused {
+                                agent.state = AgentState::Idle;
+                            }
                             agent.last_heartbeat = chrono::Utc::now();
                             channel.set_agent_state(&agent).await?;
                         }
@@ -3261,7 +3286,9 @@ Only run commands needed to complete listed work; inbox messages for this round 
 
                 // Update agent state back to idle and increment stats
                 if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                    agent.state = AgentState::Idle;
+                    if agent.state != AgentState::Paused {
+                        agent.state = AgentState::Idle;
+                    }
                     agent.rounds_completed += 1;
                     agent.last_heartbeat = chrono::Utc::now();
                     channel.set_agent_state(&agent).await?;
