@@ -320,6 +320,18 @@ enum Commands {
         /// Run in foreground (don't background the process)
         #[arg(long)]
         foreground: bool,
+
+        /// Explicit role ID (e.g., "worker", "reviewer", "researcher")
+        #[arg(long)]
+        role: Option<String>,
+
+        /// Human-facing nickname (separate from canonical name)
+        #[arg(long)]
+        nickname: Option<String>,
+
+        /// Parent agent name or ID (for delegated subtasks)
+        #[arg(long)]
+        parent: Option<String>,
     },
 
     /// Run agent loop (internal - called by spawn)
@@ -378,6 +390,34 @@ enum Commands {
     /// Stop a specific agent gracefully
     Kill {
         /// Agent name to stop
+        agent: String,
+    },
+
+    /// Interrupt (pause) a running agent
+    Interrupt {
+        /// Agent name to interrupt
+        agent: String,
+    },
+
+    /// Wait for an agent to reach a terminal state
+    Wait {
+        /// Agent name to wait for
+        agent: String,
+
+        /// Timeout in seconds (default: wait forever)
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+
+    /// Resume a paused agent
+    Resume {
+        /// Agent name to resume
+        agent: String,
+    },
+
+    /// Close an agent gracefully (drain current work, then stop)
+    Close {
+        /// Agent name to close
         agent: String,
     },
 
@@ -1636,6 +1676,9 @@ async fn main() -> Result<()> {
             cli: cli_arg,
             max_rounds,
             foreground,
+            role,
+            nickname,
+            parent,
         } => {
             let town = Town::connect(&cli.town).await?;
             validate_spawn_agent_name(&name)?;
@@ -1651,7 +1694,41 @@ async fn main() -> Result<()> {
                 }
             });
             let agent = town.spawn_agent(&name, &cli_name).await?;
-            let agent_id = agent.id().to_string();
+            let agent_id = agent.id();
+
+            // Apply control-plane metadata if provided
+            if role.is_some() || nickname.is_some() || parent.is_some() {
+                if let Some(mut agent_state) =
+                    town.channel().get_agent_state(agent_id).await?
+                {
+                    if let Some(ref r) = role {
+                        agent_state.role_id = Some(r.clone());
+                    }
+                    if let Some(ref n) = nickname {
+                        agent_state.nickname = Some(n.clone());
+                    }
+                    if let Some(ref p) = parent {
+                        // Resolve parent by name or ID
+                        let parent_id = if let Ok(pid) = p.parse::<tinytown::AgentId>() {
+                            pid
+                        } else {
+                            town.agent(p)
+                                .await
+                                .map(|h| h.id())
+                                .map_err(|_| {
+                                    tinytown::Error::AgentNotFound(format!(
+                                        "Parent agent '{}' not found",
+                                        p
+                                    ))
+                                })?
+                        };
+                        agent_state.parent_agent_id = Some(parent_id);
+                    }
+                    town.channel().set_agent_state(&agent_state).await?;
+                }
+            }
+
+            let agent_id = agent_id.to_string();
 
             info!("🤖 Spawned agent '{}' using CLI '{}'", name, cli_name);
             info!("   ID: {}", agent_id);
@@ -1788,9 +1865,11 @@ async fn main() -> Result<()> {
                     .collect();
 
                 if deep {
+                    let role_tag = agent.role_id.as_deref().map_or(String::new(), |r| format!(" [{}]", r));
+                    let parent_tag = agent.parent_agent_id.map_or(String::new(), |_| " (child)".to_string());
                     info!(
-                        "   {} ({:?}) - {} pending, {} rounds, uptime {}",
-                        agent.name, agent.state, inbox_len, agent.rounds_completed, uptime_str
+                        "   {}{}{} ({:?}) - {} pending, {} rounds, uptime {}",
+                        agent.name, role_tag, parent_tag, agent.state, inbox_len, agent.rounds_completed, uptime_str
                     );
                     // Build a more readable pending breakdown with labels
                     let task_count = breakdown.tasks + breakdown.other_actionable;
@@ -2186,6 +2265,52 @@ async fn main() -> Result<()> {
 
             info!("🛑 Requested stop for agent '{}'", agent);
             info!("   Agent will stop at the start of its next round.");
+        }
+
+        Commands::Interrupt { agent } => {
+            let town = Town::connect(&cli.town).await?;
+            let handle = town.agent(&agent).await?;
+            tinytown::AgentService::interrupt(town.channel(), handle.id()).await?;
+
+            info!("⏸️  Interrupted agent '{}'", agent);
+            info!("   Agent is now paused. Use 'tt resume {}' to continue.", agent);
+        }
+
+        Commands::Wait { agent, timeout } => {
+            let town = Town::connect(&cli.town).await?;
+            let handle = town.agent(&agent).await?;
+            let timeout_duration = timeout.map(std::time::Duration::from_secs);
+
+            info!("⏳ Waiting for agent '{}' to finish...", agent);
+            let final_state = tinytown::AgentService::wait(
+                town.channel(),
+                handle.id(),
+                timeout_duration,
+            )
+            .await?;
+
+            info!(
+                "   Agent '{}' reached state: {} {}",
+                agent,
+                final_state.state.emoji(),
+                final_state.state
+            );
+        }
+
+        Commands::Resume { agent } => {
+            let town = Town::connect(&cli.town).await?;
+            let handle = town.agent(&agent).await?;
+            tinytown::AgentService::resume(town.channel(), handle.id()).await?;
+
+            info!("▶️  Resumed agent '{}'", agent);
+        }
+
+        Commands::Close { agent } => {
+            let town = Town::connect(&cli.town).await?;
+            let handle = town.agent(&agent).await?;
+            tinytown::AgentService::close(town.channel(), handle.id()).await?;
+
+            info!("🔻 Closing agent '{}' (draining current work, then stopping)", agent);
         }
 
         Commands::Prune { all } => {

@@ -25,6 +25,15 @@ pub struct SpawnAgentInput {
     /// CLI to use (optional, defaults to town config)
     #[serde(default)]
     pub cli: Option<String>,
+    /// Explicit role ID (e.g., "worker", "reviewer", "researcher")
+    #[serde(default)]
+    pub role_id: Option<String>,
+    /// Human-facing nickname (separate from canonical name)
+    #[serde(default)]
+    pub nickname: Option<String>,
+    /// Parent agent name or ID (for delegation / child spawning)
+    #[serde(default)]
+    pub parent_agent: Option<String>,
 }
 
 /// Input for agent operations by name.
@@ -32,6 +41,16 @@ pub struct SpawnAgentInput {
 pub struct AgentNameInput {
     /// Agent name
     pub agent: String,
+}
+
+/// Input for waiting on an agent.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WaitAgentInput {
+    /// Agent name
+    pub agent: String,
+    /// Timeout in seconds (optional; waits forever if omitted)
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// Input for pruning agents.
@@ -188,12 +207,17 @@ pub fn town_get_status_tool(state: Arc<McpState>) -> Tool {
                         "agents": s.agents.iter().map(|a| serde_json::json!({
                             "id": a.id.to_string(),
                             "name": a.name,
+                            "nickname": a.nickname,
+                            "role_id": a.role_id,
+                            "parent_agent_id": a.parent_agent_id.map(|id| id.to_string()),
+                            "spawn_mode": format!("{}", a.spawn_mode),
                             "cli": a.cli,
                             "state": format!("{:?}", a.state),
                             "rounds_completed": a.rounds_completed,
                             "tasks_completed": a.tasks_completed,
                             "inbox_len": a.inbox_len,
-                            "urgent_len": a.urgent_len
+                            "urgent_len": a.urgent_len,
+                            "current_scope": a.current_scope
                         })).collect::<Vec<_>>()
                     }))),
                     Err(e) => Ok(error_response(e.to_string())),
@@ -221,12 +245,17 @@ pub fn agent_list_tool(state: Arc<McpState>) -> Tool {
                                 serde_json::json!({
                                     "id": a.id.to_string(),
                                     "name": a.name,
+                                    "nickname": a.nickname,
+                                    "role_id": a.role_id,
+                                    "parent_agent_id": a.parent_agent_id.map(|id| id.to_string()),
+                                    "spawn_mode": format!("{}", a.spawn_mode),
                                     "cli": a.cli,
                                     "state": format!("{:?}", a.state),
                                     "rounds_completed": a.rounds_completed,
                                     "tasks_completed": a.tasks_completed,
                                     "inbox_len": a.inbox_len,
-                                    "urgent_len": a.urgent_len
+                                    "urgent_len": a.urgent_len,
+                                    "current_scope": a.current_scope
                                 })
                             })
                             .collect::<Vec<_>>(),
@@ -338,16 +367,42 @@ pub fn agent_inbox_tool(state: Arc<McpState>) -> Tool {
 pub fn agent_spawn_tool(state: Arc<McpState>) -> Tool {
     let s = state.clone();
     ToolBuilder::new("agent.spawn")
-        .description("Spawn a new agent")
+        .description("Spawn a new agent with optional role, nickname, and parent metadata")
         .handler(move |input: SpawnAgentInput| {
             let state = s.clone();
             async move {
                 use crate::AgentService;
-                match AgentService::spawn(&state.town, &input.name, input.cli.as_deref()).await {
+
+                // Resolve parent agent by name or ID
+                let parent_id = if let Some(ref parent) = input.parent_agent {
+                    if let Ok(pid) = parent.parse::<crate::AgentId>() {
+                        Some(pid)
+                    } else {
+                        match state.town.agent(parent).await {
+                            Ok(h) => Some(h.id()),
+                            Err(_) => return Ok(error_response(format!("Parent agent '{}' not found", parent))),
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                match AgentService::spawn_with_metadata(
+                    &state.town,
+                    &input.name,
+                    input.cli.as_deref(),
+                    input.role_id.as_deref(),
+                    input.nickname.as_deref(),
+                    parent_id,
+                    None,
+                ).await {
                     Ok(r) => Ok(json_result(serde_json::json!({
                         "agent_id": r.agent_id.to_string(),
                         "name": r.name,
-                        "cli": r.cli
+                        "cli": r.cli,
+                        "role_id": r.role_id,
+                        "nickname": r.nickname,
+                        "parent_agent_id": r.parent_agent_id.map(|id| id.to_string())
                     }))),
                     Err(e) => Ok(error_response(e.to_string())),
                 }
@@ -702,6 +757,181 @@ pub fn agent_prune_tool(state: Arc<McpState>) -> Tool {
         .build()
 }
 
+/// Create the agent.interrupt tool.
+pub fn agent_interrupt_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.interrupt")
+        .description("Interrupt (pause) a running agent")
+        .handler(move |input: AgentNameInput| {
+            let state = s.clone();
+            async move {
+                use crate::AgentService;
+                let handle = match state.town.agent(&input.agent).await {
+                    Ok(h) => h,
+                    Err(e) => return Ok(error_response(e.to_string())),
+                };
+                match AgentService::interrupt(state.town.channel(), handle.id()).await {
+                    Ok(()) => Ok(json_result(serde_json::json!({
+                        "agent": input.agent,
+                        "status": "paused"
+                    }))),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
+/// Create the agent.wait tool.
+pub fn agent_wait_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.wait")
+        .description("Wait for an agent to reach a terminal state")
+        .read_only()
+        .handler(move |input: WaitAgentInput| {
+            let state = s.clone();
+            async move {
+                use crate::AgentService;
+                let handle = match state.town.agent(&input.agent).await {
+                    Ok(h) => h,
+                    Err(e) => return Ok(error_response(e.to_string())),
+                };
+                let timeout = input
+                    .timeout_secs
+                    .map(std::time::Duration::from_secs);
+                match AgentService::wait(state.town.channel(), handle.id(), timeout).await {
+                    Ok(agent) => Ok(json_result(serde_json::json!({
+                        "agent": input.agent,
+                        "state": format!("{:?}", agent.state),
+                        "rounds_completed": agent.rounds_completed,
+                        "tasks_completed": agent.tasks_completed
+                    }))),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
+/// Create the agent.resume tool.
+pub fn agent_resume_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.resume")
+        .description("Resume a paused agent")
+        .handler(move |input: AgentNameInput| {
+            let state = s.clone();
+            async move {
+                use crate::AgentService;
+                let handle = match state.town.agent(&input.agent).await {
+                    Ok(h) => h,
+                    Err(e) => return Ok(error_response(e.to_string())),
+                };
+                match AgentService::resume(state.town.channel(), handle.id()).await {
+                    Ok(()) => Ok(json_result(serde_json::json!({
+                        "agent": input.agent,
+                        "status": "resumed"
+                    }))),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
+/// Create the agent.close tool.
+pub fn agent_close_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.close")
+        .description("Close an agent gracefully (drain current work, then stop)")
+        .handler(move |input: AgentNameInput| {
+            let state = s.clone();
+            async move {
+                use crate::AgentService;
+                let handle = match state.town.agent(&input.agent).await {
+                    Ok(h) => h,
+                    Err(e) => return Ok(error_response(e.to_string())),
+                };
+                match AgentService::close(state.town.channel(), handle.id()).await {
+                    Ok(()) => Ok(json_result(serde_json::json!({
+                        "agent": input.agent,
+                        "status": "draining"
+                    }))),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
+/// Create the agent.list_open tool.
+pub fn agent_list_open_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.list_open")
+        .description("List all agents that are not in a terminal state")
+        .read_only()
+        .no_params_handler(move || {
+            let state = s.clone();
+            async move {
+                use crate::AgentService;
+                match AgentService::list_open(&state.town).await {
+                    Ok(agents) => Ok(json_result(
+                        agents
+                            .iter()
+                            .map(|a| {
+                                serde_json::json!({
+                                    "id": a.id.to_string(),
+                                    "name": a.name,
+                                    "cli": a.cli,
+                                    "state": format!("{:?}", a.state),
+                                    "rounds_completed": a.rounds_completed,
+                                    "tasks_completed": a.tasks_completed,
+                                    "inbox_len": a.inbox_len,
+                                    "urgent_len": a.urgent_len
+                                })
+                            })
+                            .collect::<Vec<_>>(),
+                    )),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
+/// Create the agent.get_result tool.
+pub fn agent_get_result_tool(state: Arc<McpState>) -> Tool {
+    let s = state.clone();
+    ToolBuilder::new("agent.get_result")
+        .description("Get the result of an agent's most recently completed task")
+        .read_only()
+        .handler(move |input: AgentNameInput| {
+            let state = s.clone();
+            async move {
+                use crate::AgentService;
+                let handle = match state.town.agent(&input.agent).await {
+                    Ok(h) => h,
+                    Err(e) => return Ok(error_response(e.to_string())),
+                };
+                match AgentService::get_result(state.town.channel(), handle.id()).await {
+                    Ok(Some(task)) => Ok(json_result(serde_json::json!({
+                        "agent": input.agent,
+                        "task_id": task.id.to_string(),
+                        "description": task.description,
+                        "result": task.result,
+                        "completed_at": task.completed_at.map(|t| t.to_string())
+                    }))),
+                    Ok(None) => Ok(json_result(serde_json::json!({
+                        "agent": input.agent,
+                        "result": null,
+                        "message": "No completed tasks found for this agent"
+                    }))),
+                    Err(e) => Ok(error_response(e.to_string())),
+                }
+            }
+        })
+        .build()
+}
+
 // ============================================================================
 // Tool Registration
 // ============================================================================
@@ -711,6 +941,7 @@ pub fn read_tools(state: Arc<McpState>) -> Vec<Tool> {
     vec![
         town_get_status_tool(state.clone()),
         agent_list_tool(state.clone()),
+        agent_list_open_tool(state.clone()),
         agent_inbox_tool(state.clone()),
         task_list_pending_tool(state.clone()),
         backlog_list_tool(state),
@@ -735,8 +966,13 @@ pub fn agent_manage_tools(state: Arc<McpState>) -> Vec<Tool> {
     vec![
         agent_spawn_tool(state.clone()),
         agent_kill_tool(state.clone()),
+        agent_interrupt_tool(state.clone()),
+        agent_wait_tool(state.clone()),
+        agent_resume_tool(state.clone()),
+        agent_close_tool(state.clone()),
         agent_restart_tool(state.clone()),
         agent_prune_tool(state.clone()),
+        agent_get_result_tool(state.clone()),
         recovery_recover_agents_tool(state.clone()),
         recovery_reclaim_tasks_tool(state),
     ]

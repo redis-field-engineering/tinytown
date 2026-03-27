@@ -68,6 +68,100 @@ pub enum AgentType {
     Worker,
 }
 
+/// How an agent session was created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SpawnMode {
+    /// Fresh agent with no inherited context.
+    #[default]
+    Fresh,
+    /// Agent forked from a parent with inherited context.
+    ForkedContext,
+    /// Agent resumed from a previous session.
+    Resumed,
+}
+
+impl std::fmt::Display for SpawnMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fresh => write!(f, "Fresh"),
+            Self::ForkedContext => write!(f, "ForkedContext"),
+            Self::Resumed => write!(f, "Resumed"),
+        }
+    }
+}
+
+/// A first-class role definition for agent routing and policy.
+///
+/// Roles are explicit metadata rather than inferred from agent names.
+/// They can be defined in config or created programmatically.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoleDefinition {
+    /// Unique role identifier (e.g., "worker", "reviewer", "researcher").
+    pub id: String,
+    /// Human-readable description shown to conductor/orchestrator.
+    pub description: String,
+    /// Developer instructions / behavior constraints.
+    #[serde(default)]
+    pub instructions: Option<String>,
+    /// Optional default CLI to use for agents with this role.
+    #[serde(default)]
+    pub default_cli: Option<String>,
+}
+
+impl RoleDefinition {
+    /// Create a new role definition.
+    #[must_use]
+    pub fn new(id: impl Into<String>, description: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            description: description.into(),
+            instructions: None,
+            default_cli: None,
+        }
+    }
+
+    /// Set developer instructions.
+    #[must_use]
+    pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
+        self.instructions = Some(instructions.into());
+        self
+    }
+
+    /// Set default CLI.
+    #[must_use]
+    pub fn with_default_cli(mut self, cli: impl Into<String>) -> Self {
+        self.default_cli = Some(cli.into());
+        self
+    }
+}
+
+/// Built-in role IDs.
+pub mod roles {
+    /// Default role for unspecified agents.
+    pub const DEFAULT: &str = "default";
+    /// General worker role.
+    pub const WORKER: &str = "worker";
+    /// Code reviewer role.
+    pub const REVIEWER: &str = "reviewer";
+    /// Research / exploration role.
+    pub const RESEARCHER: &str = "researcher";
+    /// Task runner / watcher role.
+    pub const RUNNER: &str = "runner";
+}
+
+/// Return the built-in role definitions.
+#[must_use]
+pub fn builtin_roles() -> Vec<RoleDefinition> {
+    vec![
+        RoleDefinition::new(roles::DEFAULT, "Default role for unspecified agents"),
+        RoleDefinition::new(roles::WORKER, "General-purpose implementation worker"),
+        RoleDefinition::new(roles::REVIEWER, "Code reviewer and auditor"),
+        RoleDefinition::new(roles::RESEARCHER, "Research and exploration agent"),
+        RoleDefinition::new(roles::RUNNER, "Task runner and CI/deploy watcher"),
+    ]
+}
+
 /// Agent lifecycle state.
 ///
 /// Follows RAR worker lifecycle: cold → starting → idle → working → draining → stopped
@@ -188,10 +282,23 @@ impl AgentCli {
 /// An agent in the system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
-    /// Unique agent identifier
+    /// Unique agent identifier (stable machine address)
     pub id: AgentId,
-    /// Human-readable name
+    /// Human-readable name (canonical address for messaging)
     pub name: String,
+    /// Optional human-facing nickname (separate from canonical name)
+    #[serde(default)]
+    pub nickname: Option<String>,
+    /// Explicit role ID (e.g., "worker", "reviewer", "researcher").
+    /// Used for routing and policy instead of agent-name inference.
+    #[serde(default)]
+    pub role_id: Option<String>,
+    /// Parent agent ID (who spawned/delegated this agent, if any)
+    #[serde(default)]
+    pub parent_agent_id: Option<AgentId>,
+    /// How this agent session was created
+    #[serde(default)]
+    pub spawn_mode: SpawnMode,
     /// Agent type
     pub agent_type: AgentType,
     /// Current state
@@ -223,6 +330,10 @@ impl Agent {
         Self {
             id: AgentId::new(),
             name: name.into(),
+            nickname: None,
+            role_id: None,
+            parent_agent_id: None,
+            spawn_mode: SpawnMode::Fresh,
             agent_type,
             state: AgentState::Starting,
             cli: cli.into(),
@@ -235,6 +346,46 @@ impl Agent {
         }
     }
 
+    /// Set the role ID for this agent.
+    #[must_use]
+    pub fn with_role(mut self, role_id: impl Into<String>) -> Self {
+        self.role_id = Some(role_id.into());
+        self
+    }
+
+    /// Set a human-facing nickname for this agent.
+    #[must_use]
+    pub fn with_nickname(mut self, nickname: impl Into<String>) -> Self {
+        self.nickname = Some(nickname.into());
+        self
+    }
+
+    /// Set the parent agent ID (who spawned this agent).
+    #[must_use]
+    pub fn with_parent(mut self, parent_id: AgentId) -> Self {
+        self.parent_agent_id = Some(parent_id);
+        self
+    }
+
+    /// Set the spawn mode.
+    #[must_use]
+    pub fn with_spawn_mode(mut self, mode: SpawnMode) -> Self {
+        self.spawn_mode = mode;
+        self
+    }
+
+    /// Get the display name: nickname if set, otherwise canonical name.
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        self.nickname.as_deref().unwrap_or(&self.name)
+    }
+
+    /// Get the effective role ID, falling back to "default".
+    #[must_use]
+    pub fn effective_role(&self) -> &str {
+        self.role_id.as_deref().unwrap_or(roles::DEFAULT)
+    }
+
     /// Create a supervisor agent.
     #[must_use]
     pub fn supervisor(name: impl Into<String>) -> Self {
@@ -242,6 +393,10 @@ impl Agent {
         Self {
             id: AgentId::supervisor(),
             name: name.into(),
+            nickname: None,
+            role_id: None,
+            parent_agent_id: None,
+            spawn_mode: SpawnMode::Fresh,
             agent_type: AgentType::Supervisor,
             state: AgentState::Starting,
             cli: "supervisor".into(),

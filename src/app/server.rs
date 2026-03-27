@@ -177,8 +177,13 @@ async fn get_status(
         .await
         .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
     let agents: Vec<_> = s.agents.iter().map(|a| serde_json::json!({
-        "id": a.id.to_string(), "name": a.name, "cli": a.cli, "state": format!("{:?}", a.state),
-        "rounds_completed": a.rounds_completed, "tasks_completed": a.tasks_completed, "inbox_len": a.inbox_len, "urgent_len": a.urgent_len
+        "id": a.id.to_string(), "name": a.name, "nickname": a.nickname, "role_id": a.role_id,
+        "parent_agent_id": a.parent_agent_id.map(|id| id.to_string()),
+        "spawn_mode": format!("{}", a.spawn_mode),
+        "cli": a.cli, "state": format!("{:?}", a.state),
+        "rounds_completed": a.rounds_completed, "tasks_completed": a.tasks_completed,
+        "inbox_len": a.inbox_len, "urgent_len": a.urgent_len,
+        "current_scope": a.current_scope
     })).collect();
     Ok(Json(
         serde_json::json!({ "name": s.name, "root": s.root, "redis_url": s.redis_url, "agent_count": s.agent_count, "agents": agents }),
@@ -189,7 +194,13 @@ async fn list_agents(State(state): State<Arc<AppState>>) -> ApiResult<impl IntoR
     let agents = AgentService::list(&state.town)
         .await
         .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
-    let list: Vec<_> = agents.iter().map(|a| serde_json::json!({ "id": a.id.to_string(), "name": a.name, "cli": a.cli, "state": format!("{:?}", a.state) })).collect();
+    let list: Vec<_> = agents.iter().map(|a| serde_json::json!({
+        "id": a.id.to_string(), "name": a.name, "nickname": a.nickname, "role_id": a.role_id,
+        "parent_agent_id": a.parent_agent_id.map(|id| id.to_string()),
+        "spawn_mode": format!("{}", a.spawn_mode),
+        "cli": a.cli, "state": format!("{:?}", a.state),
+        "current_scope": a.current_scope
+    })).collect();
     Ok(Json(
         serde_json::json!({ "agents": list, "count": list.len() }),
     ))
@@ -199,20 +210,43 @@ async fn list_agents(State(state): State<Arc<AppState>>) -> ApiResult<impl IntoR
 struct SpawnReq {
     name: String,
     cli: Option<String>,
+    role_id: Option<String>,
+    nickname: Option<String>,
+    parent_agent_id: Option<String>,
 }
 
 async fn spawn_agent(
     State(state): State<Arc<AppState>>,
     Json(req): Json<SpawnReq>,
 ) -> ApiResult<impl IntoResponse> {
-    let r = AgentService::spawn(&state.town, &req.name, req.cli.as_deref())
-        .await
-        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let parent_id = req
+        .parent_agent_id
+        .as_deref()
+        .map(|s| s.parse::<crate::AgentId>())
+        .transpose()
+        .map_err(|e| ProblemDetails::bad_request(&format!("Invalid parent_agent_id: {}", e)))?;
+
+    let r = AgentService::spawn_with_metadata(
+        &state.town,
+        &req.name,
+        req.cli.as_deref(),
+        req.role_id.as_deref(),
+        req.nickname.as_deref(),
+        parent_id,
+        None,
+    )
+    .await
+    .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
     Ok((
         StatusCode::CREATED,
-        Json(
-            serde_json::json!({ "agent_id": r.agent_id.to_string(), "name": r.name, "cli": r.cli }),
-        ),
+        Json(serde_json::json!({
+            "agent_id": r.agent_id.to_string(),
+            "name": r.name,
+            "cli": r.cli,
+            "role_id": r.role_id,
+            "nickname": r.nickname,
+            "parent_agent_id": r.parent_agent_id.map(|id| id.to_string())
+        })),
     ))
 }
 

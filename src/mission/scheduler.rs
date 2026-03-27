@@ -543,20 +543,21 @@ impl MissionScheduler {
     }
 
     /// Score how well an agent matches a work item.
+    ///
+    /// Prefers `agent.role_id` for matching when available, falling back to
+    /// name-based substring heuristics for backwards compatibility.
     fn score_agent_match(
         &self,
         agent: &Agent,
         item: &WorkItem,
         current_assignments: &[(WorkItemId, AgentId)],
     ) -> AgentMatchScore {
-        let agent_name_lower = agent.name.to_lowercase();
-
         // Base score: role matching
         let base_score = if let Some(ref owner_role) = item.owner_role {
             let role_lower = owner_role.to_lowercase();
-            if self.agent_matches_role(&agent_name_lower, &role_lower) {
+            if self.agent_matches_role(agent, &role_lower) {
                 100 // Exact role match
-            } else if self.is_reviewer_agent(&agent_name_lower) {
+            } else if self.is_reviewer_agent(agent) {
                 // Reviewer can do review work at full score, other work at penalty
                 if item.kind == WorkKind::Review {
                     100
@@ -568,7 +569,7 @@ impl MissionScheduler {
             }
         } else {
             // No role specified - any worker is fine
-            if self.is_reviewer_agent(&agent_name_lower) {
+            if self.is_reviewer_agent(agent) {
                 // Prefer non-reviewers for unspecified work
                 40
             } else {
@@ -586,9 +587,18 @@ impl MissionScheduler {
         AgentMatchScore::new(base_score, load_penalty)
     }
 
-    /// Check if agent name suggests it matches a role.
-    fn agent_matches_role(&self, agent_name: &str, role: &str) -> bool {
-        // Check for direct match or common synonyms
+    /// Check if an agent matches a role.
+    ///
+    /// Uses `agent.role_id` when available for an exact match. Falls back to
+    /// name-based substring heuristics when `role_id` is not set.
+    fn agent_matches_role(&self, agent: &Agent, role: &str) -> bool {
+        // Prefer explicit role_id when set
+        if let Some(ref role_id) = agent.role_id {
+            return role_id.to_lowercase() == role;
+        }
+
+        // Fallback: name-based substring matching
+        let agent_name = agent.name.to_lowercase();
         match role {
             "backend" => {
                 agent_name.contains("backend")
@@ -613,7 +623,17 @@ impl MissionScheduler {
     }
 
     /// Check if agent is a reviewer type.
-    fn is_reviewer_agent(&self, agent_name: &str) -> bool {
+    ///
+    /// Uses `agent.role_id` when available, falling back to name-based matching.
+    fn is_reviewer_agent(&self, agent: &Agent) -> bool {
+        // Prefer explicit role_id when set
+        if let Some(ref role_id) = agent.role_id {
+            let role = role_id.to_lowercase();
+            return role == "reviewer" || role == "review" || role == "audit";
+        }
+
+        // Fallback: name-based substring matching
+        let agent_name = agent.name.to_lowercase();
         agent_name.contains("review") || agent_name.contains("audit")
     }
 
@@ -950,8 +970,7 @@ impl MissionScheduler {
 
         let agents = self.channel.list_agents().await?;
         let Some(reviewer) = agents.iter().find(|agent| {
-            let name = agent.name.to_lowercase();
-            agent.state.can_accept_work() && (name.contains("review") || name.contains("audit"))
+            agent.state.can_accept_work() && self.is_reviewer_agent(agent)
         }) else {
             warn!("No idle reviewer available for '{}'", item.title);
             return Ok(());
