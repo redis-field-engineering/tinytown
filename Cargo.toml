@@ -11,8 +11,9 @@ keywords = ["agents", "orchestration", "redis", "multi-agent"]
 categories = ["command-line-utilities", "concurrency"]
 
 [dependencies]
-# Redis client with Unix socket, TLS, and connection manager support
-redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "tokio-native-tls"] }
+# Redis client with Unix socket, TLS, and connection manager support.
+# Use rustls for TLS so release cross-compiles do not depend on musl OpenSSL.
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager", "tokio-rustls-comp"] }
 
 # Async runtime
 tokio = { version = "1.44", features = ["full"] }
