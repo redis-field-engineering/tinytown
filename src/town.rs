@@ -20,6 +20,7 @@ use crate::agent::{Agent, AgentId, AgentState, AgentType};
 use crate::channel::Channel;
 use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::events::EventStream;
 use crate::global_config::GlobalConfig;
 use crate::message::{Message, MessageType};
 use crate::task::{Task, TaskId};
@@ -486,6 +487,11 @@ impl Town {
     pub fn root(&self) -> &Path {
         &self.config.root
     }
+
+    /// Create an EventStream for emitting/reading structured events.
+    pub fn event_stream(&self) -> EventStream {
+        EventStream::new(self.channel.conn().clone(), self.channel.town_name())
+    }
 }
 
 // Note: Redis runs daemonized and persists after Town is dropped.
@@ -542,11 +548,11 @@ impl AgentHandle {
 
     /// Wait for agent to complete current task.
     pub async fn wait(&self) -> Result<()> {
-        // Poll until agent is idle or error
+        // Poll until agent is idle, stopped, cold, or error
         loop {
             if let Some(agent) = self.state().await? {
                 match agent.state {
-                    AgentState::Idle | AgentState::Stopped => return Ok(()),
+                    AgentState::Idle | AgentState::Stopped | AgentState::Cold => return Ok(()),
                     AgentState::Error => {
                         return Err(Error::AgentNotFound(format!(
                             "Agent {} in error state",

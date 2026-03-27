@@ -528,6 +528,25 @@ enum Commands {
         #[command(subcommand)]
         action: MissionAction,
     },
+
+    /// Tail the Redis Stream event log
+    Events {
+        /// Number of recent events to show (default: 20)
+        #[arg(short, long, default_value = "20")]
+        count: usize,
+
+        /// Filter by agent name
+        #[arg(long)]
+        agent: Option<String>,
+
+        /// Filter by mission ID
+        #[arg(long)]
+        mission: Option<String>,
+
+        /// Follow mode: continuously poll for new events
+        #[arg(short, long)]
+        follow: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -3602,9 +3621,15 @@ Now, help the user orchestrate their project!
             for agent in agents {
                 checked += 1;
 
-                // Check if agent is in a "working" or "starting" state (should be active)
-                let is_active_state =
-                    matches!(agent.state, AgentState::Working | AgentState::Starting);
+                // Check if agent is in an active state (should have a running process)
+                // Include Idle — a dead Idle agent should also be recoverable (Issue #48)
+                let is_active_state = matches!(
+                    agent.state,
+                    AgentState::Working
+                        | AgentState::Starting
+                        | AgentState::Idle
+                        | AgentState::Draining
+                );
 
                 if !is_active_state {
                     continue;
@@ -3712,14 +3737,7 @@ Now, help the user orchestrate their project!
                                 let agents = t.list_agents().await;
                                 let active = agents
                                     .iter()
-                                    .filter(|a| {
-                                        matches!(
-                                            a.state,
-                                            tinytown::AgentState::Working
-                                                | tinytown::AgentState::Starting
-                                                | tinytown::AgentState::Idle
-                                        )
-                                    })
+                                    .filter(|a| a.state.is_active())
                                     .count();
                                 format!("[OK] {} agents ({} active)", agents.len(), active)
                             }
@@ -4551,6 +4569,64 @@ Now, help the user orchestrate their project!
                         print_mission_summary(&mission);
                     }
                 }
+            }
+        }
+
+        Commands::Events {
+            count,
+            agent,
+            mission,
+            follow,
+        } => {
+            let town = Town::connect(&cli.town).await?;
+            let es = town.event_stream();
+
+            let mut last_id = "0-0".to_string();
+
+            loop {
+                let events = if let Some(ref mid_str) = mission {
+                    use tinytown::mission::MissionId;
+                    let mid: MissionId = mid_str
+                        .parse()
+                        .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?;
+                    es.read_mission_events(mid, &last_id, count).await?
+                } else if let Some(ref agent_name) = agent {
+                    let agent_obj = town
+                        .channel()
+                        .get_agent_by_name(agent_name)
+                        .await?
+                        .ok_or_else(|| tinytown::Error::AgentNotFound(agent_name.clone()))?;
+                    es.read_agent_events(agent_obj.id, &last_id, count).await?
+                } else {
+                    es.read_town_events(&last_id, count).await?
+                };
+
+                for (id, event) in &events {
+                    let scope = if let Some(mid) = event.mission_id {
+                        format!("mission:{}", mid)
+                    } else if let Some(aid) = event.agent_id {
+                        format!("agent:{}", aid)
+                    } else {
+                        "town".to_string()
+                    };
+                    println!(
+                        "{} [{}] {} — {}",
+                        event.timestamp.format("%H:%M:%S"),
+                        event.event_type,
+                        scope,
+                        event.message
+                    );
+                    last_id = id.clone();
+                }
+
+                if !follow {
+                    if events.is_empty() {
+                        info!("No events found. Events are emitted on state transitions.");
+                    }
+                    break;
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
         }
     }
