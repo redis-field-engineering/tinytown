@@ -15,6 +15,8 @@ use tracing::{debug, instrument};
 
 use crate::agent::AgentId;
 use crate::error::Result;
+use crate::events::{EventStream, TownEvent};
+use crate::keys::RedisKeys;
 use crate::message::{Message, Priority};
 
 /// TTL for activity logs (1 hour)
@@ -31,8 +33,8 @@ const ACTIVITY_MAX_ENTRIES: isize = 10;
 #[derive(Clone)]
 pub struct Channel {
     conn: ConnectionManager,
-    /// Town name used for key namespacing
-    town_name: String,
+    /// Centralized key generator for this town.
+    keys: RedisKeys,
 }
 
 impl Channel {
@@ -41,15 +43,16 @@ impl Channel {
     /// All Redis keys will be prefixed with `tt:{town_name}:` to ensure
     /// isolation between different towns sharing the same Redis instance.
     pub fn new(conn: ConnectionManager, town_name: impl Into<String>) -> Self {
+        let town_name = town_name.into();
         Self {
             conn,
-            town_name: town_name.into(),
+            keys: RedisKeys::new(town_name),
         }
     }
 
     /// Get the town name for this channel.
     pub fn town_name(&self) -> &str {
-        &self.town_name
+        self.keys.town_name()
     }
 
     /// Get a clone of the underlying Redis connection manager.
@@ -60,82 +63,79 @@ impl Channel {
         &self.conn
     }
 
-    // ==================== Key Generation ====================
-    // All keys are namespaced by town name: tt:{town}:{type}:{id}
+    /// Get a reference to the Redis key generator.
+    pub fn keys(&self) -> &RedisKeys {
+        &self.keys
+    }
 
-    /// Generate inbox key for an agent.
+    // ==================== Key Generation (delegates to RedisKeys) ====================
+
     fn inbox_key(&self, agent_id: AgentId) -> String {
-        format!("tt:{}:inbox:{}", self.town_name, agent_id)
+        self.keys.agent_inbox(agent_id)
     }
 
-    /// Generate urgent inbox key for an agent.
     fn urgent_key(&self, agent_id: AgentId) -> String {
-        format!("tt:{}:urgent:{}", self.town_name, agent_id)
+        self.keys.agent_urgent(agent_id)
     }
 
-    /// Generate state key for an agent.
     fn state_key(&self, agent_id: AgentId) -> String {
-        format!("tt:{}:agent:{}", self.town_name, agent_id)
+        self.keys.agent_state(agent_id)
     }
 
-    /// Generate task key.
     fn task_key(&self, task_id: crate::task::TaskId) -> String {
-        format!("tt:{}:task:{}", self.town_name, task_id)
+        self.keys.task(task_id)
     }
 
-    /// Generate activity key for an agent.
     fn activity_key(&self, agent_id: AgentId) -> String {
-        format!("tt:{}:activity:{}", self.town_name, agent_id)
+        self.keys.agent_activity(agent_id)
     }
 
-    /// Generate stop flag key for an agent.
     fn stop_key(&self, agent_id: AgentId) -> String {
-        format!("tt:{}:stop:{}", self.town_name, agent_id)
+        self.keys.agent_stop(agent_id)
     }
 
-    /// Generate backlog key for this town.
     fn backlog_key(&self) -> String {
-        format!("tt:{}:backlog", self.town_name)
+        self.keys.backlog()
     }
 
-    /// Generate broadcast channel name for this town.
+    fn docket_tasks_key(&self) -> String {
+        self.keys.docket_tasks()
+    }
+
+    fn docket_events_key(&self) -> String {
+        self.keys.docket_events()
+    }
+
     fn broadcast_channel(&self) -> String {
-        format!("tt:{}:broadcast", self.town_name)
+        self.keys.broadcast()
     }
 
-    /// Generate key pattern for scanning all keys in this town.
     fn town_key_pattern(&self) -> String {
-        format!("tt:{}:*", self.town_name)
+        self.keys.pattern_all()
     }
 
-    /// Generate key pattern for scanning agent keys in this town.
     fn agent_key_pattern(&self) -> String {
-        format!("tt:{}:agent:*", self.town_name)
+        self.keys.pattern_agents()
     }
 
-    /// Generate key pattern for scanning inbox keys in this town.
     fn inbox_key_pattern(&self) -> String {
-        format!("tt:{}:inbox:*", self.town_name)
+        self.keys.pattern_inboxes()
     }
 
-    /// Generate key pattern for scanning stop keys in this town.
     fn stop_key_pattern(&self) -> String {
-        format!("tt:{}:stop:*", self.town_name)
+        self.keys.pattern_stops()
     }
 
-    /// Generate key pattern for scanning activity keys in this town.
     fn activity_key_pattern(&self) -> String {
-        format!("tt:{}:activity:*", self.town_name)
+        self.keys.pattern_activities()
     }
 
-    /// Generate key pattern for scanning urgent inbox keys in this town.
     fn urgent_key_pattern(&self) -> String {
-        format!("tt:{}:urgent:*", self.town_name)
+        self.keys.pattern_urgents()
     }
 
-    /// Generate key pattern for scanning task keys in this town.
     fn task_key_pattern(&self) -> String {
-        format!("tt:{}:task:*", self.town_name)
+        self.keys.pattern_tasks()
     }
 
     /// Send a message to an agent's inbox.
@@ -351,6 +351,10 @@ impl Channel {
                 "rounds_completed".to_string(),
                 agent.rounds_completed.to_string(),
             ),
+            (
+                "last_active_at".to_string(),
+                agent.last_active_at.to_rfc3339(),
+            ),
         ];
 
         // Collect fields to delete when None
@@ -442,6 +446,12 @@ impl Channel {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
+        let last_active_at = fields
+            .get("last_active_at")
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or(created_at); // Default to created_at for backward compat
+
         Ok(crate::agent::Agent {
             id,
             name,
@@ -453,6 +463,7 @@ impl Channel {
             last_heartbeat,
             tasks_completed,
             rounds_completed,
+            last_active_at,
         })
     }
 
@@ -787,6 +798,24 @@ impl Channel {
         }
     }
 
+    // ==================== Event Stream Methods ====================
+
+    /// Create an EventStream for this channel's town.
+    pub fn event_stream(&self) -> EventStream {
+        EventStream::new(self.conn.clone(), self.town_name())
+    }
+
+    /// Emit a structured event to Redis Streams.
+    ///
+    /// Best-effort: logs a warning on failure but does not propagate errors,
+    /// ensuring event emission never breaks core workflows.
+    pub async fn emit_event(&self, event: &TownEvent) {
+        let es = self.event_stream();
+        if let Err(e) = es.emit(event).await {
+            debug!("Failed to emit event: {}", e);
+        }
+    }
+
     // ==================== Backlog Methods ====================
 
     /// Add a task ID to the town's backlog queue.
@@ -944,7 +973,8 @@ impl Channel {
 
         debug!(
             "Reset: deleted {} keys for town '{}'",
-            count, self.town_name
+            count,
+            self.town_name()
         );
         Ok(count)
     }
@@ -979,8 +1009,272 @@ impl Channel {
 
         debug!(
             "Reset agents only: deleted {} keys for town '{}'",
-            count, self.town_name
+            count,
+            self.town_name()
         );
         Ok(count)
+    }
+
+    // ==================== Docket Stream Methods ====================
+    // Redis Streams-based task dispatch (Docket pattern from RAK/RAR).
+    // Provides at-least-once delivery, crash recovery, and consumer groups.
+
+    /// Consumer group name for the docket task stream.
+    const DOCKET_GROUP: &'static str = "workers";
+
+    /// Ensure the docket consumer group exists.
+    ///
+    /// Creates the stream and consumer group if they don't already exist.
+    /// Uses `$ MKSTREAM` to start reading only new entries.
+    pub async fn docket_ensure_group(&self) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_tasks_key();
+
+        let result: redis::RedisResult<()> = redis::cmd("XGROUP")
+            .arg("CREATE")
+            .arg(&key)
+            .arg(Self::DOCKET_GROUP)
+            .arg("$")
+            .arg("MKSTREAM")
+            .query_async(&mut conn)
+            .await;
+
+        match result {
+            Ok(()) => {
+                debug!("Created docket consumer group on {}", key);
+                Ok(())
+            }
+            Err(e) if e.to_string().contains("BUSYGROUP") => {
+                // Group already exists — not an error
+                debug!("Docket consumer group already exists on {}", key);
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Add a task to the docket stream (XADD).
+    ///
+    /// The stream entry format is RAK-compatible:
+    /// ```text
+    /// task_id, type, message, priority, from, to, timestamp, correlation_id
+    /// ```
+    ///
+    /// Returns the stream entry ID assigned by Redis.
+    pub async fn docket_push(
+        &self,
+        task_id: crate::task::TaskId,
+        description: &str,
+        priority: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<String> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_tasks_key();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let entry_id: String = redis::cmd("XADD")
+            .arg(&key)
+            .arg("*") // auto-generate ID
+            .arg("task_id")
+            .arg(task_id.to_string())
+            .arg("type")
+            .arg("task_assign")
+            .arg("message")
+            .arg(description)
+            .arg("priority")
+            .arg(priority)
+            .arg("from")
+            .arg(from)
+            .arg("to")
+            .arg(to)
+            .arg("timestamp")
+            .arg(&now)
+            .query_async(&mut conn)
+            .await?;
+
+        debug!("Docket XADD task {} -> entry {}", task_id, entry_id);
+        Ok(entry_id)
+    }
+
+    /// Read one task from the docket stream as a consumer (XREADGROUP).
+    ///
+    /// Reads the next undelivered entry from the consumer group.
+    /// Returns `None` if no entries are available within the timeout.
+    ///
+    /// The returned tuple contains `(stream_entry_id, fields)`.
+    pub async fn docket_read(
+        &self,
+        consumer_name: &str,
+        block_ms: usize,
+    ) -> Result<Option<(String, std::collections::HashMap<String, String>)>> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_tasks_key();
+
+        // XREADGROUP GROUP workers <consumer> COUNT 1 BLOCK <ms> STREAMS <key> >
+        let result: redis::Value = redis::cmd("XREADGROUP")
+            .arg("GROUP")
+            .arg(Self::DOCKET_GROUP)
+            .arg(consumer_name)
+            .arg("COUNT")
+            .arg(1)
+            .arg("BLOCK")
+            .arg(block_ms)
+            .arg("STREAMS")
+            .arg(&key)
+            .arg(">")
+            .query_async(&mut conn)
+            .await?;
+
+        Self::parse_xread_single(result)
+    }
+
+    /// Acknowledge a docket task as processed (XACK).
+    ///
+    /// Must be called after successfully processing a task to remove it
+    /// from the pending entries list (PEL).
+    pub async fn docket_ack(&self, entry_id: &str) -> Result<()> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_tasks_key();
+
+        let _: i64 = redis::cmd("XACK")
+            .arg(&key)
+            .arg(Self::DOCKET_GROUP)
+            .arg(entry_id)
+            .query_async(&mut conn)
+            .await?;
+
+        debug!("Docket XACK entry {}", entry_id);
+        Ok(())
+    }
+
+    /// Get the number of entries in the docket task stream (XLEN).
+    pub async fn docket_len(&self) -> Result<usize> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_tasks_key();
+
+        let len: usize = redis::cmd("XLEN").arg(&key).query_async(&mut conn).await?;
+        Ok(len)
+    }
+
+    /// Get pending (unacknowledged) entries in the docket stream (XPENDING summary).
+    ///
+    /// Returns the count of pending entries. Useful for crash recovery
+    /// and visibility into in-flight work.
+    pub async fn docket_pending_count(&self) -> Result<usize> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_tasks_key();
+
+        // XPENDING returns [count, min-id, max-id, [[consumer, count], ...]]
+        let result: redis::Value = redis::cmd("XPENDING")
+            .arg(&key)
+            .arg(Self::DOCKET_GROUP)
+            .query_async(&mut conn)
+            .await?;
+
+        // First element is the pending count
+        match result {
+            redis::Value::Array(ref items) if !items.is_empty() => match &items[0] {
+                redis::Value::Int(n) => Ok(*n as usize),
+                _ => Ok(0),
+            },
+            _ => Ok(0),
+        }
+    }
+
+    /// Log a task lifecycle event to the docket events stream.
+    ///
+    /// Used for task progress tracking (started, completed, failed, etc.).
+    pub async fn docket_log_event(
+        &self,
+        task_id: crate::task::TaskId,
+        event_type: &str,
+        detail: &str,
+    ) -> Result<String> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_events_key();
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let entry_id: String = redis::cmd("XADD")
+            .arg(&key)
+            .arg("*")
+            .arg("task_id")
+            .arg(task_id.to_string())
+            .arg("event")
+            .arg(event_type)
+            .arg("detail")
+            .arg(detail)
+            .arg("timestamp")
+            .arg(&now)
+            .query_async(&mut conn)
+            .await?;
+
+        debug!(
+            "Docket event {} for task {} -> {}",
+            event_type, task_id, entry_id
+        );
+        Ok(entry_id)
+    }
+
+    /// Parse a single entry from an XREADGROUP response.
+    ///
+    /// XREADGROUP returns: [[stream_name, [[id, [field, value, ...]], ...]]]
+    /// We expect at most one entry from COUNT 1.
+    fn parse_xread_single(
+        value: redis::Value,
+    ) -> Result<Option<(String, std::collections::HashMap<String, String>)>> {
+        use redis::Value;
+
+        // Nil means no data (timeout)
+        let streams = match value {
+            Value::Nil => return Ok(None),
+            Value::Array(s) => s,
+            _ => return Ok(None),
+        };
+
+        // streams[0] = [stream_name, entries]
+        let stream = match streams.into_iter().next() {
+            Some(Value::Array(s)) => s,
+            _ => return Ok(None),
+        };
+
+        // stream[1] = entries array
+        let entries = match stream.into_iter().nth(1) {
+            Some(Value::Array(e)) => e,
+            _ => return Ok(None),
+        };
+
+        // entries[0] = [entry_id, [field, value, ...]]
+        let entry = match entries.into_iter().next() {
+            Some(Value::Array(e)) => e,
+            _ => return Ok(None),
+        };
+
+        let mut entry_iter = entry.into_iter();
+
+        // entry_id
+        let entry_id = match entry_iter.next() {
+            Some(Value::BulkString(b)) => String::from_utf8_lossy(&b).to_string(),
+            _ => return Ok(None),
+        };
+
+        // fields = [key, val, key, val, ...]
+        let fields_raw = match entry_iter.next() {
+            Some(Value::Array(f)) => f,
+            _ => return Ok(None),
+        };
+
+        let mut fields = std::collections::HashMap::new();
+        let mut field_iter = fields_raw.into_iter();
+        while let (Some(k), Some(v)) = (field_iter.next(), field_iter.next()) {
+            if let (Value::BulkString(kb), Value::BulkString(vb)) = (k, v) {
+                fields.insert(
+                    String::from_utf8_lossy(&kb).to_string(),
+                    String::from_utf8_lossy(&vb).to_string(),
+                );
+            }
+        }
+
+        Ok(Some((entry_id, fields)))
     }
 }

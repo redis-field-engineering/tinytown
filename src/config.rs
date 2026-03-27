@@ -58,6 +58,16 @@ pub struct Config {
     /// This is set at creation time based on GlobalConfig and not re-read
     #[serde(default)]
     pub use_central_redis: bool,
+
+    /// Use Redis Streams (Docket pattern) for task dispatch instead of Lists.
+    ///
+    /// When enabled, backlog operations use XADD/XREADGROUP/XACK instead of
+    /// RPUSH/BLPOP, providing at-least-once delivery, crash recovery via
+    /// XPENDING, and consumer-group distribution across workers.
+    ///
+    /// Default: false (List-based backlog for backward compatibility).
+    #[serde(default)]
+    pub use_streams: bool,
 }
 
 /// Townhall daemon configuration.
@@ -523,6 +533,7 @@ impl Config {
             conductor_cli: global.conductor_cli.clone(),
             max_agents: 10,
             use_central_redis,
+            use_streams: false,
             townhall: TownhallConfig::default(),
         }
     }

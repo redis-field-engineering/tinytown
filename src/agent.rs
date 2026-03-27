@@ -69,9 +69,23 @@ pub enum AgentType {
 }
 
 /// Agent lifecycle state.
+///
+/// Follows RAR worker lifecycle: cold → starting → idle → working → draining → stopped
+///
+/// ```text
+///                     work arrives
+///         Cold ─────────────────────→ Starting → Idle ⇄ Working
+///          ↑                                      │
+///          │ idle timeout                         │ graceful shutdown
+///          │                                      ↓
+///          └──────────── Stopped ←──────────── Draining
+/// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentState {
+    /// Agent is registered but no process is running (scale-to-zero state).
+    /// When work arrives for a Cold agent, the orchestrator needs to start a process.
+    Cold,
     /// Agent is starting up
     #[default]
     Starting,
@@ -81,6 +95,10 @@ pub enum AgentState {
     Working,
     /// Agent is paused
     Paused,
+    /// Agent is finishing its current task but won't accept new work.
+    /// Used during graceful shutdown, rolling deploys, or idle timeout.
+    /// Transitions to Stopped after current task completes.
+    Draining,
     /// Agent has stopped
     Stopped,
     /// Agent encountered an error
@@ -91,13 +109,52 @@ impl AgentState {
     /// Check if agent is in a terminal state.
     #[must_use]
     pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Stopped | Self::Error)
+        matches!(self, Self::Stopped | Self::Error | Self::Cold)
     }
 
     /// Check if agent can accept new work.
     #[must_use]
     pub fn can_accept_work(&self) -> bool {
         matches!(self, Self::Idle)
+    }
+
+    /// Check if agent is in an active (process running) state.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            Self::Starting | Self::Idle | Self::Working | Self::Paused | Self::Draining
+        )
+    }
+
+    /// Get emoji representation for display.
+    #[must_use]
+    pub fn emoji(&self) -> &'static str {
+        match self {
+            Self::Cold => "🧊",
+            Self::Starting => "🔄",
+            Self::Idle => "💤",
+            Self::Working => "⚡",
+            Self::Paused => "⏸️",
+            Self::Draining => "🔻",
+            Self::Stopped => "⏹️",
+            Self::Error => "❌",
+        }
+    }
+}
+
+impl std::fmt::Display for AgentState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cold => write!(f, "Cold"),
+            Self::Starting => write!(f, "Starting"),
+            Self::Idle => write!(f, "Idle"),
+            Self::Working => write!(f, "Working"),
+            Self::Paused => write!(f, "Paused"),
+            Self::Draining => write!(f, "Draining"),
+            Self::Stopped => write!(f, "Stopped"),
+            Self::Error => write!(f, "Error"),
+        }
     }
 }
 
@@ -152,6 +209,10 @@ pub struct Agent {
     /// Number of rounds completed
     #[serde(default)]
     pub rounds_completed: u64,
+    /// Last time the agent was actively working (for idle timeout detection).
+    /// Defaults to created_at if never set.
+    #[serde(default = "chrono::Utc::now")]
+    pub last_active_at: DateTime<Utc>,
 }
 
 impl Agent {
@@ -170,6 +231,7 @@ impl Agent {
             last_heartbeat: now,
             tasks_completed: 0,
             rounds_completed: 0,
+            last_active_at: now,
         }
     }
 
@@ -188,6 +250,7 @@ impl Agent {
             last_heartbeat: now,
             tasks_completed: 0,
             rounds_completed: 0,
+            last_active_at: now,
         }
     }
 }
