@@ -470,8 +470,8 @@ return 0
 
         // Also emit to Redis Stream for real-time consumption
         if let Some(ref es) = self.event_stream {
-            let town_event = TownEvent::new(EventType::MissionEvent, event)
-                .with_mission(mission_id);
+            let town_event =
+                TownEvent::new(EventType::MissionEvent, event).with_mission(mission_id);
             // Best-effort: don't fail the whole operation if stream emit fails
             if let Err(e) = es.emit(&town_event).await {
                 debug!("Failed to emit stream event: {}", e);
@@ -492,10 +492,10 @@ return 0
         self.log_event(mission_id, &event.message).await?;
 
         // Emit typed event to stream
-        if let Some(ref es) = self.event_stream {
-            if let Err(e) = es.emit(&event).await {
-                debug!("Failed to emit typed stream event: {}", e);
-            }
+        if let Some(ref es) = self.event_stream
+            && let Err(e) = es.emit(&event).await
+        {
+            debug!("Failed to emit typed stream event: {}", e);
         }
         Ok(())
     }

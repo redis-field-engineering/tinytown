@@ -3406,7 +3406,6 @@ async fn test_mission_dispatcher_processes_conductor_note() -> Result<(), Box<dy
     Ok(())
 }
 
-
 // ============================================================================
 // DOCKET STREAM (REDIS STREAMS) TESTS
 // ============================================================================
@@ -3436,11 +3435,21 @@ async fn test_docket_push() -> Result<(), Box<dyn std::error::Error>> {
 
     let task_id = TaskId::new();
     let entry_id = channel
-        .docket_push(task_id, "Implement feature X", "normal", "conductor", "worker-1")
+        .docket_push(
+            task_id,
+            "Implement feature X",
+            "normal",
+            "conductor",
+            "worker-1",
+        )
         .await?;
 
     // Entry ID should be a valid stream ID (e.g., "1234567890-0")
-    assert!(entry_id.contains('-'), "Entry ID should contain '-': {}", entry_id);
+    assert!(
+        entry_id.contains('-'),
+        "Entry ID should contain '-': {}",
+        entry_id
+    );
 
     // Stream should have one entry
     let len = channel.docket_len().await?;
@@ -3460,7 +3469,13 @@ async fn test_docket_push_multiple() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..5 {
         let task_id = TaskId::new();
         channel
-            .docket_push(task_id, &format!("Task {}", i), "normal", "conductor", "worker-1")
+            .docket_push(
+                task_id,
+                &format!("Task {}", i),
+                "normal",
+                "conductor",
+                "worker-1",
+            )
             .await?;
     }
 
@@ -3560,7 +3575,13 @@ async fn test_docket_pending_visibility() -> Result<(), Box<dyn std::error::Erro
     for i in 0..3 {
         let task_id = TaskId::new();
         channel
-            .docket_push(task_id, &format!("Task {}", i), "normal", "conductor", "worker-1")
+            .docket_push(
+                task_id,
+                &format!("Task {}", i),
+                "normal",
+                "conductor",
+                "worker-1",
+            )
             .await?;
     }
 
@@ -3585,9 +3606,15 @@ async fn test_docket_log_event() -> Result<(), Box<dyn std::error::Error>> {
     let task_id = TaskId::new();
 
     // Log various lifecycle events
-    let id1 = channel.docket_log_event(task_id, "assigned", "Assigned to worker-1").await?;
-    let id2 = channel.docket_log_event(task_id, "started", "Worker began processing").await?;
-    let id3 = channel.docket_log_event(task_id, "completed", "Task finished successfully").await?;
+    let id1 = channel
+        .docket_log_event(task_id, "assigned", "Assigned to worker-1")
+        .await?;
+    let id2 = channel
+        .docket_log_event(task_id, "started", "Worker began processing")
+        .await?;
+    let id3 = channel
+        .docket_log_event(task_id, "completed", "Task finished successfully")
+        .await?;
 
     // All entries should have valid stream IDs
     assert!(id1.contains('-'));
@@ -3613,7 +3640,13 @@ async fn test_docket_full_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     // 2. Push a task
     let task_id = TaskId::new();
     let _push_id = channel
-        .docket_push(task_id, "Deploy to production", "high", "conductor", "deployer")
+        .docket_push(
+            task_id,
+            "Deploy to production",
+            "high",
+            "conductor",
+            "deployer",
+        )
         .await?;
 
     assert_eq!(channel.docket_len().await?, 1);
@@ -3631,12 +3664,18 @@ async fn test_docket_full_lifecycle() -> Result<(), Box<dyn std::error::Error>> 
     assert_eq!(channel.docket_pending_count().await?, 1);
 
     // 5. Log progress events
-    channel.docket_log_event(task_id, "started", "Beginning deployment").await?;
-    channel.docket_log_event(task_id, "progress", "50% complete").await?;
+    channel
+        .docket_log_event(task_id, "started", "Beginning deployment")
+        .await?;
+    channel
+        .docket_log_event(task_id, "progress", "50% complete")
+        .await?;
 
     // 6. Acknowledge completion
     channel.docket_ack(&entry_id).await?;
-    channel.docket_log_event(task_id, "completed", "Deployment successful").await?;
+    channel
+        .docket_log_event(task_id, "completed", "Deployment successful")
+        .await?;
 
     // 7. No more pending
     assert_eq!(channel.docket_pending_count().await?, 0);
@@ -3662,8 +3701,8 @@ async fn test_use_streams_config_default() -> Result<(), Box<dyn std::error::Err
 /// Test that use_streams can be parsed from config TOML.
 #[tokio::test]
 async fn test_use_streams_config_parse() -> Result<(), Box<dyn std::error::Error>> {
-    use tinytown::Config;
     use tempfile::TempDir;
+    use tinytown::Config;
 
     let temp_dir = TempDir::new()?;
     let config_path = temp_dir.path().join("tinytown.toml");
@@ -3677,7 +3716,10 @@ use_streams = true
     )?;
 
     let config = Config::load(temp_dir.path())?;
-    assert!(config.use_streams, "use_streams should be true when set in config");
+    assert!(
+        config.use_streams,
+        "use_streams should be true when set in config"
+    );
 
     Ok(())
 }

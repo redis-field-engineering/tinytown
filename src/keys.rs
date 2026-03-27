@@ -163,7 +163,6 @@ impl RedisKeys {
         format!("tt:{}:mission:{}:events", self.town_name, id)
     }
 
-
     /// Mission control messages: `tt:{town}:mission:{run_id}:control`
     pub fn mission_control(&self, id: MissionId) -> String {
         format!("tt:{}:mission:{}:control", self.town_name, id)

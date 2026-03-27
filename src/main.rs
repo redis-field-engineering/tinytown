@@ -3735,10 +3735,7 @@ Now, help the user orchestrate their project!
                         match Town::connect(path).await {
                             Ok(t) => {
                                 let agents = t.list_agents().await;
-                                let active = agents
-                                    .iter()
-                                    .filter(|a| a.state.is_active())
-                                    .count();
+                                let active = agents.iter().filter(|a| a.state.is_active()).count();
                                 format!("[OK] {} agents ({} active)", agents.len(), active)
                             }
                             Err(_) => "[OFFLINE]".to_string(),

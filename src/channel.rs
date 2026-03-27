@@ -351,6 +351,10 @@ impl Channel {
                 "rounds_completed".to_string(),
                 agent.rounds_completed.to_string(),
             ),
+            (
+                "last_active_at".to_string(),
+                agent.last_active_at.to_rfc3339(),
+            ),
         ];
 
         // Collect fields to delete when None
@@ -442,6 +446,12 @@ impl Channel {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
 
+        let last_active_at = fields
+            .get("last_active_at")
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .unwrap_or(created_at); // Default to created_at for backward compat
+
         Ok(crate::agent::Agent {
             id,
             name,
@@ -453,6 +463,7 @@ impl Channel {
             last_heartbeat,
             tasks_completed,
             rounds_completed,
+            last_active_at,
         })
     }
 
@@ -962,7 +973,8 @@ impl Channel {
 
         debug!(
             "Reset: deleted {} keys for town '{}'",
-            count, self.town_name()
+            count,
+            self.town_name()
         );
         Ok(count)
     }
@@ -997,7 +1009,8 @@ impl Channel {
 
         debug!(
             "Reset agents only: deleted {} keys for town '{}'",
-            count, self.town_name()
+            count,
+            self.town_name()
         );
         Ok(count)
     }
@@ -1140,10 +1153,7 @@ impl Channel {
         let mut conn = self.conn.clone();
         let key = self.docket_tasks_key();
 
-        let len: usize = redis::cmd("XLEN")
-            .arg(&key)
-            .query_async(&mut conn)
-            .await?;
+        let len: usize = redis::cmd("XLEN").arg(&key).query_async(&mut conn).await?;
         Ok(len)
     }
 
@@ -1164,12 +1174,10 @@ impl Channel {
 
         // First element is the pending count
         match result {
-            redis::Value::Array(ref items) if !items.is_empty() => {
-                match &items[0] {
-                    redis::Value::Int(n) => Ok(*n as usize),
-                    _ => Ok(0),
-                }
-            }
+            redis::Value::Array(ref items) if !items.is_empty() => match &items[0] {
+                redis::Value::Int(n) => Ok(*n as usize),
+                _ => Ok(0),
+            },
             _ => Ok(0),
         }
     }
