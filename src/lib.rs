@@ -58,7 +58,9 @@ pub mod redis_manager;
 pub mod task;
 pub mod town;
 
-pub use agent::{Agent, AgentId, AgentState, AgentType};
+pub use agent::{
+    Agent, AgentId, AgentState, AgentType, RoleDefinition, SpawnMode, builtin_roles, roles,
+};
 pub use app::audit::{AuditEvent, AuditResult, audit_middleware};
 pub use app::auth::{AuthError, AuthState, Principal, auth_middleware, generate_api_key};
 pub use app::mcp::{McpState, create_mcp_router};

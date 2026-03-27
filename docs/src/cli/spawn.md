@@ -32,8 +32,25 @@ The agent:
 | `--cli <CLI>` | `-m` | AI CLI to use (default: from `tinytown.toml`) |
 | `--max-rounds <N>` | | Maximum iterations before stopping (default: 10) |
 | `--foreground` | | Run in foreground instead of background |
+| `--role <ROLE>` | | Explicit role ID for routing (e.g., `worker`, `reviewer`, `researcher`) |
+| `--nickname <NAME>` | | Human-facing display name (separate from canonical name) |
+| `--parent <AGENT>` | | Parent agent name or ID (for delegated subtasks) |
 | `--town <PATH>` | `-t` | Town directory (default: `.`) |
 | `--verbose` | `-v` | Enable verbose logging |
+
+### Role-Based Routing
+
+When you set `--role`, the mission scheduler uses it for matching work items to agents instead of inferring roles from the agent name. This is more reliable:
+
+```bash
+# Without --role: scheduler guesses from name "backend" → probably a worker
+tt spawn backend
+
+# With --role: scheduler knows this is explicitly a reviewer
+tt spawn backend --role reviewer
+```
+
+Built-in roles: `worker`, `reviewer`, `researcher`, `architect`, `tester`, `devops`.
 
 ## Setting the Default CLI
 
@@ -89,13 +106,28 @@ tt spawn worker-1 --max-rounds 5
 # Agent stops after 5 rounds (default is 10)
 ```
 
+### Spawn with Role and Nickname
+
+```bash
+tt spawn backend --role worker --nickname "API Developer"
+tt spawn qa --role reviewer --nickname "Quality Gate"
+```
+
+### Spawn with Parent (Delegated Subtasks)
+
+```bash
+tt spawn subtask-1 --role worker --parent backend
+# Creates a child agent linked to 'backend' in the agent hierarchy
+```
+
 ### Spawn Multiple Agents (Parallel!)
 
 ```bash
-tt spawn backend &
-tt spawn frontend &
-tt spawn tester &
-# All three run in parallel
+tt spawn backend --role worker &
+tt spawn frontend --role worker &
+tt spawn tester --role tester &
+tt spawn reviewer --role reviewer &
+# All four run in parallel with explicit roles
 ```
 
 ## Output
@@ -121,20 +153,21 @@ tt spawn tester &
 
 ## Agent Naming
 
-Choose descriptive names:
+Choose descriptive names. With `--role`, names no longer need to describe the role:
 
 | Good Names | Why |
 |------------|-----|
 | `backend` | Describes the work area |
 | `worker-1` | Simple numbered workers |
-| `reviewer` | Describes the role |
-| `alice` | Personality names work too |
+| `alice` | Personality names work — use `--role` for routing |
 
 | Avoid | Why |
 |-------|-----|
 | `agent` | Too generic |
 | `a` | Not descriptive |
 | Spaces | Use hyphens instead |
+
+> **Tip:** Use `--nickname` for human-friendly display names (e.g., `--nickname "Quality Gate"`) while keeping canonical names short for CLI usage.
 
 ## Agent State After Spawn
 

@@ -25,7 +25,7 @@ use redis::aio::ConnectionManager;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, instrument};
 
-use crate::agent::AgentId;
+use crate::agent::{AgentId, SpawnMode};
 use crate::error::Result;
 use crate::mission::types::MissionId;
 use crate::task::TaskId;
@@ -52,6 +52,23 @@ pub enum EventType {
     MissionHelpNeeded,
     MissionWatchTriggered,
     MissionEvent,
+    // ── Collaboration events ──
+    /// A task was delegated from one agent to another.
+    TaskDelegated,
+    /// An agent was interrupted (e.g., preempted by higher-priority work).
+    AgentInterrupted,
+    /// A previously interrupted agent was resumed.
+    AgentResumed,
+    /// An agent completed its assigned scope successfully.
+    AgentCompleted,
+    /// An agent failed its assigned scope.
+    AgentFailed,
+    /// Work was handed off to a reviewer agent.
+    ReviewerHandoff,
+    /// A reviewer approved the work under review.
+    ReviewerApproval,
+    /// An agent escalated to the conductor for guidance or priority change.
+    ConductorEscalation,
 }
 
 impl std::fmt::Display for EventType {
@@ -77,6 +94,19 @@ pub struct TownEvent {
     pub new_state: Option<String>,
     pub message: String,
     pub timestamp: DateTime<Utc>,
+    // ── Collaboration metadata ──
+    /// Parent agent that spawned or delegated to this agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_agent_id: Option<AgentId>,
+    /// Child agent that was spawned or delegated to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_agent_id: Option<AgentId>,
+    /// Human-readable scope description for the agent's current assignment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// Spawn mode used when creating a child agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spawn_mode: Option<SpawnMode>,
 }
 
 impl TownEvent {
@@ -91,6 +121,10 @@ impl TownEvent {
             new_state: None,
             message: message.into(),
             timestamp: Utc::now(),
+            parent_agent_id: None,
+            child_agent_id: None,
+            scope: None,
+            spawn_mode: None,
         }
     }
     #[must_use]
@@ -112,6 +146,31 @@ impl TownEvent {
     pub fn with_transition(mut self, old: impl Into<String>, new: impl Into<String>) -> Self {
         self.old_state = Some(old.into());
         self.new_state = Some(new.into());
+        self
+    }
+    // ── Collaboration builder methods ──
+    /// Set the parent agent (the agent that spawned or delegated).
+    #[must_use]
+    pub fn with_parent_agent(mut self, id: AgentId) -> Self {
+        self.parent_agent_id = Some(id);
+        self
+    }
+    /// Set the child agent (the agent that was spawned or delegated to).
+    #[must_use]
+    pub fn with_child_agent(mut self, id: AgentId) -> Self {
+        self.child_agent_id = Some(id);
+        self
+    }
+    /// Set the human-readable scope description for this event.
+    #[must_use]
+    pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.scope = Some(scope.into());
+        self
+    }
+    /// Set the spawn mode for agent-spawn events.
+    #[must_use]
+    pub fn with_spawn_mode(mut self, mode: SpawnMode) -> Self {
+        self.spawn_mode = Some(mode);
         self
     }
 }
@@ -150,6 +209,21 @@ impl EventStream {
             .await?;
         if let Some(aid) = event.agent_id {
             self.xadd(&self.agent_stream_key(aid), AGENT_STREAM_MAXLEN, fields)
+                .await?;
+        }
+        // Also route collaboration events to parent/child agent streams
+        if let Some(pid) = event.parent_agent_id {
+            // Avoid duplicate if parent == agent_id
+            if event.agent_id != Some(pid) {
+                self.xadd(&self.agent_stream_key(pid), AGENT_STREAM_MAXLEN, fields)
+                    .await?;
+            }
+        }
+        if let Some(cid) = event.child_agent_id
+            && event.agent_id != Some(cid)
+            && event.parent_agent_id != Some(cid)
+        {
+            self.xadd(&self.agent_stream_key(cid), AGENT_STREAM_MAXLEN, fields)
                 .await?;
         }
         if let Some(mid) = event.mission_id {

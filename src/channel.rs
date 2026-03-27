@@ -355,6 +355,12 @@ impl Channel {
                 "last_active_at".to_string(),
                 agent.last_active_at.to_rfc3339(),
             ),
+            (
+                "spawn_mode".to_string(),
+                serde_json::to_string(&agent.spawn_mode)?
+                    .trim_matches('"')
+                    .to_string(),
+            ),
         ];
 
         // Collect fields to delete when None
@@ -365,6 +371,27 @@ impl Channel {
             fields.push(("current_task".to_string(), task_id.to_string()));
         } else {
             fields_to_delete.push("current_task");
+        }
+
+        // Handle optional nickname
+        if let Some(ref nickname) = agent.nickname {
+            fields.push(("nickname".to_string(), nickname.clone()));
+        } else {
+            fields_to_delete.push("nickname");
+        }
+
+        // Handle optional role_id
+        if let Some(ref role_id) = agent.role_id {
+            fields.push(("role_id".to_string(), role_id.clone()));
+        } else {
+            fields_to_delete.push("role_id");
+        }
+
+        // Handle optional parent_agent_id
+        if let Some(ref parent_id) = agent.parent_agent_id {
+            fields.push(("parent_agent_id".to_string(), parent_id.to_string()));
+        } else {
+            fields_to_delete.push("parent_agent_id");
         }
 
         // Use a pipeline to make HDEL + HSET atomic
@@ -452,9 +479,21 @@ impl Channel {
             .map(|dt| dt.with_timezone(&chrono::Utc))
             .unwrap_or(created_at); // Default to created_at for backward compat
 
+        let nickname = fields.get("nickname").cloned();
+        let role_id = fields.get("role_id").cloned();
+        let parent_agent_id = fields.get("parent_agent_id").and_then(|s| s.parse().ok());
+        let spawn_mode: crate::agent::SpawnMode = fields
+            .get("spawn_mode")
+            .map(|s| serde_json::from_str(&format!("\"{}\"", s)).unwrap_or_default())
+            .unwrap_or_default();
+
         Ok(crate::agent::Agent {
             id,
             name,
+            nickname,
+            role_id,
+            parent_agent_id,
+            spawn_mode,
             agent_type,
             state,
             cli,

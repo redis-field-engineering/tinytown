@@ -7,14 +7,51 @@ An **Agent** is a worker that executes tasks. Agents can use AI coding CLIs (Cla
 | Property | Type | Description |
 |----------|------|-------------|
 | `id` | UUID | Unique identifier |
-| `name` | String | Human-readable name |
+| `name` | String | Human-readable canonical name |
+| `nickname` | String | Human-facing display name — auto-assigned from 1920s-era names if not provided |
+| `role_id` | Option\<String\> | Explicit role for routing (e.g., `"worker"`, `"reviewer"`, `"researcher"`) |
 | `agent_type` | Enum | `Worker` or `Supervisor` |
 | `state` | Enum | Current lifecycle state |
 | `cli` | String | CLI being used (claude, auggie, etc.) |
 | `current_task` | Option | Task being worked on |
+| `parent_agent_id` | Option\<AgentId\> | Parent agent for delegated subtasks |
+| `spawn_mode` | SpawnMode | How the session was created: `Fresh`, `ForkedContext`, or `Resumed` |
+| `current_scope` | Option\<String\> | Free-text description of current assigned scope |
 | `created_at` | DateTime | When agent was created |
 | `last_heartbeat` | DateTime | Last activity timestamp |
 | `tasks_completed` | u64 | Count of completed tasks |
+
+### Roles
+
+Roles are **explicit metadata** rather than inferred from agent names. The mission scheduler prefers `role_id` for routing work to agents, falling back to name-based matching only when no role is set.
+
+Built-in roles: `worker`, `reviewer`, `researcher`, `architect`, `tester`, `devops`.
+
+```bash
+# Spawn with an explicit role
+tt spawn backend --role worker
+tt spawn qa --role reviewer --nickname "Quality Gate"
+tt spawn alice --role researcher --parent backend
+```
+
+### Nicknames
+
+Every agent automatically gets a nickname from the 1920s — the decade Tiny Town, Colorado was founded. Names like **Robert**, **Dorothy**, **Helen**, **James**, and **Margaret** are deterministically assigned based on the agent's UUID.
+
+You can override the auto-nickname with `--nickname`:
+
+```bash
+tt spawn backend                           # Gets a 1920s name like "Dorothy"
+tt spawn backend --nickname "The Builder"  # Overrides to "The Builder"
+```
+
+### Spawn Modes
+
+| Mode | Description |
+|------|-------------|
+| `Fresh` | Default. New agent with no inherited context. |
+| `ForkedContext` | Agent forked from a parent, inheriting its context with boundary markers. |
+| `Resumed` | Agent resumed from a previous session. |
 
 ## Agent States
 
@@ -28,29 +65,56 @@ An **Agent** is a worker that executes tasks. Agents can use AI coding CLIs (Cla
 │   Idle    │ ◄──►│  Working  │ ── Can accept work / Executing task
 └─────┬─────┘     └───────────┘
       │
-      ▼
+      ├─────────────────────┐
+      ▼                     ▼
+┌───────────┐     ┌───────────┐     ┌───────────┐
+│  Paused   │     │ Draining  │     │   Error   │
+└─────┬─────┘     └─────┬─────┘     └───────────┘
+      │                 │
+      ▼                 ▼
 ┌───────────┐     ┌───────────┐
-│  Paused   │     │   Error   │ ── Temporarily paused / Something went wrong
-└─────┬─────┘     └───────────┘
-      │
-      ▼
-┌───────────┐
-│  Stopped  │ ── Agent has terminated
-└───────────┘
+│  Stopped  │     │   Cold    │
+└───────────┘     └───────────┘
 ```
+
+| State | Description |
+|-------|-------------|
+| `Starting` | Agent is initializing |
+| `Idle` | Ready to accept work |
+| `Working` | Executing a task |
+| `Paused` | Temporarily paused via `tt interrupt` — resumes with `tt resume` |
+| `Draining` | Finishing current work before stopping (via `tt close`) |
+| `Cold` | Gracefully shut down after draining |
+| `Error` | Something went wrong |
+| `Stopped` | Agent has terminated |
+
+### Control-Plane Operations
+
+| Command | Effect |
+|---------|--------|
+| `tt interrupt <agent>` | Pauses the agent — it stops processing messages until resumed |
+| `tt resume <agent>` | Resumes a paused agent |
+| `tt close <agent>` | Gracefully drains current work, then transitions to `Cold` |
+| `tt wait <agent> [--timeout N]` | Blocks until the agent reaches a terminal state |
+| `tt kill <agent>` | Requests the agent to stop at the start of its next round |
 
 ## Creating Agents
 
 ### CLI
 
 ```bash
-# With default CLI
+# Basic spawn
 tt spawn worker-1
-
-# With a specific CLI
 tt spawn worker-1 --cli claude
-tt spawn worker-2 --cli auggie
-tt spawn reviewer --cli codex-mini
+
+# With role and nickname
+tt spawn backend --role worker --nickname "API Developer"
+
+# With parent (for delegated subtasks)
+tt spawn subtask-1 --role worker --parent backend
+
+# With all metadata
+tt spawn qa --role reviewer --nickname "Quality Gate" --cli auggie
 ```
 
 ### Rust API
