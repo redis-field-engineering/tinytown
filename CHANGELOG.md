@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/redis-field-engineering/tinytown/compare/v0.8.1...v0.9.0) (2026-03-27)
+
+
+### Features
+
+* **#67:** First-class subagent control plane ([#72](https://github.com/redis-field-engineering/tinytown/issues/72)) ([a64007b](https://github.com/redis-field-engineering/tinytown/commit/a64007bc40394f766b5056372570f62e79b7abad))
+* adopt Docket pattern (Redis Streams) for task dispatch ([#68](https://github.com/redis-field-engineering/tinytown/issues/68)) ([ebe7bbf](https://github.com/redis-field-engineering/tinytown/commit/ebe7bbf3ac3a7bdcf915e15d1dc825b23934b2eb))
+* support separate conductor CLI default ([2fb10ba](https://github.com/redis-field-engineering/tinytown/commit/2fb10ba7d1f5d25abc15013d019e503d68698ea4))
+
 ## [0.8.1](https://github.com/redis-field-engineering/tinytown/compare/v0.8.0...v0.8.1) (2026-03-14)
 
 
