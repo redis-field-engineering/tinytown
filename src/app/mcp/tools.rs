@@ -886,12 +886,17 @@ pub fn agent_list_open_tool(state: Arc<McpState>) -> Tool {
                                 serde_json::json!({
                                     "id": a.id.to_string(),
                                     "name": a.name,
+                                    "nickname": a.nickname,
+                                    "role_id": a.role_id,
+                                    "parent_agent_id": a.parent_agent_id.map(|id| id.to_string()),
+                                    "spawn_mode": format!("{}", a.spawn_mode),
                                     "cli": a.cli,
                                     "state": format!("{:?}", a.state),
                                     "rounds_completed": a.rounds_completed,
                                     "tasks_completed": a.tasks_completed,
                                     "inbox_len": a.inbox_len,
-                                    "urgent_len": a.urgent_len
+                                    "urgent_len": a.urgent_len,
+                                    "current_scope": a.current_scope
                                 })
                             })
                             .collect::<Vec<_>>(),
