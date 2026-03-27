@@ -8,7 +8,7 @@ An **Agent** is a worker that executes tasks. Agents can use AI coding CLIs (Cla
 |----------|------|-------------|
 | `id` | UUID | Unique identifier |
 | `name` | String | Human-readable canonical name |
-| `nickname` | Option\<String\> | Human-facing display name (separate from canonical name) |
+| `nickname` | String | Human-facing display name — auto-assigned from 1920s-era names if not provided |
 | `role_id` | Option\<String\> | Explicit role for routing (e.g., `"worker"`, `"reviewer"`, `"researcher"`) |
 | `agent_type` | Enum | `Worker` or `Supervisor` |
 | `state` | Enum | Current lifecycle state |
@@ -32,6 +32,17 @@ Built-in roles: `worker`, `reviewer`, `researcher`, `architect`, `tester`, `devo
 tt spawn backend --role worker
 tt spawn qa --role reviewer --nickname "Quality Gate"
 tt spawn alice --role researcher --parent backend
+```
+
+### Nicknames
+
+Every agent automatically gets a nickname from the 1920s — the decade Tiny Town, Colorado was founded. Names like **Robert**, **Dorothy**, **Helen**, **James**, and **Margaret** are deterministically assigned based on the agent's UUID.
+
+You can override the auto-nickname with `--nickname`:
+
+```bash
+tt spawn backend                           # Gets a 1920s name like "Dorothy"
+tt spawn backend --nickname "The Builder"  # Overrides to "The Builder"
 ```
 
 ### Spawn Modes

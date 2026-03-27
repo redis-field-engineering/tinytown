@@ -26,6 +26,12 @@ impl AgentId {
         Self(uuid)
     }
 
+    /// Get the raw bytes of the underlying UUID.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        self.0.as_bytes()
+    }
+
     /// Create a well-known ID for the supervisor.
     #[must_use]
     pub fn supervisor() -> Self {
@@ -89,6 +95,64 @@ impl std::fmt::Display for SpawnMode {
             Self::Resumed => write!(f, "resumed"),
         }
     }
+}
+
+/// Popular names from the 1920s (when Tiny Town, Colorado was founded).
+/// Used to auto-generate nicknames for agents when none is provided.
+const NICKNAMES_1920S: &[&str] = &[
+    // Top boys' names of the 1920s (SSA)
+    "Robert",
+    "John",
+    "James",
+    "William",
+    "Charles",
+    "George",
+    "Joseph",
+    "Richard",
+    "Edward",
+    "Donald",
+    "Thomas",
+    "Frank",
+    "Harold",
+    "Paul",
+    "Raymond",
+    "Walter",
+    "Jack",
+    "Henry",
+    "Kenneth",
+    "Arthur",
+    // Top girls' names of the 1920s (SSA)
+    "Mary",
+    "Dorothy",
+    "Helen",
+    "Betty",
+    "Margaret",
+    "Ruth",
+    "Virginia",
+    "Doris",
+    "Mildred",
+    "Frances",
+    "Elizabeth",
+    "Evelyn",
+    "Anna",
+    "Marie",
+    "Alice",
+    "Jean",
+    "Shirley",
+    "Barbara",
+    "Irene",
+    "Florence",
+];
+
+/// Pick a 1920s nickname deterministically from an AgentId.
+///
+/// Uses the first two bytes of the UUID to index into the name list,
+/// so the same agent ID always gets the same nickname.
+#[must_use]
+pub fn nickname_from_id(id: AgentId) -> String {
+    let bytes = id.as_bytes();
+    let index = (bytes[0] as usize * 256 + bytes[1] as usize) % NICKNAMES_1920S.len();
+    NICKNAMES_1920S[index].to_string()
 }
 
 /// A first-class role definition for agent routing and policy.
@@ -324,13 +388,18 @@ pub struct Agent {
 
 impl Agent {
     /// Create a new agent.
+    ///
+    /// Automatically assigns a 1920s-era nickname based on the agent's UUID,
+    /// honoring the founding era of Tiny Town, Colorado.
     #[must_use]
     pub fn new(name: impl Into<String>, cli: impl Into<String>, agent_type: AgentType) -> Self {
         let now = Utc::now();
+        let id = AgentId::new();
+        let nickname = nickname_from_id(id);
         Self {
-            id: AgentId::new(),
+            id,
             name: name.into(),
-            nickname: None,
+            nickname: Some(nickname),
             role_id: None,
             parent_agent_id: None,
             spawn_mode: SpawnMode::Fresh,
