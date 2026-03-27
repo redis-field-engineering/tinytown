@@ -287,14 +287,14 @@ impl AgentService {
                 return Err(crate::Error::AgentNotFound(agent_id.to_string()));
             }
 
-            if let Some(dl) = deadline {
-                if std::time::Instant::now() >= dl {
-                    // Return current state on timeout
-                    return channel
-                        .get_agent_state(agent_id)
-                        .await?
-                        .ok_or_else(|| crate::Error::AgentNotFound(agent_id.to_string()));
-                }
+            if let Some(dl) = deadline
+                && std::time::Instant::now() >= dl
+            {
+                // Return current state on timeout
+                return channel
+                    .get_agent_state(agent_id)
+                    .await?
+                    .ok_or_else(|| crate::Error::AgentNotFound(agent_id.to_string()));
             }
 
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -315,9 +315,7 @@ impl AgentService {
             agent.state = AgentState::Idle;
             channel.set_agent_state(&agent).await?;
             channel.clear_stop(agent_id).await?;
-            channel
-                .log_agent_activity(agent_id, "▶️ Resumed")
-                .await?;
+            channel.log_agent_activity(agent_id, "▶️ Resumed").await?;
         } else {
             return Err(crate::Error::AgentNotFound(agent_id.to_string()));
         }
@@ -351,10 +349,7 @@ impl AgentService {
     /// List all agents that are not in a terminal state.
     pub async fn list_open(town: &Town) -> Result<Vec<AgentInfo>> {
         let all = Self::list(town).await?;
-        Ok(all
-            .into_iter()
-            .filter(|a| !a.state.is_terminal())
-            .collect())
+        Ok(all.into_iter().filter(|a| !a.state.is_terminal()).collect())
     }
 
     /// Get the result of an agent's most recently completed task.
@@ -363,7 +358,9 @@ impl AgentService {
         // Find the most recently completed task assigned to this agent
         let result = tasks
             .into_iter()
-            .filter(|t| t.assigned_to == Some(agent_id) && t.state == crate::task::TaskState::Completed)
+            .filter(|t| {
+                t.assigned_to == Some(agent_id) && t.state == crate::task::TaskState::Completed
+            })
             .max_by_key(|t| t.completed_at);
         Ok(result)
     }

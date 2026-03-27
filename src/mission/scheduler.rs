@@ -969,9 +969,10 @@ impl MissionScheduler {
         }
 
         let agents = self.channel.list_agents().await?;
-        let Some(reviewer) = agents.iter().find(|agent| {
-            agent.state.can_accept_work() && self.is_reviewer_agent(agent)
-        }) else {
+        let Some(reviewer) = agents
+            .iter()
+            .find(|agent| agent.state.can_accept_work() && self.is_reviewer_agent(agent))
+        else {
             warn!("No idle reviewer available for '{}'", item.title);
             return Ok(());
         };

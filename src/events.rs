@@ -219,11 +219,12 @@ impl EventStream {
                     .await?;
             }
         }
-        if let Some(cid) = event.child_agent_id {
-            if event.agent_id != Some(cid) && event.parent_agent_id != Some(cid) {
-                self.xadd(&self.agent_stream_key(cid), AGENT_STREAM_MAXLEN, fields)
-                    .await?;
-            }
+        if let Some(cid) = event.child_agent_id
+            && event.agent_id != Some(cid)
+            && event.parent_agent_id != Some(cid)
+        {
+            self.xadd(&self.agent_stream_key(cid), AGENT_STREAM_MAXLEN, fields)
+                .await?;
         }
         if let Some(mid) = event.mission_id {
             self.xadd(&self.mission_stream_key(mid), MISSION_STREAM_MAXLEN, fields)

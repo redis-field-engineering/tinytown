@@ -481,9 +481,7 @@ impl Channel {
 
         let nickname = fields.get("nickname").cloned();
         let role_id = fields.get("role_id").cloned();
-        let parent_agent_id = fields
-            .get("parent_agent_id")
-            .and_then(|s| s.parse().ok());
+        let parent_agent_id = fields.get("parent_agent_id").and_then(|s| s.parse().ok());
         let spawn_mode: crate::agent::SpawnMode = fields
             .get("spawn_mode")
             .map(|s| serde_json::from_str(&format!("\"{}\"", s)).unwrap_or_default())

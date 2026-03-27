@@ -380,7 +380,12 @@ pub fn agent_spawn_tool(state: Arc<McpState>) -> Tool {
                     } else {
                         match state.town.agent(parent).await {
                             Ok(h) => Some(h.id()),
-                            Err(_) => return Ok(error_response(format!("Parent agent '{}' not found", parent))),
+                            Err(_) => {
+                                return Ok(error_response(format!(
+                                    "Parent agent '{}' not found",
+                                    parent
+                                )));
+                            }
                         }
                     }
                 } else {
@@ -395,7 +400,9 @@ pub fn agent_spawn_tool(state: Arc<McpState>) -> Tool {
                     input.nickname.as_deref(),
                     parent_id,
                     None,
-                ).await {
+                )
+                .await
+                {
                     Ok(r) => Ok(json_result(serde_json::json!({
                         "agent_id": r.agent_id.to_string(),
                         "name": r.name,
@@ -796,9 +803,7 @@ pub fn agent_wait_tool(state: Arc<McpState>) -> Tool {
                     Ok(h) => h,
                     Err(e) => return Ok(error_response(e.to_string())),
                 };
-                let timeout = input
-                    .timeout_secs
-                    .map(std::time::Duration::from_secs);
+                let timeout = input.timeout_secs.map(std::time::Duration::from_secs);
                 match AgentService::wait(state.town.channel(), handle.id(), timeout).await {
                     Ok(agent) => Ok(json_result(serde_json::json!({
                         "agent": input.agent,
