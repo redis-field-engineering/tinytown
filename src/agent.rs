@@ -84,9 +84,9 @@ pub enum SpawnMode {
 impl std::fmt::Display for SpawnMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Fresh => write!(f, "Fresh"),
-            Self::ForkedContext => write!(f, "ForkedContext"),
-            Self::Resumed => write!(f, "Resumed"),
+            Self::Fresh => write!(f, "fresh"),
+            Self::ForkedContext => write!(f, "forkedcontext"),
+            Self::Resumed => write!(f, "resumed"),
         }
     }
 }

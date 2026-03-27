@@ -18,6 +18,10 @@ tinytown.json
 .agent_*.md
 .conductor_context.md
 
+# Development symlinks / scratch artifacts
+issue-37-link
+issue-37-clone-link
+
 # OS
 .DS_Store
 Thumbs.db

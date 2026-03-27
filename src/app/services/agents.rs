@@ -10,6 +10,7 @@
 use crate::agent::{Agent, AgentId, AgentState};
 use crate::channel::Channel;
 use crate::error::Result;
+use crate::events::{EventType, TownEvent};
 use crate::task::Task;
 use crate::town::Town;
 
@@ -93,20 +94,28 @@ impl AgentService {
 
         let handle = town.spawn_agent(name, &cli_name).await?;
 
-        // Update agent metadata in Redis
-        if let Some(mut agent) = town.channel().get_agent_state(handle.id()).await? {
-            if let Some(role) = role_id {
-                agent.role_id = Some(role.to_string());
-            }
-            if let Some(nick) = nickname {
-                agent.nickname = Some(nick.to_string());
-            }
-            agent.parent_agent_id = parent_agent_id;
-            if let Some(mode) = spawn_mode {
-                agent.spawn_mode = mode;
-            }
-            town.channel().set_agent_state(&agent).await?;
+        // Update agent metadata in Redis — the agent must exist immediately after spawn
+        let mut agent = town
+            .channel()
+            .get_agent_state(handle.id())
+            .await?
+            .ok_or_else(|| {
+                crate::Error::AgentNotFound(format!(
+                    "Agent {} not found in Redis immediately after spawn",
+                    handle.id()
+                ))
+            })?;
+        if let Some(role) = role_id {
+            agent.role_id = Some(role.to_string());
         }
+        if let Some(nick) = nickname {
+            agent.nickname = Some(nick.to_string());
+        }
+        agent.parent_agent_id = parent_agent_id;
+        if let Some(mode) = spawn_mode {
+            agent.spawn_mode = mode;
+        }
+        town.channel().set_agent_state(&agent).await?;
 
         Ok(SpawnResult {
             agent_id: handle.id(),
@@ -256,11 +265,17 @@ impl AgentService {
                     agent_id, agent.state
                 )));
             }
+            let old_state = format!("{:?}", agent.state);
             agent.state = AgentState::Paused;
             channel.set_agent_state(&agent).await?;
             channel
                 .log_agent_activity(agent_id, "⏸️ Interrupted (paused)")
                 .await?;
+            channel.emit_event(
+                &TownEvent::new(EventType::AgentInterrupted, "Agent interrupted (paused)")
+                    .with_agent(agent_id)
+                    .with_transition(old_state, "Paused"),
+            ).await;
         } else {
             return Err(crate::Error::AgentNotFound(agent_id.to_string()));
         }
@@ -316,6 +331,11 @@ impl AgentService {
             channel.set_agent_state(&agent).await?;
             channel.clear_stop(agent_id).await?;
             channel.log_agent_activity(agent_id, "▶️ Resumed").await?;
+            channel.emit_event(
+                &TownEvent::new(EventType::AgentResumed, "Agent resumed")
+                    .with_agent(agent_id)
+                    .with_transition("Paused", "Idle"),
+            ).await;
         } else {
             return Err(crate::Error::AgentNotFound(agent_id.to_string()));
         }
@@ -334,12 +354,18 @@ impl AgentService {
                     agent_id, agent.state
                 )));
             }
+            let old_state = format!("{:?}", agent.state);
             agent.state = AgentState::Draining;
             channel.set_agent_state(&agent).await?;
             channel.request_stop(agent_id).await?;
             channel
                 .log_agent_activity(agent_id, "🔻 Closing (draining then stop)")
                 .await?;
+            channel.emit_event(
+                &TownEvent::new(EventType::AgentStopped, "Agent closing (draining then stop)")
+                    .with_agent(agent_id)
+                    .with_transition(old_state, "Draining"),
+            ).await;
         } else {
             return Err(crate::Error::AgentNotFound(agent_id.to_string()));
         }
