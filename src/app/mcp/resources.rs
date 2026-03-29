@@ -9,12 +9,7 @@ use std::sync::Arc;
 use tower_mcp::protocol::ReadResourceResult;
 use tower_mcp::{Resource, ResourceBuilder, ResourceTemplate, ResourceTemplateBuilder};
 
-use super::McpState;
-
-fn mission_storage(state: &McpState) -> crate::mission::MissionStorage {
-    let config = state.town.config();
-    crate::mission::MissionStorage::new(state.town.channel().conn().clone(), &config.name)
-}
+use super::{McpState, mission_storage};
 
 // ============================================================================
 // Static Resources

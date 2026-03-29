@@ -309,6 +309,14 @@ return 0
         Ok(work_items)
     }
 
+    /// Get the number of work items for a mission without loading their payloads.
+    #[instrument(skip(self))]
+    pub async fn count_work_items(&self, mission_id: MissionId) -> Result<usize> {
+        let mut conn = self.conn.clone();
+        let key = self.work_key(mission_id);
+        Ok(conn.hlen(&key).await?)
+    }
+
     /// Delete a work item.
     #[instrument(skip(self))]
     pub async fn delete_work_item(&self, mission_id: MissionId, id: WorkItemId) -> Result<bool> {
@@ -370,6 +378,14 @@ return 0
             }
         }
         Ok(watch_items)
+    }
+
+    /// Get the number of watch items for a mission without loading their payloads.
+    #[instrument(skip(self))]
+    pub async fn count_watch_items(&self, mission_id: MissionId) -> Result<usize> {
+        let mut conn = self.conn.clone();
+        let key = self.watch_key(mission_id);
+        Ok(conn.hlen(&key).await?)
     }
 
     /// Get due watch items across all active missions.

@@ -65,3 +65,8 @@ pub mod router;
 pub mod tools;
 
 pub use router::{McpState, create_mcp_router};
+
+pub(crate) fn mission_storage(state: &McpState) -> crate::mission::MissionStorage {
+    let config = state.town.config();
+    crate::mission::MissionStorage::new(state.town.channel().conn().clone(), &config.name)
+}

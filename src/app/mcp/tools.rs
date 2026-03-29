@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tower_mcp::protocol::CallToolResult;
 use tower_mcp::{Tool, ToolBuilder};
 
-use super::McpState;
+use super::{McpState, mission_storage};
 
 // ============================================================================
 // Tool Input Types
@@ -336,11 +336,6 @@ fn error_response(msg: String) -> CallToolResult {
 fn json_result<T: Serialize>(data: T) -> CallToolResult {
     let resp = ToolResponse::ok(data);
     CallToolResult::text(serde_json::to_string_pretty(&resp).unwrap_or_default())
-}
-
-fn mission_storage(state: &McpState) -> crate::mission::MissionStorage {
-    let config = state.town.config();
-    crate::mission::MissionStorage::new(state.town.channel().conn().clone(), &config.name)
 }
 
 fn parse_mission_id(value: &str) -> std::result::Result<crate::mission::MissionId, String> {
@@ -680,13 +675,35 @@ fn build_mission_status_tool(
                     )));
                 };
 
-                let work_items = match storage.list_work_items(mission_id).await {
-                    Ok(items) => items,
-                    Err(e) => return Ok(error_response(e.to_string())),
+                let work_items = if effective.include_work {
+                    Some(match storage.list_work_items(mission_id).await {
+                        Ok(items) => items,
+                        Err(e) => return Ok(error_response(e.to_string())),
+                    })
+                } else {
+                    None
                 };
-                let watch_items = match storage.list_watch_items(mission_id).await {
-                    Ok(items) => items,
-                    Err(e) => return Ok(error_response(e.to_string())),
+                let watch_items = if effective.include_watch {
+                    Some(match storage.list_watch_items(mission_id).await {
+                        Ok(items) => items,
+                        Err(e) => return Ok(error_response(e.to_string())),
+                    })
+                } else {
+                    None
+                };
+                let work_item_count = match &work_items {
+                    Some(items) => items.len(),
+                    None => match storage.count_work_items(mission_id).await {
+                        Ok(count) => count,
+                        Err(e) => return Ok(error_response(e.to_string())),
+                    },
+                };
+                let watch_item_count = match &watch_items {
+                    Some(items) => items.len(),
+                    None => match storage.count_watch_items(mission_id).await {
+                        Ok(count) => count,
+                        Err(e) => return Ok(error_response(e.to_string())),
+                    },
                 };
 
                 let events = if effective.include_events {
@@ -722,10 +739,10 @@ fn build_mission_status_tool(
 
                 Ok(json_result(serde_json::json!({
                     "mission": mission,
-                    "work_item_count": work_items.len(),
-                    "watch_item_count": watch_items.len(),
-                    "work_items": effective.include_work.then_some(work_items),
-                    "watch_items": effective.include_watch.then_some(watch_items),
+                    "work_item_count": work_item_count,
+                    "watch_item_count": watch_item_count,
+                    "work_items": work_items,
+                    "watch_items": watch_items,
                     "events": events,
                     "dispatcher": dispatcher
                 })))
