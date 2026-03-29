@@ -6,7 +6,7 @@
 //! Integration tests for the townhall daemon REST API (Issue #15).
 //!
 //! These tests verify the townhall REST API endpoints including:
-//! - Health endpoints (/healthz, /v1/status)
+//! - Health endpoints (/health, /ready, /metrics, /v1/status)
 //! - Agent management (/v1/agents)
 //! - Task assignment and backlog (/v1/tasks, /v1/backlog)
 //! - Messaging (/v1/messages)
@@ -529,8 +529,88 @@ async fn test_health_endpoint_no_auth_required() -> Result<(), Box<dyn std::erro
     let app = create_router(state);
     let test_server = TestServer::new(app);
 
-    // Health endpoint should work without auth
+    // Public probe endpoints should work without auth
+    test_server
+        .get("/health")
+        .await
+        .assert_status_ok()
+        .assert_json_contains(&serde_json::json!({
+            "status": "ok"
+        }));
     test_server.get("/healthz").await.assert_status_ok();
+    test_server
+        .get("/ready")
+        .await
+        .assert_status_ok()
+        .assert_json_contains(&serde_json::json!({
+            "status": "ready",
+            "redis": "connected",
+            "dispatcher": "idle",
+            "town": town_name
+        }));
+    test_server.get("/readyz").await.assert_status_ok();
+    test_server
+        .get("/metrics")
+        .await
+        .assert_status_ok()
+        .assert_header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+        .assert_text_contains("tinytown_up 1")
+        .assert_text_contains("tinytown_ready 1");
+
+    Ok(())
+}
+
+/// Test that the metrics endpoint reflects current town state.
+#[tokio::test]
+async fn test_metrics_endpoint_reports_town_metrics() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, BacklogService, TaskService, create_router};
+
+    let server = TownhallTestServer::new("townhall-metrics-test").await?;
+    server.spawn_test_agent("worker-1").await?;
+    server.spawn_test_agent("worker-2").await?;
+    BacklogService::add(server.channel(), "Backlog metrics task", None).await?;
+    TaskService::assign(&server.town, "worker-1", "Assigned metrics task").await?;
+    let mut completed_task = tinytown::Task::new("Completed metrics task");
+    completed_task.complete("metrics complete");
+    server.channel().set_task(&completed_task).await?;
+
+    let storage = tinytown::mission::MissionStorage::new(
+        server.town.channel().conn().clone(),
+        server.town.channel().town_name(),
+    );
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Issue {
+            owner: "redis-field-engineering".to_string(),
+            repo: "tinytown".to_string(),
+            number: 58,
+        }]);
+    mission.start();
+    mission.record_dispatch_tick();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let auth_config = Arc::new(AuthConfig::default());
+    let state = Arc::new(AppState {
+        town: server.town.clone(),
+        auth_config,
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    let response = test_server.get("/metrics").await;
+    response
+        .assert_status_ok()
+        .assert_header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+        .assert_text_contains("tinytown_up 1")
+        .assert_text_contains("tinytown_ready 1")
+        .assert_text_contains("tinytown_agents_total{state=\"starting\"} 2")
+        .assert_text_contains("tinytown_tasks_pending 2")
+        .assert_text_contains("tinytown_tasks_completed_total 1")
+        .assert_text_contains("tinytown_missions_active 1")
+        .assert_text_contains("tinytown_redis_latency_seconds ")
+        .assert_text_contains("tinytown_backlog_tasks 1");
 
     Ok(())
 }
