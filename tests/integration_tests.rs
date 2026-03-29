@@ -3708,6 +3708,73 @@ async fn test_mission_dispatcher_processes_conductor_note() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Test that a resume directive force-completes blocking watches so work can finalize.
+#[tokio::test]
+async fn test_mission_dispatcher_resume_note_completes_blocking_watches()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        DispatcherConfig, MissionControlMessage, MissionDispatcher, MissionRun, MissionState,
+        MissionStorage, MockGitHubClient, ObjectiveRef, TriggerAction, WatchItem, WatchKind,
+        WatchStatus, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-resume-watches");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.block("Waiting on external watch");
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["test/repo#21"]);
+    storage.save_work_item(&item).await?;
+
+    let watch = WatchItem::new(
+        mission.id,
+        item.id,
+        WatchKind::PrChecks,
+        "test/repo#21",
+        3600,
+    )
+    .with_trigger(TriggerAction::AdvancePipeline);
+    storage.save_watch_item(&watch).await?;
+
+    let note = MissionControlMessage::new(mission.id, "conductor", "resume and finish now");
+    storage.save_control_message(&note).await?;
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        MockGitHubClient::new(),
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(Some(mission.id)).await?;
+
+    let updated_watch = storage.get_watch_item(mission.id, watch.id).await?.unwrap();
+    assert_eq!(updated_watch.status, WatchStatus::Done);
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Done);
+
+    let updated_mission = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated_mission.state, MissionState::Completed);
+    assert!(updated_mission.blocked_reason.is_none());
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
 // ============================================================================
 // DOCKET STREAM (REDIS STREAMS) TESTS
 // ============================================================================

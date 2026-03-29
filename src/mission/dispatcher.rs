@@ -20,7 +20,7 @@ use crate::error::Result;
 use crate::message::{Message, MessageType};
 use crate::mission::scheduler::{MissionScheduler, SchedulerTickResult};
 use crate::mission::storage::MissionStorage;
-use crate::mission::types::{MissionId, MissionState};
+use crate::mission::types::{MissionId, MissionState, WatchStatus};
 use crate::mission::watch::{GitHubClient, WatchEngine, WatchEngineTickResult};
 
 /// Dispatcher configuration.
@@ -218,6 +218,7 @@ impl<G: GitHubClient> MissionDispatcher<G> {
             let body = message.body.trim();
             let lower = body.to_ascii_lowercase();
             if lower.starts_with("resume") || lower.starts_with("retry") {
+                let completed_watches = self.force_complete_blocking_watches(mission_id).await?;
                 mission.start();
                 mission.set_next_wake_at(None);
                 progressed = true;
@@ -225,8 +226,17 @@ impl<G: GitHubClient> MissionDispatcher<G> {
                     .log_event(
                         mission_id,
                         &format!(
-                            "Dispatcher received resume directive from {}: {}",
-                            message.sender, body
+                            "Dispatcher received resume directive from {}: {}{}",
+                            message.sender,
+                            body,
+                            if completed_watches > 0 {
+                                format!(
+                                    " (force-completed {} blocking watch(es))",
+                                    completed_watches
+                                )
+                            } else {
+                                String::new()
+                            }
                         ),
                     )
                     .await?;
@@ -260,6 +270,23 @@ impl<G: GitHubClient> MissionDispatcher<G> {
 
         self.storage.save_mission(&mission).await?;
         Ok(progressed)
+    }
+
+    async fn force_complete_blocking_watches(&self, mission_id: MissionId) -> Result<usize> {
+        let watches = self.storage.list_watch_items(mission_id).await?;
+        let mut completed = 0;
+
+        for mut watch in watches {
+            if watch.status == WatchStatus::Done {
+                continue;
+            }
+
+            watch.complete();
+            self.storage.save_watch_item(&watch).await?;
+            completed += 1;
+        }
+
+        Ok(completed)
     }
 
     async fn assess_help_needed(
