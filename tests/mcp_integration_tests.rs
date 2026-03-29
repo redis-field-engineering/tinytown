@@ -564,6 +564,120 @@ async fn test_mcp_mission_status_tool_returns_detailed_status()
     Ok(())
 }
 
+/// Test that mission.status keeps its default work/watch detail even when only one include flag is set.
+#[tokio::test]
+async fn test_mcp_mission_status_tool_keeps_default_watch_detail()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-mission-status-defaults-test");
+    let ctx = McpTestContext::new(&town_name).await?;
+
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut work_item = tinytown::mission::WorkItem::new(
+        mission.id,
+        "docs/design.md",
+        tinytown::mission::WorkKind::Test,
+    );
+    work_item.mark_ready();
+    storage.save_work_item(&work_item).await?;
+    let watch_item = tinytown::mission::WatchItem::new(
+        mission.id,
+        work_item.id,
+        tinytown::mission::WatchKind::PrChecks,
+        "pr-76",
+        60,
+    );
+    storage.save_watch_item(&watch_item).await?;
+
+    let tool = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
+        .into_iter()
+        .find(|tool| tool.name == "mission.status")
+        .expect("mission.status tool should exist");
+
+    let result = tool
+        .call(serde_json::json!({
+            "mission_id": mission.id.to_string(),
+            "include_work": true
+        }))
+        .await;
+
+    let payload: serde_json::Value =
+        serde_json::from_str(result.first_text().expect("text response"))?;
+    assert!(payload["data"]["work_items"].is_array());
+    assert!(payload["data"]["watch_items"].is_array());
+    assert_eq!(payload["data"]["watch_item_count"], 1);
+
+    Ok(())
+}
+
+/// Test that mission review tools surface scheduler misses as MCP errors.
+#[tokio::test]
+async fn test_mcp_mission_review_tools_reject_missing_work_item()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-mission-review-missing-work-item");
+    let ctx = McpTestContext::new(&town_name).await?;
+
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+
+    let missing_work_item = tinytown::mission::WorkItemId::new().to_string();
+
+    let approve_tool = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
+        .into_iter()
+        .find(|tool| tool.name == "mission.approve")
+        .expect("mission.approve tool should exist");
+    let approve_result = approve_tool
+        .call(serde_json::json!({
+            "mission_id": mission.id.to_string(),
+            "work_item_id": missing_work_item,
+        }))
+        .await;
+    let approve_payload: serde_json::Value =
+        serde_json::from_str(approve_result.first_text().expect("text response"))?;
+    assert_eq!(approve_payload["success"], false);
+    assert!(
+        approve_payload["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("Work item not found"))
+    );
+
+    let reject_tool = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
+        .into_iter()
+        .find(|tool| tool.name == "mission.reject")
+        .expect("mission.reject tool should exist");
+    let reject_result = reject_tool
+        .call(serde_json::json!({
+            "mission_id": mission.id.to_string(),
+            "work_item_id": tinytown::mission::WorkItemId::new().to_string(),
+            "reason": "missing item",
+        }))
+        .await;
+    let reject_payload: serde_json::Value =
+        serde_json::from_str(reject_result.first_text().expect("text response"))?;
+    assert_eq!(reject_payload["success"], false);
+    assert!(
+        reject_payload["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("Work item not found"))
+    );
+
+    Ok(())
+}
+
 // ============================================================================
 // MCP ROUTER CREATION VERIFICATION
 // ============================================================================

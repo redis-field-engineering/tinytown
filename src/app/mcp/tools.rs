@@ -395,6 +395,19 @@ fn work_item_completion_label(value: crate::mission::WorkItemCompletion) -> &'st
     }
 }
 
+fn work_item_completion_error(value: crate::mission::WorkItemCompletion) -> Option<&'static str> {
+    match value {
+        crate::mission::WorkItemCompletion::MissionNotFound => Some("Mission not found"),
+        crate::mission::WorkItemCompletion::WorkItemNotFound => Some("Work item not found"),
+        crate::mission::WorkItemCompletion::ReviewerApprovalRequired => {
+            Some("Reviewer approval is still required")
+        }
+        crate::mission::WorkItemCompletion::Completed
+        | crate::mission::WorkItemCompletion::WaitingForReview
+        | crate::mission::WorkItemCompletion::WaitingForExternal => None,
+    }
+}
+
 // ============================================================================
 // Read-Only Tools
 // ============================================================================
@@ -645,14 +658,8 @@ fn build_mission_status_tool(
                 let effective = if include_work_and_watch_by_default {
                     MissionStatusInput {
                         mission_id: input.mission_id,
-                        include_work: input.include_work
-                            || (!input.include_watch
-                                && !input.include_events
-                                && !input.include_dispatcher),
-                        include_watch: input.include_watch
-                            || (!input.include_work
-                                && !input.include_events
-                                && !input.include_dispatcher),
+                        include_work: true,
+                        include_watch: true,
                         include_events: input.include_events,
                         include_dispatcher: input.include_dispatcher,
                     }
@@ -1441,6 +1448,9 @@ pub fn mission_approve_tool(state: Arc<McpState>) -> Tool {
                     Ok(completion) => completion,
                     Err(e) => return Ok(error_response(e.to_string())),
                 };
+                if let Some(message) = work_item_completion_error(completion) {
+                    return Ok(error_response(message.to_string()));
+                }
                 let tick_result = match scheduler.tick().await {
                     Ok(result) => result,
                     Err(e) => return Ok(error_response(e.to_string())),
@@ -1500,6 +1510,9 @@ pub fn mission_reject_tool(state: Arc<McpState>) -> Tool {
                     Ok(completion) => completion,
                     Err(e) => return Ok(error_response(e.to_string())),
                 };
+                if let Some(message) = work_item_completion_error(completion) {
+                    return Ok(error_response(message.to_string()));
+                }
                 let tick_result = match scheduler.tick().await {
                     Ok(result) => result,
                     Err(e) => return Ok(error_response(e.to_string())),
