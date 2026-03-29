@@ -690,7 +690,7 @@ pub fn backlog_remove_tool(state: Arc<McpState>) -> Tool {
 pub fn recovery_recover_agents_tool(state: Arc<McpState>) -> Tool {
     let s = state.clone();
     ToolBuilder::new("recovery.recover_agents")
-        .description("Recover orphaned agents (mark stale working agents as stopped)")
+        .description("Recover orphaned agents (mark stale active agents as stopped)")
         .no_params_handler(move || {
             let state = s.clone();
             async move {

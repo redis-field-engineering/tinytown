@@ -10,10 +10,10 @@ tt recover [OPTIONS]
 
 ## Description
 
-Scans for agents that appear to be running (Working/Starting state) but whose processes have actually crashed or been killed. Marks these orphaned agents as Stopped so they can be pruned or restarted.
+Scans for agents that appear to be running (Working, Starting, Idle, or Draining state) but whose processes have actually crashed or been killed. Marks these orphaned agents as Stopped so they can be pruned or restarted.
 
 An agent is considered orphaned if:
-1. It's in Working or Starting state
+1. It's in Working, Starting, Idle, or Draining state
 2. Its log file hasn't been modified in 2+ minutes, OR
 3. Its last heartbeat was 2+ minutes ago
 
@@ -70,7 +70,7 @@ tt restart worker-1
 ## When to Use
 
 - After system restart or crash
-- When agents appear "stuck" in Working state
+- When agents appear "stuck" in Working, Idle, or Draining state
 - Before reclaiming tasks from dead agents
 
 ## See Also
@@ -79,4 +79,3 @@ tt restart worker-1
 - [tt reclaim](./reclaim.md) — Recover orphaned tasks
 - [tt restart](./restart.md) — Restart stopped agents
 - [Error Handling & Recovery](../tutorials/recovery.md) — Recovery tutorial
-

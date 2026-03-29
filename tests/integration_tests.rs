@@ -1097,17 +1097,9 @@ async fn test_detect_orphaned_agents_starting_state() -> Result<(), Box<dyn std:
 async fn test_non_active_agents_not_orphaned() -> Result<(), Box<dyn std::error::Error>> {
     let town = create_test_town("recovery-non-active-test").await?;
 
-    // Create agents in various non-active states
-    let idle_handle = town.spawn_agent("idle-agent", "claude").await?;
+    // Create agents in various non-recoverable states
     let stopped_handle = town.spawn_agent("stopped-agent", "claude").await?;
     let paused_handle = town.spawn_agent("paused-agent", "claude").await?;
-
-    // Set states
-    let mut idle_agent = Agent::new("idle-agent", "claude", AgentType::Worker);
-    idle_agent.id = idle_handle.id();
-    idle_agent.state = AgentState::Idle;
-    idle_agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(10);
-    town.channel().set_agent_state(&idle_agent).await?;
 
     let mut stopped_agent = Agent::new("stopped-agent", "claude", AgentType::Worker);
     stopped_agent.id = stopped_handle.id();
@@ -1121,14 +1113,17 @@ async fn test_non_active_agents_not_orphaned() -> Result<(), Box<dyn std::error:
     paused_agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(10);
     town.channel().set_agent_state(&paused_agent).await?;
 
-    // Verify states - none of these should be considered "active" (Working or Starting)
+    // Verify states - none of these should be considered recoverable.
     let agents = town.list_agents().await;
 
     for agent in &agents {
-        let is_active_state = matches!(agent.state, AgentState::Working | AgentState::Starting);
+        let is_active_state = matches!(
+            agent.state,
+            AgentState::Working | AgentState::Starting | AgentState::Idle | AgentState::Draining
+        );
         assert!(
             !is_active_state,
-            "Agent {} should not be in an active state",
+            "Agent {} should not be in a recoverable state",
             agent.name
         );
     }
@@ -1166,6 +1161,59 @@ async fn test_recover_agent_to_stopped() -> Result<(), Box<dyn std::error::Error
     Ok(())
 }
 
+/// Test that RecoveryService recovers stale Idle agents after a reboot-like heartbeat gap.
+#[tokio::test]
+async fn test_recovery_service_recovers_stale_idle_agent() -> Result<(), Box<dyn std::error::Error>>
+{
+    let town = create_test_town("recovery-idle-service-test").await?;
+
+    let agent_handle = town.spawn_agent("recoverable-idle", "claude").await?;
+    let agent_id = agent_handle.id();
+
+    let mut agent = Agent::new("recoverable-idle", "claude", AgentType::Worker);
+    agent.id = agent_id;
+    agent.state = AgentState::Idle;
+    agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::minutes(3);
+    town.channel().set_agent_state(&agent).await?;
+
+    let recover_result = tinytown::RecoveryService::recover(&town, town.root()).await?;
+
+    assert_eq!(recover_result.agents_recovered, 1);
+    assert_eq!(recover_result.recovered_agents.len(), 1);
+    assert_eq!(recover_result.recovered_agents[0].id, agent_id);
+    assert_eq!(recover_result.recovered_agents[0].state, AgentState::Idle);
+
+    let recovered_state = agent_handle.state().await?;
+    assert_eq!(recovered_state.unwrap().state, AgentState::Stopped);
+
+    Ok(())
+}
+
+/// Test that healthy Idle agents are not recovered.
+#[tokio::test]
+async fn test_recovery_service_skips_healthy_idle_agent() -> Result<(), Box<dyn std::error::Error>>
+{
+    let town = create_test_town("recovery-idle-healthy-test").await?;
+
+    let agent_handle = town.spawn_agent("healthy-idle", "claude").await?;
+    let agent_id = agent_handle.id();
+
+    let mut agent = Agent::new("healthy-idle", "claude", AgentType::Worker);
+    agent.id = agent_id;
+    agent.state = AgentState::Idle;
+    agent.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(30);
+    town.channel().set_agent_state(&agent).await?;
+
+    let recover_result = tinytown::RecoveryService::recover(&town, town.root()).await?;
+
+    assert_eq!(recover_result.agents_recovered, 0);
+
+    let state_after = agent_handle.state().await?;
+    assert_eq!(state_after.unwrap().state, AgentState::Idle);
+
+    Ok(())
+}
+
 /// Test that no agents are orphaned when all are healthy.
 #[tokio::test]
 async fn test_no_orphans_when_healthy() -> Result<(), Box<dyn std::error::Error>> {
@@ -1188,12 +1236,15 @@ async fn test_no_orphans_when_healthy() -> Result<(), Box<dyn std::error::Error>
     agent2.last_heartbeat = chrono::Utc::now();
     town.channel().set_agent_state(&agent2).await?;
 
-    // Check all agents - count orphaned (Working/Starting with stale heartbeat)
+    // Check all agents - count orphaned recoverable agents with stale heartbeat.
     let agents = town.list_agents().await;
     let mut orphan_count = 0;
 
     for agent in &agents {
-        let is_active = matches!(agent.state, AgentState::Working | AgentState::Starting);
+        let is_active = matches!(
+            agent.state,
+            AgentState::Working | AgentState::Starting | AgentState::Idle | AgentState::Draining
+        );
         if is_active {
             let heartbeat_age = chrono::Utc::now() - agent.last_heartbeat;
             if heartbeat_age.num_seconds() > 120 {
@@ -3075,6 +3126,257 @@ async fn test_mission_dispatcher_finalizes_after_successful_watch()
         updated_mission.state,
         tinytown::mission::MissionState::Completed
     );
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that clean bugbot/review watches self-resolve once PR checks succeed.
+#[tokio::test]
+async fn test_mission_dispatcher_self_resolves_clean_comment_watches()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun, MissionStorage,
+        MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewState, TriggerAction, WatchItem,
+        WatchKind, WatchStatus, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-comment-clean");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/13"]);
+    storage.save_work_item(&item).await?;
+
+    let bugbot_watch = WatchItem::new(
+        mission.id,
+        item.id,
+        WatchKind::BugbotComments,
+        "test/repo#13",
+        0,
+    )
+    .with_trigger(TriggerAction::CreateFixTask);
+    let review_watch = WatchItem::new(
+        mission.id,
+        item.id,
+        WatchKind::ReviewComments,
+        "test/repo#13",
+        0,
+    )
+    .with_trigger(TriggerAction::CreateFixTask);
+    storage.save_watch_item(&bugbot_watch).await?;
+    storage.save_watch_item(&review_watch).await?;
+
+    let mut github = MockGitHubClient::new();
+    github.set_pr_checks(
+        "test",
+        "repo",
+        13,
+        PrCheckResult {
+            pr_number: 13,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::NotRequired,
+            blocking_comments: vec![],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    let result = dispatcher.tick(None).await?;
+    assert_eq!(result.watch_result.watches_completed, 2);
+
+    let updated_bugbot = storage
+        .get_watch_item(mission.id, bugbot_watch.id)
+        .await?
+        .unwrap();
+    assert_eq!(updated_bugbot.status, WatchStatus::Done);
+
+    let updated_review = storage
+        .get_watch_item(mission.id, review_watch.id)
+        .await?
+        .unwrap();
+    assert_eq!(updated_review.status, WatchStatus::Done);
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Done);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that comment watches self-resolve after previously reported issues are cleared.
+#[tokio::test]
+async fn test_mission_dispatcher_self_resolves_triggered_comment_watches()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        BugbotComment, CheckStatus, DispatcherConfig, MissionDispatcher, MissionRun,
+        MissionStorage, MockGitHubClient, ObjectiveRef, PrCheckResult, ReviewComment, ReviewState,
+        TriggerAction, WatchItem, WatchKind, WatchStatus, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-comment-resolve");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.block();
+    item.record_artifacts(["https://github.com/test/repo/pull/17"]);
+    storage.save_work_item(&item).await?;
+
+    let bugbot_watch = WatchItem::new(
+        mission.id,
+        item.id,
+        WatchKind::BugbotComments,
+        "test/repo#17",
+        60,
+    )
+    .with_trigger(TriggerAction::CreateFixTask);
+    let review_watch = WatchItem::new(
+        mission.id,
+        item.id,
+        WatchKind::ReviewComments,
+        "test/repo#17",
+        60,
+    )
+    .with_trigger(TriggerAction::CreateFixTask);
+    storage.save_watch_item(&bugbot_watch).await?;
+    storage.save_watch_item(&review_watch).await?;
+
+    let mut failing_github = MockGitHubClient::new();
+    failing_github.set_pr_checks(
+        "test",
+        "repo",
+        17,
+        PrCheckResult {
+            pr_number: 17,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::ChangesRequested,
+            blocking_comments: vec!["changes requested".into()],
+        },
+    );
+    failing_github.reviews.insert(
+        "test/repo#17".into(),
+        vec![ReviewComment {
+            author: "reviewer".into(),
+            body: "Please fix this".into(),
+            is_actionable: true,
+        }],
+    );
+    failing_github.bugbot_comments.insert(
+        "test/repo#17".into(),
+        vec![BugbotComment {
+            bot_name: "bugbot".into(),
+            severity: "high".into(),
+            description: "Security issue".into(),
+            file_path: Some("src/lib.rs".into()),
+        }],
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        failing_github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    let first_result = dispatcher.tick(None).await?;
+    assert_eq!(first_result.watch_result.watches_triggered, 2);
+
+    let mut snoozed_bugbot = storage
+        .get_watch_item(mission.id, bugbot_watch.id)
+        .await?
+        .unwrap();
+    assert_eq!(snoozed_bugbot.status, WatchStatus::Snoozed);
+    snoozed_bugbot.next_due_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    storage.save_watch_item(&snoozed_bugbot).await?;
+
+    let mut snoozed_review = storage
+        .get_watch_item(mission.id, review_watch.id)
+        .await?
+        .unwrap();
+    assert_eq!(snoozed_review.status, WatchStatus::Snoozed);
+    snoozed_review.next_due_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+    storage.save_watch_item(&snoozed_review).await?;
+
+    let mut clean_github = MockGitHubClient::new();
+    clean_github.set_pr_checks(
+        "test",
+        "repo",
+        17,
+        PrCheckResult {
+            pr_number: 17,
+            repo: "test/repo".into(),
+            status: CheckStatus::Success,
+            checks: vec![],
+            mergeable: true,
+            review_state: ReviewState::Approved,
+            blocking_comments: vec![],
+        },
+    );
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        clean_github,
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    let second_result = dispatcher.tick(None).await?;
+    assert_eq!(second_result.watch_result.watches_completed, 2);
+
+    let updated_bugbot = storage
+        .get_watch_item(mission.id, bugbot_watch.id)
+        .await?
+        .unwrap();
+    assert_eq!(updated_bugbot.status, WatchStatus::Done);
+
+    let updated_review = storage
+        .get_watch_item(mission.id, review_watch.id)
+        .await?
+        .unwrap();
+    assert_eq!(updated_review.status, WatchStatus::Done);
+
+    let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated_item.status, WorkStatus::Done);
 
     drop(town);
     cleanup_redis(&temp_dir);
