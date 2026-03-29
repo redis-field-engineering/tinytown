@@ -477,6 +477,46 @@ async fn test_mcp_mission_pause_tool_rejects_terminal_mission()
     Ok(())
 }
 
+/// Test that the mission.stop MCP handler rejects terminal missions instead of regressing state.
+#[tokio::test]
+async fn test_mcp_mission_stop_tool_rejects_terminal_mission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-mission-stop-terminal-test");
+    let ctx = McpTestContext::new(&town_name).await?;
+
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.complete();
+    storage.save_mission(&mission).await?;
+
+    let tool = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
+        .into_iter()
+        .find(|tool| tool.name == "mission.stop")
+        .expect("mission.stop tool should exist");
+
+    let result = tool
+        .call(serde_json::json!({ "mission_id": mission.id.to_string() }))
+        .await;
+
+    let payload: serde_json::Value =
+        serde_json::from_str(result.first_text().expect("text response"))?;
+    assert_eq!(payload["success"], false);
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("cannot be stopped"))
+    );
+
+    let stored = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(stored.state, tinytown::mission::MissionState::Completed);
+
+    Ok(())
+}
+
 /// Test that the mission.status MCP handler returns work and watch details by default.
 #[tokio::test]
 async fn test_mcp_mission_status_tool_returns_detailed_status()

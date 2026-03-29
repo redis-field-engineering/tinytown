@@ -626,242 +626,43 @@ pub fn mission_list_tool(state: Arc<McpState>) -> Tool {
 
 /// Create the mission.get_status tool.
 pub fn mission_get_status_tool(state: Arc<McpState>) -> Tool {
+    build_mission_status_tool(
+        state,
+        "mission.get_status",
+        "Get detailed mission status, optionally including work, watches, events, and dispatcher details",
+        false,
+    )
+}
+
+fn build_mission_status_tool(
+    state: Arc<McpState>,
+    name: &'static str,
+    description: &'static str,
+    include_work_and_watch_by_default: bool,
+) -> Tool {
     let s = state.clone();
-    ToolBuilder::new("mission.get_status")
-        .description("Get detailed mission status, optionally including work, watches, events, and dispatcher details")
+    ToolBuilder::new(name)
+        .description(description)
         .read_only()
         .handler(move |input: MissionStatusInput| {
             let state = s.clone();
             async move {
-                let mission_id = match parse_mission_id(&input.mission_id) {
-                    Ok(id) => id,
-                    Err(msg) => return Ok(error_response(msg)),
-                };
-                let storage = mission_storage(&state);
-                let Some(mission) = (match storage.get_mission(mission_id).await {
-                    Ok(mission) => mission,
-                    Err(e) => return Ok(error_response(e.to_string())),
-                }) else {
-                    return Ok(error_response(format!("Mission {} not found", input.mission_id)));
-                };
-
-                let work_items = match storage.list_work_items(mission_id).await {
-                    Ok(items) => items,
-                    Err(e) => return Ok(error_response(e.to_string())),
-                };
-                let watch_items = match storage.list_watch_items(mission_id).await {
-                    Ok(items) => items,
-                    Err(e) => return Ok(error_response(e.to_string())),
-                };
-
-                let events = if input.include_events {
-                    match storage.get_events(mission_id, 10).await {
-                        Ok(events) => Some(events),
-                        Err(e) => return Ok(error_response(e.to_string())),
+                let effective = if include_work_and_watch_by_default {
+                    MissionStatusInput {
+                        mission_id: input.mission_id,
+                        include_work: input.include_work
+                            || (!input.include_watch
+                                && !input.include_events
+                                && !input.include_dispatcher),
+                        include_watch: input.include_watch
+                            || (!input.include_work
+                                && !input.include_events
+                                && !input.include_dispatcher),
+                        include_events: input.include_events,
+                        include_dispatcher: input.include_dispatcher,
                     }
                 } else {
-                    None
-                };
-
-                let dispatcher = if input.include_dispatcher {
-                    let control_messages = match storage.list_control_messages(mission_id).await {
-                        Ok(messages) => messages,
-                        Err(e) => return Ok(error_response(e.to_string())),
-                    };
-                    let pending_control_messages: Vec<_> = control_messages
-                        .iter()
-                        .filter(|message| message.is_pending())
-                        .cloned()
-                        .collect();
-                    Some(serde_json::json!({
-                        "last_tick_at": mission.dispatcher_last_tick_at,
-                        "last_progress_at": mission.dispatcher_last_progress_at,
-                        "last_help_request_at": mission.dispatcher_last_help_request_at,
-                        "last_help_request_reason": mission.dispatcher_last_help_request_reason,
-                        "control_messages": control_messages,
-                        "pending_control_messages": pending_control_messages
-                    }))
-                } else {
-                    None
-                };
-
-                Ok(json_result(serde_json::json!({
-                    "mission": mission,
-                    "work_item_count": work_items.len(),
-                    "watch_item_count": watch_items.len(),
-                    "work_items": input.include_work.then_some(work_items),
-                    "watch_items": input.include_watch.then_some(watch_items),
-                    "events": events,
-                    "dispatcher": dispatcher
-                })))
-            }
-        })
-        .build()
-}
-
-/// Create the mission.list_work tool.
-pub fn mission_list_work_tool(state: Arc<McpState>) -> Tool {
-    let s = state.clone();
-    ToolBuilder::new("mission.list_work")
-        .description("List work items for a mission")
-        .read_only()
-        .handler(move |input: MissionWorkListInput| {
-            let state = s.clone();
-            async move {
-                let mission_id = match parse_mission_id(&input.mission_id) {
-                    Ok(id) => id,
-                    Err(msg) => return Ok(error_response(msg)),
-                };
-                let storage = mission_storage(&state);
-                match storage.get_mission(mission_id).await {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        return Ok(error_response(format!(
-                            "Mission {} not found",
-                            input.mission_id
-                        )));
-                    }
-                    Err(e) => return Ok(error_response(e.to_string())),
-                }
-
-                let mut items = match storage.list_work_items(mission_id).await {
-                    Ok(items) => items,
-                    Err(e) => return Ok(error_response(e.to_string())),
-                };
-
-                if let Some(status) = input.status.as_deref() {
-                    let status = match parse_work_status(status) {
-                        Ok(status) => status,
-                        Err(msg) => return Ok(error_response(msg)),
-                    };
-                    items.retain(|item| item.status == status);
-                }
-
-                Ok(json_result(serde_json::json!({
-                    "mission_id": mission_id,
-                    "count": items.len(),
-                    "items": items
-                })))
-            }
-        })
-        .build()
-}
-
-/// Create the mission.list_watches tool.
-pub fn mission_list_watches_tool(state: Arc<McpState>) -> Tool {
-    let s = state.clone();
-    ToolBuilder::new("mission.list_watches")
-        .description("List watch items for a mission")
-        .read_only()
-        .handler(move |input: MissionWatchListInput| {
-            let state = s.clone();
-            async move {
-                let mission_id = match parse_mission_id(&input.mission_id) {
-                    Ok(id) => id,
-                    Err(msg) => return Ok(error_response(msg)),
-                };
-                let storage = mission_storage(&state);
-                match storage.get_mission(mission_id).await {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        return Ok(error_response(format!(
-                            "Mission {} not found",
-                            input.mission_id
-                        )));
-                    }
-                    Err(e) => return Ok(error_response(e.to_string())),
-                }
-
-                let mut items = match storage.list_watch_items(mission_id).await {
-                    Ok(items) => items,
-                    Err(e) => return Ok(error_response(e.to_string())),
-                };
-
-                if let Some(status) = input.status.as_deref() {
-                    let status = match parse_watch_status(status) {
-                        Ok(status) => status,
-                        Err(msg) => return Ok(error_response(msg)),
-                    };
-                    items.retain(|item| item.status == status);
-                }
-
-                Ok(json_result(serde_json::json!({
-                    "mission_id": mission_id,
-                    "count": items.len(),
-                    "items": items
-                })))
-            }
-        })
-        .build()
-}
-
-/// Create the mission.get_events tool.
-pub fn mission_get_events_tool(state: Arc<McpState>) -> Tool {
-    let s = state.clone();
-    ToolBuilder::new("mission.get_events")
-        .description("Get recent mission activity events")
-        .read_only()
-        .handler(move |input: MissionEventsInput| {
-            let state = s.clone();
-            async move {
-                if input.count <= 0 {
-                    return Ok(error_response(
-                        "Event count must be greater than zero".to_string(),
-                    ));
-                }
-
-                let mission_id = match parse_mission_id(&input.mission_id) {
-                    Ok(id) => id,
-                    Err(msg) => return Ok(error_response(msg)),
-                };
-                let storage = mission_storage(&state);
-                match storage.get_mission(mission_id).await {
-                    Ok(Some(_)) => {}
-                    Ok(None) => {
-                        return Ok(error_response(format!(
-                            "Mission {} not found",
-                            input.mission_id
-                        )));
-                    }
-                    Err(e) => return Ok(error_response(e.to_string())),
-                }
-
-                match storage.get_events(mission_id, input.count).await {
-                    Ok(events) => Ok(json_result(serde_json::json!({
-                        "mission_id": mission_id,
-                        "count": events.len(),
-                        "events": events
-                    }))),
-                    Err(e) => Ok(error_response(e.to_string())),
-                }
-            }
-        })
-        .build()
-}
-
-/// Create the mission.status tool.
-pub fn mission_status_tool(state: Arc<McpState>) -> Tool {
-    let s = state.clone();
-    ToolBuilder::new("mission.status")
-        .description(
-            "Get detailed mission status including work items, watches, and dispatcher details",
-        )
-        .read_only()
-        .handler(move |input: MissionStatusInput| {
-            let state = s.clone();
-            async move {
-                let effective = MissionStatusInput {
-                    mission_id: input.mission_id,
-                    include_work: input.include_work
-                        || (!input.include_watch
-                            && !input.include_events
-                            && !input.include_dispatcher),
-                    include_watch: input.include_watch
-                        || (!input.include_work
-                            && !input.include_events
-                            && !input.include_dispatcher),
-                    include_events: input.include_events,
-                    include_dispatcher: input.include_dispatcher,
+                    input
                 };
 
                 let mission_id = match parse_mission_id(&effective.mission_id) {
@@ -933,10 +734,14 @@ pub fn mission_status_tool(state: Arc<McpState>) -> Tool {
         .build()
 }
 
-/// Create the mission.work_items tool.
-pub fn mission_work_items_tool(state: Arc<McpState>) -> Tool {
+/// Create the mission.list_work tool.
+pub fn mission_list_work_tool(state: Arc<McpState>) -> Tool {
+    build_mission_work_list_tool(state, "mission.list_work")
+}
+
+fn build_mission_work_list_tool(state: Arc<McpState>, name: &'static str) -> Tool {
     let s = state.clone();
-    ToolBuilder::new("mission.work_items")
+    ToolBuilder::new(name)
         .description("List work items for a mission")
         .read_only()
         .handler(move |input: MissionWorkListInput| {
@@ -981,10 +786,14 @@ pub fn mission_work_items_tool(state: Arc<McpState>) -> Tool {
         .build()
 }
 
-/// Create the mission.watches tool.
-pub fn mission_watches_tool(state: Arc<McpState>) -> Tool {
+/// Create the mission.list_watches tool.
+pub fn mission_list_watches_tool(state: Arc<McpState>) -> Tool {
+    build_mission_watch_list_tool(state, "mission.list_watches")
+}
+
+fn build_mission_watch_list_tool(state: Arc<McpState>, name: &'static str) -> Tool {
     let s = state.clone();
-    ToolBuilder::new("mission.watches")
+    ToolBuilder::new(name)
         .description("List watch items for a mission")
         .read_only()
         .handler(move |input: MissionWatchListInput| {
@@ -1029,10 +838,14 @@ pub fn mission_watches_tool(state: Arc<McpState>) -> Tool {
         .build()
 }
 
-/// Create the mission.events tool.
-pub fn mission_events_tool(state: Arc<McpState>) -> Tool {
+/// Create the mission.get_events tool.
+pub fn mission_get_events_tool(state: Arc<McpState>) -> Tool {
+    build_mission_events_tool(state, "mission.get_events")
+}
+
+fn build_mission_events_tool(state: Arc<McpState>, name: &'static str) -> Tool {
     let s = state.clone();
-    ToolBuilder::new("mission.events")
+    ToolBuilder::new(name)
         .description("Get recent mission activity events")
         .read_only()
         .handler(move |input: MissionEventsInput| {
@@ -1071,6 +884,31 @@ pub fn mission_events_tool(state: Arc<McpState>) -> Tool {
             }
         })
         .build()
+}
+
+/// Create the mission.status tool.
+pub fn mission_status_tool(state: Arc<McpState>) -> Tool {
+    build_mission_status_tool(
+        state,
+        "mission.status",
+        "Get detailed mission status including work items, watches, and dispatcher details",
+        true,
+    )
+}
+
+/// Create the mission.work_items tool.
+pub fn mission_work_items_tool(state: Arc<McpState>) -> Tool {
+    build_mission_work_list_tool(state, "mission.work_items")
+}
+
+/// Create the mission.watches tool.
+pub fn mission_watches_tool(state: Arc<McpState>) -> Tool {
+    build_mission_watch_list_tool(state, "mission.watches")
+}
+
+/// Create the mission.events tool.
+pub fn mission_events_tool(state: Arc<McpState>) -> Tool {
+    build_mission_events_tool(state, "mission.events")
 }
 
 // ============================================================================
@@ -2070,6 +1908,12 @@ pub fn mission_stop_tool(state: Arc<McpState>) -> Tool {
                         input.mission_id
                     )));
                 };
+                if mission.state.is_terminal() {
+                    return Ok(error_response(format!(
+                        "Mission {} is terminal and cannot be stopped",
+                        input.mission_id
+                    )));
+                }
 
                 if input.force {
                     mission.fail("Stopped by user (forced)");
