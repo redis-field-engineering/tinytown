@@ -3708,6 +3708,129 @@ async fn test_mission_dispatcher_processes_conductor_note() -> Result<(), Box<dy
     Ok(())
 }
 
+/// Test that invalid resume notes cannot revive failed missions.
+#[tokio::test]
+async fn test_mission_dispatcher_ignores_resume_note_for_failed_mission()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        DispatcherConfig, MissionControlMessage, MissionDispatcher, MissionRun, MissionState,
+        MissionStorage, MockGitHubClient, ObjectiveRef,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-resume-failed");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.fail("Unrecoverable error");
+    storage.save_mission(&mission).await?;
+
+    let note = MissionControlMessage::new(mission.id, "conductor", "resume and retry now");
+    let note_id = note.id.clone();
+    storage.save_control_message(&note).await?;
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        MockGitHubClient::new(),
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(Some(mission.id)).await?;
+
+    let updated = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated.state, MissionState::Failed);
+    assert_eq!(
+        updated.blocked_reason.as_deref(),
+        Some("Unrecoverable error")
+    );
+
+    let messages = storage.list_control_messages(mission.id).await?;
+    let processed = messages
+        .into_iter()
+        .find(|message| message.id == note_id)
+        .expect("control note should exist");
+    assert!(processed.processed_at.is_some());
+
+    let events = storage.get_events(mission.id, 10).await?;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("ignored resume directive"))
+    );
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that invalid pause notes do not overwrite an already blocked mission.
+#[tokio::test]
+async fn test_mission_dispatcher_ignores_pause_note_for_blocked_mission()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        DispatcherConfig, MissionControlMessage, MissionDispatcher, MissionRun, MissionState,
+        MissionStorage, MockGitHubClient, ObjectiveRef,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-pause-blocked");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.block("Waiting on operator");
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let note = MissionControlMessage::new(mission.id, "conductor", "pause until tomorrow");
+    let note_id = note.id.clone();
+    storage.save_control_message(&note).await?;
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        MockGitHubClient::new(),
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+        },
+    );
+    dispatcher.tick(Some(mission.id)).await?;
+
+    let updated = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated.state, MissionState::Blocked);
+    assert_eq!(
+        updated.blocked_reason.as_deref(),
+        Some("Waiting on operator")
+    );
+
+    let messages = storage.list_control_messages(mission.id).await?;
+    let processed = messages
+        .into_iter()
+        .find(|message| message.id == note_id)
+        .expect("control note should exist");
+    assert!(processed.processed_at.is_some());
+
+    let events = storage.get_events(mission.id, 10).await?;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.contains("ignored pause directive"))
+    );
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
 /// Test that a resume directive force-completes blocking watches so work can finalize.
 #[tokio::test]
 async fn test_mission_dispatcher_resume_note_completes_blocking_watches()
