@@ -32,6 +32,12 @@ impl AgentId {
         self.0.as_bytes()
     }
 
+    /// Return the first 4 hex characters of the UUID for compact display.
+    #[must_use]
+    pub fn short_id(&self) -> String {
+        self.0.to_string().chars().take(4).collect()
+    }
+
     /// Create a well-known ID for the supervisor.
     #[must_use]
     pub fn supervisor() -> Self {
@@ -815,6 +821,21 @@ impl Agent {
     #[must_use]
     pub fn display_name(&self) -> &str {
         self.nickname.as_deref().unwrap_or(&self.name)
+    }
+
+    /// Get the standard display label: "Nickname [role]" (e.g., "Fred [reviewer]").
+    ///
+    /// Falls back to "name [role]" if no nickname is set, and omits the
+    /// role bracket when the role is "default".
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        let name_part = self.display_name();
+        let role = self.effective_role();
+        if role == roles::DEFAULT {
+            format!("{} [{}]", name_part, self.name)
+        } else {
+            format!("{} [{}]", name_part, role)
+        }
     }
 
     /// Get the effective role ID, falling back to "default".

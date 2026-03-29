@@ -281,6 +281,14 @@ impl EventStream {
             .await
     }
 
+    /// Read the most recent N events from the town-wide stream (newest first,
+    /// then reversed so the caller gets chronological order).
+    pub async fn read_recent_town_events(&self, count: usize) -> Result<Vec<(String, TownEvent)>> {
+        let mut results = self.xrevrange(&self.town_stream_key(), count).await?;
+        results.reverse(); // oldest → newest for display
+        Ok(results)
+    }
+
     async fn xrange(
         &self,
         key: &str,
@@ -292,6 +300,25 @@ impl EventStream {
             .arg(key)
             .arg(start)
             .arg("+")
+            .arg("COUNT")
+            .arg(count)
+            .query_async(&mut conn)
+            .await?;
+        let mut results = Vec::new();
+        for entry in raw {
+            if let Some(pair) = Self::parse_stream_entry(&entry) {
+                results.push(pair);
+            }
+        }
+        Ok(results)
+    }
+
+    async fn xrevrange(&self, key: &str, count: usize) -> Result<Vec<(String, TownEvent)>> {
+        let mut conn = self.conn.clone();
+        let raw: Vec<redis::Value> = redis::cmd("XREVRANGE")
+            .arg(key)
+            .arg("+")
+            .arg("-")
             .arg("COUNT")
             .arg(count)
             .query_async(&mut conn)

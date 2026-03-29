@@ -156,26 +156,38 @@ Tinytown is built on **7 core concepts**:
 | `tt init` | Initialize a new town |
 | `tt spawn <name>` | Create a new agent (starts AI process!) |
 | `tt assign <agent> <task>` | Assign a task |
-| `tt backlog <subcommand>` | Manage unassigned task backlog |
+| `tt send <agent> <msg>` | Send message to agent (`--query`, `--info`, `--urgent`) |
 | `tt list` | List all agents |
-| `tt status [--deep] [--tasks]` | Show town status (--deep for activity, --tasks for task details) |
+| `tt status [--deep] [--tasks]` | Show town status with agent labels (`Nickname [role]`) |
+| `tt inbox [agent] [--all]` | Check agent message inbox(es) |
+| `tt history [-n N] [--agent <name>]` | Show recent communication history |
+| `tt events [--count N] [--follow]` | Tail the event stream |
 | `tt kill <agent>` | Stop an agent gracefully |
-| `tt reset [--force] [--agents-only]` | Reset all town state (clear agents, tasks, messages) |
-| `tt inbox <agent>` | Check agent's message inbox |
-| `tt send [--urgent] <agent> <msg>` | Send message to agent |
+| `tt wait <agent> [--timeout]` | Wait for agent to finish |
+| `tt restart <agent>` | Restart a stopped agent |
+| `tt interrupt <agent>` | Pause a running agent |
+| `tt resume <agent>` | Resume a paused agent |
+| `tt close <agent>` | Drain current work then stop |
+| `tt prune [--all]` | Remove stopped/stale agents |
+| `tt recover` | Detect and clean up crashed agents |
+| `tt reclaim` | Recover orphaned tasks |
+| `tt task <action>` | Manage tasks (show, list, complete, current) |
+| `tt backlog <subcommand>` | Manage unassigned task backlog |
 | `tt conductor` | 🚂 AI orchestrator mode |
+| `tt mission <subcommand>` | Mission mode (start, dispatch, status, note, stop) |
 | `tt plan --init` | Create tasks.toml for planning |
 | `tt sync [push\|pull]` | Sync tasks.toml ↔ Redis |
-| `tt save` | Save Redis state to AOF (for git) |
-| `tt restore` | Restore Redis state from AOF |
-| `tt migrate [--dry-run] [--force]` | Migrate keys to town-isolated format |
+| `tt save` / `tt restore` | Save/restore Redis state to AOF (for git) |
+| `tt reset [--force]` | Reset all town state |
+| `tt config [key] [value]` | View or set global config |
+| `tt towns` | List all registered towns |
 
 ## 🏛️ Townhall (HTTP Control Plane)
 
 Townhall exposes Tinytown operations via REST API and MCP (Model Context Protocol):
 
 ```bash
-# Start REST API server (default port 8787)
+# Start REST API server (default port 8080)
 townhall
 
 # Start MCP server for Claude Desktop integration

@@ -50,7 +50,9 @@ tt spawn backend
 tt spawn backend --role reviewer
 ```
 
-Built-in roles: `worker`, `reviewer`, `researcher`, `architect`, `tester`, `devops`.
+Built-in roles: `worker`, `reviewer`, `researcher`, `runner`.
+
+Agents are displayed in the format **Nickname [role]** (e.g., "Fred [reviewer]", "Martha [backend]"). Nicknames are auto-assigned from a curated list if not explicitly set.
 
 ## Setting the Default CLI
 

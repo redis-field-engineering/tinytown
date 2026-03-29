@@ -62,6 +62,8 @@
 - [tt auth](./cli/auth.md)
 - [tt migrate](./cli/migrate.md)
 - [tt mission](./cli/mission.md)
+- [tt history](./cli/history.md)
+- [tt events](./cli/events.md)
 
 # Coming from Gastown?
 

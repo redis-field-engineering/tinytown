@@ -34,6 +34,12 @@ impl MissionId {
     pub fn from_uuid(uuid: Uuid) -> Self {
         Self(uuid)
     }
+
+    /// Return the first 4 hex characters of the UUID for compact display.
+    #[must_use]
+    pub fn short_id(&self) -> String {
+        self.0.to_string().chars().take(4).collect()
+    }
 }
 
 impl Default for MissionId {

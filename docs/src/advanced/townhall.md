@@ -116,7 +116,7 @@ Configure townhall in `tinytown.toml`:
 ```toml
 [townhall]
 bind = "127.0.0.1"      # Bind address (default: 127.0.0.1)
-rest_port = 8787        # REST API port (default: 8787)
+rest_port = 8080        # REST API port (default: 8080)
 request_timeout_ms = 30000  # Request timeout (default: 30s)
 ```
 

@@ -501,6 +501,17 @@ enum Commands {
         value: Option<String>,
     },
 
+    /// Show recent agent communication history
+    History {
+        /// Maximum number of events to show (default: 30)
+        #[arg(short = 'n', long, default_value = "30")]
+        limit: usize,
+
+        /// Filter by agent name
+        #[arg(short, long)]
+        agent: Option<String>,
+    },
+
     /// Detect and clean up crashed/orphaned agents
     Recover,
 
@@ -1799,7 +1810,12 @@ async fn main() -> Result<()> {
             } else {
                 info!("Agents:");
                 for agent in agents {
-                    info!("  {} ({}) - {:?}", agent.name, agent.id, agent.state);
+                    info!(
+                        "  {} ({}) - {:?}",
+                        agent.display_label(),
+                        agent.id.short_id(),
+                        agent.state
+                    );
                 }
             }
         }
@@ -1868,17 +1884,12 @@ async fn main() -> Result<()> {
                     .collect();
 
                 if deep {
-                    let role_tag = agent
-                        .role_id
-                        .as_deref()
-                        .map_or(String::new(), |r| format!(" [{}]", r));
                     let parent_tag = agent
                         .parent_agent_id
                         .map_or(String::new(), |_| " (child)".to_string());
                     info!(
-                        "   {}{}{} ({:?}) - {} pending, {} rounds, uptime {}",
-                        agent.name,
-                        role_tag,
+                        "   {}{} ({:?}) - {} pending, {} rounds, uptime {}",
+                        agent.display_label(),
                         parent_tag,
                         agent.state,
                         inbox_len,
@@ -1950,7 +1961,7 @@ async fn main() -> Result<()> {
                                 .unwrap_or_default();
                             info!(
                                 "      └─ 🔄 {}: {} (started {})",
-                                task.id.to_string().chars().take(8).collect::<String>(),
+                                task.id.short_id(),
                                 desc,
                                 started
                             );
@@ -1966,7 +1977,7 @@ async fn main() -> Result<()> {
                     // Show current task indicator for working agents in non-deep mode
                     info!(
                         "   {} ({:?}) - {} pending (T:{} Q:{} I:{} C:{})",
-                        agent.name,
+                        agent.display_label(),
                         agent.state,
                         inbox_len,
                         breakdown.tasks + breakdown.other_actionable,
@@ -2044,13 +2055,13 @@ async fn main() -> Result<()> {
 
                 for task in tasks {
                     if let Some(agent_id) = task.assigned_to {
-                        // Find agent name (reusing pre-fetched agents list)
-                        let agent_name = agents
+                        // Find agent label (reusing pre-fetched agents list)
+                        let agent_label = agents
                             .iter()
                             .find(|a| a.id == agent_id)
-                            .map(|a| a.name.clone())
-                            .unwrap_or_else(|| agent_id.to_string());
-                        tasks_by_agent.entry(agent_name).or_default().push(task);
+                            .map(|a| a.display_label())
+                            .unwrap_or_else(|| agent_id.short_id());
+                        tasks_by_agent.entry(agent_label).or_default().push(task);
                     } else {
                         unassigned_tasks.push(task);
                     }
@@ -2059,7 +2070,7 @@ async fn main() -> Result<()> {
                 // Show tasks by agent
                 info!("");
                 info!("📋 Tasks by Agent:");
-                for (agent_name, agent_tasks) in &tasks_by_agent {
+                for (agent_label, agent_tasks) in &tasks_by_agent {
                     let active_count = agent_tasks
                         .iter()
                         .filter(|t| !t.state.is_terminal())
@@ -2067,7 +2078,7 @@ async fn main() -> Result<()> {
                     let done_count = agent_tasks.iter().filter(|t| t.state.is_terminal()).count();
                     info!(
                         "   {} ({} active, {} done):",
-                        agent_name, active_count, done_count
+                        agent_label, active_count, done_count
                     );
                     for task in agent_tasks.iter().take(5) {
                         let state_icon = match task.state {
@@ -2084,7 +2095,13 @@ async fn main() -> Result<()> {
                         } else {
                             ""
                         };
-                        info!("      {} {} {}{}", state_icon, task.id, desc, truncated);
+                        info!(
+                            "      {} {} {}{}",
+                            state_icon,
+                            task.id.short_id(),
+                            desc,
+                            truncated
+                        );
                     }
                     if agent_tasks.len() > 5 {
                         info!("      ... and {} more task(s)", agent_tasks.len() - 5);
@@ -2100,7 +2117,7 @@ async fn main() -> Result<()> {
                         } else {
                             ""
                         };
-                        info!("      ⏳ {} {}{}", task.id, desc, truncated);
+                        info!("      ⏳ {} {}{}", task.id.short_id(), desc, truncated);
                     }
                     if unassigned_tasks.len() > 5 {
                         info!("      ... and {} more task(s)", unassigned_tasks.len() - 5);
@@ -2124,7 +2141,7 @@ async fn main() -> Result<()> {
                         if log_file.exists() && !shown_logs.contains(&agent.name) {
                             shown_logs.insert(agent.name.clone());
                             info!("");
-                            info!("--- {} ---", agent.name);
+                            info!("--- {} ---", agent.display_label());
                             if let Ok(content) = std::fs::read_to_string(&log_file) {
                                 let lines: Vec<&str> = content.lines().collect();
                                 let start = lines.len().saturating_sub(50);
@@ -2474,17 +2491,17 @@ async fn main() -> Result<()> {
                     let agents = town.list_agents().await;
 
                     if let Some(task) = town.channel().get_task(tid).await? {
-                        info!("📋 Task: {}", task.id);
+                        info!("📋 Task: {} ({})", task.id.short_id(), task.id);
                         info!("   Description: {}", task.description);
                         info!("   State: {:?}", task.state);
                         if let Some(agent_id) = task.assigned_to {
-                            // Look up agent name
-                            let agent_name = agents
+                            // Look up agent label
+                            let agent_label = agents
                                 .iter()
                                 .find(|a| a.id == agent_id)
-                                .map(|a| a.name.clone())
-                                .unwrap_or_else(|| agent_id.to_string());
-                            info!("   Assigned to: {}", agent_name);
+                                .map(|a| a.display_label())
+                                .unwrap_or_else(|| agent_id.short_id());
+                            info!("   Assigned to: {}", agent_label);
                         }
                         info!("   Created: {}", task.created_at);
                         info!("   Updated: {}", task.updated_at);
@@ -2509,16 +2526,21 @@ async fn main() -> Result<()> {
                     let agent_id =
                         resolve_agent_id_for_current_task(&town, agent.as_deref()).await?;
                     let agents = town.list_agents().await;
-                    let agent_name = agents
+                    let agent_label = agents
                         .iter()
                         .find(|candidate| candidate.id == agent_id)
-                        .map(|candidate| candidate.name.clone())
-                        .unwrap_or_else(|| agent_id.to_string());
+                        .map(|candidate| candidate.display_label())
+                        .unwrap_or_else(|| agent_id.short_id());
 
                     if let Some(task) =
                         tinytown::TaskService::current_for_agent(town.channel(), agent_id).await?
                     {
-                        info!("📋 Current task for '{}': {}", agent_name, task.id);
+                        info!(
+                            "📋 Current task for '{}': {} ({})",
+                            agent_label,
+                            task.id.short_id(),
+                            task.id
+                        );
                         info!("   Description: {}", task.description);
                         info!("   State: {:?}", task.state);
                         info!(
@@ -2529,7 +2551,7 @@ async fn main() -> Result<()> {
                             info!("   Tags: {}", task.tags.join(", "));
                         }
                     } else {
-                        info!("📭 No current task tracked for '{}'", agent_name);
+                        info!("📭 No current task tracked for '{}'", agent_label);
                     }
                 }
 
@@ -2585,22 +2607,22 @@ async fn main() -> Result<()> {
                                     tinytown::TaskState::Failed => "❌",
                                     tinytown::TaskState::Cancelled => "🚫",
                                 };
-                                // Look up agent name instead of showing UUID
-                                let agent = task
+                                // Look up agent label instead of showing UUID
+                                let agent_label = task
                                     .assigned_to
                                     .and_then(|agent_id| {
                                         agents
                                             .iter()
                                             .find(|a| a.id == agent_id)
-                                            .map(|a| a.name.clone())
+                                            .map(|a| a.display_label())
                                     })
                                     .unwrap_or_else(|| "unassigned".to_string());
                                 info!(
                                     "   {} {} - {} [{}]",
                                     status_icon,
-                                    task.id,
+                                    task.id.short_id(),
                                     truncate_summary(&task.description, 50),
-                                    agent
+                                    agent_label
                                 );
                             }
                         }
@@ -2724,7 +2746,7 @@ async fn main() -> Result<()> {
                         }
 
                         printed_any = true;
-                        let heading = format!("{} ({:?})", agent.name, agent.state);
+                        let heading = format!("{} ({:?})", agent.display_label(), agent.state);
                         print_all_inbox_section(
                             town.channel(),
                             &heading,
@@ -2923,51 +2945,23 @@ async fn main() -> Result<()> {
 
                 let display_round = round + 1;
                 let urgent_messages = channel.receive_urgent(agent_id).await?;
-                let mut regular_messages = channel.drain_inbox(agent_id).await?;
+                let regular_messages = channel.drain_inbox(agent_id).await?;
                 let backlog_snapshot = backlog_snapshot_for_agent(channel, &name, 8).await?;
 
+                // If inbox is completely empty, go idle and wait.
+                // Backlog prompting is handled below after message classification
+                // to avoid duplicate triggers that create orchestration issues.
                 if regular_messages.is_empty() && urgent_messages.is_empty() {
-                    if backlog_snapshot.total_matching > 0 {
-                        info!(
-                            "   📋 Inbox empty, but {} backlog task(s) match this role; prompting backlog review",
-                            backlog_snapshot.total_matching
-                        );
-                        regular_messages.push(tinytown::Message::new(
-                            AgentId::supervisor(),
-                            agent_id,
-                            tinytown::MessageType::Query {
-                                question: format!(
-                                    "Backlog has {} role-matching task(s). Review `tt backlog list` and claim one using `tt backlog claim <task-id> {}`.",
-                                    backlog_snapshot.total_matching, name
-                                ),
-                            },
-                        ));
-                    } else if backlog_snapshot.total_backlog > 0 {
-                        info!(
-                            "   📋 Backlog has {} task(s), but none match this role hint; waiting",
-                            backlog_snapshot.total_backlog
-                        );
-                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                            if agent.state != AgentState::Paused {
-                                agent.state = AgentState::Idle;
-                            }
-                            agent.last_heartbeat = chrono::Utc::now();
-                            channel.set_agent_state(&agent).await?;
+                    info!("   📭 Inbox empty, waiting...");
+                    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                        if agent.state != AgentState::Paused {
+                            agent.state = AgentState::Idle;
                         }
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
-                    } else {
-                        info!("   📭 Inbox empty, waiting...");
-                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
-                            if agent.state != AgentState::Paused {
-                                agent.state = AgentState::Idle;
-                            }
-                            agent.last_heartbeat = chrono::Utc::now();
-                            channel.set_agent_state(&agent).await?;
-                        }
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        continue;
+                        agent.last_heartbeat = chrono::Utc::now();
+                        channel.set_agent_state(&agent).await?;
                     }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    continue;
                 }
 
                 let mut breakdown = MessageBreakdown::default();
@@ -3327,7 +3321,9 @@ Only run commands needed to complete listed work; inbox messages for this round 
                 let inbox = town.channel().inbox_len(agent.id).await.unwrap_or(0);
                 agent_status.push_str(&format!(
                     "  - {} ({:?}) - {} messages pending\n",
-                    agent.name, agent.state, inbox
+                    agent.display_label(),
+                    agent.state,
+                    inbox
                 ));
             }
 
@@ -3526,6 +3522,13 @@ Always spawn a **reviewer** agent. This agent decides when work is satisfactoril
 4. You step in for human decisions, priority changes, cross-team sequencing, or escalation
 
 This keeps execution flowing: agents hand off obvious next steps directly, reviewer remains the quality gate, and you stay focused on higher-level orchestration.
+
+## Agent Naming Convention
+
+Agents are displayed as **Nickname [role]** (e.g., "Fred [backend]", "Martha [reviewer]").
+When referring to agents in plans, messages, or status updates, always use this format.
+Agents also have short IDs (first 4 hex characters of their UUID) shown in status output;
+you can reference them by their name or short ID.
 
 ## Guidelines
 
@@ -3767,6 +3770,88 @@ Now, help the user orchestrate their project!
             }
         }
 
+        Commands::History { limit, agent } => {
+            let town = Town::connect(&cli.town).await?;
+            let agents = town.list_agents().await;
+            let events = town
+                .channel()
+                .event_stream()
+                .read_recent_town_events(limit)
+                .await?;
+
+            if events.is_empty() {
+                info!("📜 No events recorded yet.");
+            } else {
+                // Build agent ID → display_label map
+                let agent_labels: std::collections::HashMap<tinytown::AgentId, String> =
+                    agents.iter().map(|a| (a.id, a.display_label())).collect();
+
+                let resolve = |aid: tinytown::AgentId| -> String {
+                    agent_labels
+                        .get(&aid)
+                        .cloned()
+                        .unwrap_or_else(|| aid.short_id())
+                };
+
+                info!("📜 Recent History ({} events):", events.len());
+                info!("");
+                for (_stream_id, event) in &events {
+                    let ts = event.timestamp.format("%H:%M:%S");
+
+                    // Filter by agent if requested
+                    if let Some(ref agent_name) = agent {
+                        let matches = event.agent_id.map_or(false, |aid| {
+                            agents.iter().any(|a| a.id == aid && a.name == *agent_name)
+                        });
+                        if !matches {
+                            continue;
+                        }
+                    }
+
+                    let who = event
+                        .agent_id
+                        .map(|aid| resolve(aid))
+                        .unwrap_or_else(|| "system".to_string());
+
+                    let event_icon = match event.event_type {
+                        tinytown::events::EventType::AgentSpawned => "🐣",
+                        tinytown::events::EventType::AgentStopped
+                        | tinytown::events::EventType::AgentCompleted => "🏁",
+                        tinytown::events::EventType::AgentStateChanged => "🔄",
+                        tinytown::events::EventType::TaskAssigned => "📌",
+                        tinytown::events::EventType::TaskCompleted => "✅",
+                        tinytown::events::EventType::TaskFailed => "❌",
+                        tinytown::events::EventType::TaskDelegated => "🤝",
+                        tinytown::events::EventType::ReviewerHandoff => "👀",
+                        tinytown::events::EventType::ReviewerApproval => "✅",
+                        tinytown::events::EventType::ConductorEscalation => "🚨",
+                        tinytown::events::EventType::AgentInterrupted => "⏸️",
+                        tinytown::events::EventType::AgentResumed => "▶️",
+                        tinytown::events::EventType::AgentFailed => "💥",
+                        tinytown::events::EventType::MissionStateChanged
+                        | tinytown::events::EventType::MissionEvent => "🎯",
+                        tinytown::events::EventType::MissionWorkPromoted
+                        | tinytown::events::EventType::MissionWorkAssigned
+                        | tinytown::events::EventType::MissionWorkCompleted
+                        | tinytown::events::EventType::MissionWorkBlocked => "📋",
+                        tinytown::events::EventType::MissionHelpNeeded => "🆘",
+                        tinytown::events::EventType::MissionWatchTriggered => "👁️",
+                    };
+
+                    let msg_short: String = event.message.chars().take(80).collect();
+                    let truncated = if event.message.chars().count() > 80 {
+                        "..."
+                    } else {
+                        ""
+                    };
+                    info!(
+                        "  {} {} *{}* {}{}",
+                        ts, event_icon, who, msg_short, truncated
+                    );
+                }
+            }
+        }
+
         Commands::Recover => {
             use tinytown::AgentState;
 
@@ -3946,13 +4031,14 @@ Now, help the user orchestrate their project!
                                     format!(" [{}]", task.tags.join(", "))
                                 };
                                 info!(
-                                    "   {} - {}{}",
+                                    "   {} ({}) - {}{}",
+                                    task_id.short_id(),
                                     task_id,
                                     task.description.chars().take(60).collect::<String>(),
                                     tags
                                 );
                             } else {
-                                info!("   {} - (task not found)", task_id);
+                                info!("   {} ({}) - (task not found)", task_id.short_id(), task_id);
                             }
                         }
                     }
@@ -5030,7 +5116,7 @@ fn print_mission_summary(mission: &tinytown::mission::MissionRun) {
     info!(
         "   {} {} ({:?}) - {} - {}",
         state_emoji,
-        mission.id.to_string().chars().take(8).collect::<String>(),
+        mission.id.short_id(),
         mission.state,
         objectives_short,
         age_str
@@ -5058,7 +5144,7 @@ async fn print_mission_status(
     };
 
     info!("🎯 Mission Status");
-    info!("   ID: {}", mission.id);
+    info!("   ID: {} ({})", mission.id.short_id(), mission.id);
     info!("   State: {} {:?}", state_emoji, mission.state);
     info!(
         "   Created: {}",
