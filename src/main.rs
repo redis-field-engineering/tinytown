@@ -4699,7 +4699,10 @@ Now, help the user orchestrate their project!
                     }
 
                     if !mission.state.can_resume() {
-                        info!("ℹ️  Mission {} is not blocked and cannot be resumed", run_id);
+                        info!(
+                            "ℹ️  Mission {} is not blocked and cannot be resumed",
+                            run_id
+                        );
                         return Ok(());
                     }
 

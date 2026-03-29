@@ -12,10 +12,12 @@
 //! with tower-mcp's testing module. These tests focus on verifying the router
 //! construction and service integration work correctly.
 
+use serde_json::json;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tinytown::{McpState, Town, create_mcp_router};
+use tower_mcp::TestClient;
 use uuid::Uuid;
 
 // ============================================================================
@@ -330,6 +332,110 @@ async fn test_mcp_service_mission_operations() -> Result<(), Box<dyn std::error:
     let all_missions = storage.list_all_missions().await?;
     assert_eq!(all_missions.len(), 1);
     assert_eq!(all_missions[0].id, mission.id);
+
+    Ok(())
+}
+
+/// Test that mission pause/resume tools mutate mission state via the MCP router and
+/// reject invalid pause attempts once a mission is already blocked.
+#[tokio::test]
+async fn test_mcp_mission_pause_resume_tools_enforce_state_guards()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-mission-pause-resume");
+    let ctx = McpTestContext::new(&town_name).await?;
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let router = create_mcp_router(ctx.mcp_state.clone(), "tinytown-mcp", "0.5.0");
+    let mut client = TestClient::from_router(router);
+    client.initialize().await;
+
+    let pause_result = client
+        .call_tool_json(
+            "mission.pause",
+            json!({ "mission_id": mission.id.to_string() }),
+        )
+        .await;
+    assert_eq!(pause_result["success"], true);
+    assert_eq!(pause_result["data"]["directive"], "pause");
+
+    let paused = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(paused.state, tinytown::mission::MissionState::Blocked);
+
+    let pause_again = client
+        .call_tool_json(
+            "mission.pause",
+            json!({ "mission_id": mission.id.to_string() }),
+        )
+        .await;
+    assert_eq!(pause_again["success"], false);
+    assert!(
+        pause_again["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("not running")
+    );
+
+    let resume_result = client
+        .call_tool_json(
+            "mission.resume",
+            json!({ "mission_id": mission.id.to_string() }),
+        )
+        .await;
+    assert_eq!(resume_result["success"], true);
+    assert_eq!(resume_result["data"]["directive"], "resume");
+
+    let resumed = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(resumed.state, tinytown::mission::MissionState::Running);
+
+    Ok(())
+}
+
+/// Test that mission.resume rejects failed missions before queueing dispatcher work.
+#[tokio::test]
+async fn test_mcp_mission_resume_tool_rejects_failed_missions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-mission-resume-failed");
+    let ctx = McpTestContext::new(&town_name).await?;
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.fail("Unrecoverable error");
+    storage.save_mission(&mission).await?;
+
+    let router = create_mcp_router(ctx.mcp_state.clone(), "tinytown-mcp", "0.5.0");
+    let mut client = TestClient::from_router(router);
+    client.initialize().await;
+
+    let resume_result = client
+        .call_tool_json(
+            "mission.resume",
+            json!({ "mission_id": mission.id.to_string() }),
+        )
+        .await;
+    assert_eq!(resume_result["success"], false);
+    assert!(
+        resume_result["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("cannot be resumed")
+    );
+
+    let updated = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated.state, tinytown::mission::MissionState::Failed);
+    assert!(storage.list_control_messages(mission.id).await?.is_empty());
 
     Ok(())
 }

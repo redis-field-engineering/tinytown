@@ -219,7 +219,8 @@ impl<G: GitHubClient> MissionDispatcher<G> {
             let lower = body.to_ascii_lowercase();
             if lower.starts_with("resume") || lower.starts_with("retry") {
                 if mission.state.can_resume() {
-                    let completed_watches = self.force_complete_blocking_watches(mission_id).await?;
+                    let completed_watches =
+                        self.force_complete_blocking_watches(mission_id).await?;
                     mission.start();
                     mission.set_next_wake_at(None);
                     progressed = true;
