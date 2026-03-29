@@ -3800,7 +3800,7 @@ Now, help the user orchestrate their project!
 
                     // Filter by agent if requested
                     if let Some(ref agent_name) = agent {
-                        let matches = event.agent_id.map_or(false, |aid| {
+                        let matches = event.agent_id.is_some_and(|aid| {
                             agents.iter().any(|a| a.id == aid && a.name == *agent_name)
                         });
                         if !matches {
@@ -3810,7 +3810,7 @@ Now, help the user orchestrate their project!
 
                     let who = event
                         .agent_id
-                        .map(|aid| resolve(aid))
+                        .map(&resolve)
                         .unwrap_or_else(|| "system".to_string());
 
                     let event_icon = match event.event_type {
