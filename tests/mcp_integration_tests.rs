@@ -716,8 +716,11 @@ async fn test_mcp_tool_inventory_includes_parity_tools() -> Result<(), Box<dyn s
         "mission.list",
         "mission.status",
         "mission.get_status",
+        "mission.list_work",
         "mission.work_items",
+        "mission.list_watches",
         "mission.watches",
+        "mission.get_events",
         "mission.events",
         "mission.start",
         "mission.approve",
@@ -727,6 +730,7 @@ async fn test_mcp_tool_inventory_includes_parity_tools() -> Result<(), Box<dyn s
         "mission.dispatch",
         "mission.note",
         "mission.input",
+        "mission.stop",
     ] {
         assert!(tool_names.contains(expected), "missing tool {expected}");
     }
