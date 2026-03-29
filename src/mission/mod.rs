@@ -55,6 +55,7 @@
 //! # }
 //! ```
 
+pub mod bootstrap;
 pub mod compiler;
 pub mod dispatcher;
 pub mod scheduler;
@@ -63,6 +64,7 @@ pub mod types;
 pub mod watch;
 
 // Re-export commonly used types
+pub use bootstrap::{build_mission_work_items, parse_issue_ref};
 pub use compiler::{MissionManifest, ParsedIssue, WorkGraph, WorkGraphCompiler};
 pub use dispatcher::{DispatcherConfig, DispatcherTickResult, MissionDispatcher};
 pub use scheduler::{

@@ -277,6 +277,147 @@ async fn test_mcp_service_recovery_operations() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+/// Test that mission storage and bootstrap helpers used by MCP tools work correctly.
+#[tokio::test]
+async fn test_mcp_service_mission_operations() -> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-svc-mission-test");
+    let ctx = McpTestContext::new(&town_name).await?;
+
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.start();
+
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+    storage
+        .log_event(mission.id, "Mission started in test")
+        .await?;
+
+    let work_items = tinytown::mission::build_mission_work_items(
+        ctx.town.root(),
+        mission.id,
+        &mission.objective_refs,
+    )?;
+    assert_eq!(work_items.len(), 1);
+    storage.save_work_item(&work_items[0]).await?;
+
+    let note =
+        tinytown::mission::MissionControlMessage::new(mission.id, "tester", "resume and retry");
+    storage.save_control_message(&note).await?;
+
+    let stored = storage.get_mission(mission.id).await?;
+    assert!(stored.is_some());
+
+    let active = storage.list_active().await?;
+    assert!(active.contains(&mission.id));
+
+    let stored_work = storage.list_work_items(mission.id).await?;
+    assert_eq!(stored_work.len(), 1);
+    assert_eq!(stored_work[0].title, "docs/design.md");
+
+    let controls = storage.list_control_messages(mission.id).await?;
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0].body, "resume and retry");
+
+    let events = storage.get_events(mission.id, 5).await?;
+    assert_eq!(events.len(), 1);
+
+    let all_missions = storage.list_all_missions().await?;
+    assert_eq!(all_missions.len(), 1);
+    assert_eq!(all_missions[0].id, mission.id);
+
+    Ok(())
+}
+
+/// Test that the mission.pause MCP handler rejects terminal missions.
+#[tokio::test]
+async fn test_mcp_mission_pause_tool_rejects_terminal_mission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-mission-pause-terminal-test");
+    let ctx = McpTestContext::new(&town_name).await?;
+
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.complete();
+    storage.save_mission(&mission).await?;
+
+    let tool = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
+        .into_iter()
+        .find(|tool| tool.name == "mission.pause")
+        .expect("mission.pause tool should exist");
+
+    let result = tool
+        .call(serde_json::json!({ "mission_id": mission.id.to_string() }))
+        .await;
+
+    let payload: serde_json::Value =
+        serde_json::from_str(result.first_text().expect("text response"))?;
+    assert_eq!(payload["success"], false);
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|text| text.contains("cannot be paused"))
+    );
+
+    Ok(())
+}
+
+/// Test that the mission.status MCP handler returns work and watch details by default.
+#[tokio::test]
+async fn test_mcp_mission_status_tool_returns_detailed_status()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-mission-status-tool-test");
+    let ctx = McpTestContext::new(&town_name).await?;
+
+    let storage =
+        tinytown::mission::MissionStorage::new(ctx.town.channel().conn().clone(), &town_name);
+    let mut mission =
+        tinytown::mission::MissionRun::new(vec![tinytown::mission::ObjectiveRef::Doc {
+            path: "docs/design.md".to_string(),
+        }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let work_items = tinytown::mission::build_mission_work_items(
+        ctx.town.root(),
+        mission.id,
+        &mission.objective_refs,
+    )?;
+    storage.save_work_item(&work_items[0]).await?;
+
+    let tool = tinytown::app::mcp::tools::all_tools(ctx.mcp_state.clone())
+        .into_iter()
+        .find(|tool| tool.name == "mission.status")
+        .expect("mission.status tool should exist");
+
+    let result = tool
+        .call(serde_json::json!({ "mission_id": mission.id.to_string() }))
+        .await;
+
+    assert!(!result.is_error);
+    let payload: serde_json::Value =
+        serde_json::from_str(result.first_text().expect("text response"))?;
+    let mission_id = mission.id.to_string();
+    assert_eq!(
+        payload["data"]["mission"]["id"].as_str(),
+        Some(mission_id.as_str())
+    );
+    assert!(payload["data"]["work_items"].is_array());
+    assert!(payload["data"]["watch_items"].is_array());
+
+    Ok(())
+}
+
 // ============================================================================
 // MCP ROUTER CREATION VERIFICATION
 // ============================================================================
@@ -311,9 +452,47 @@ async fn test_mcp_tool_inventory_includes_parity_tools() -> Result<(), Box<dyn s
         "task.list_pending",
         "agent.prune",
         "backlog.remove",
+        "mission.list",
+        "mission.status",
+        "mission.get_status",
+        "mission.work_items",
+        "mission.watches",
+        "mission.events",
+        "mission.start",
+        "mission.approve",
+        "mission.reject",
+        "mission.pause",
+        "mission.resume",
+        "mission.dispatch",
+        "mission.note",
+        "mission.input",
     ] {
         assert!(tool_names.contains(expected), "missing tool {expected}");
     }
+
+    Ok(())
+}
+
+/// Test that mission resources are registered in the MCP router inventory.
+#[tokio::test]
+async fn test_mcp_resource_inventory_includes_mission_resources()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town_name = unique_town_name("mcp-resource-inventory-test");
+    let ctx = McpTestContext::new(&town_name).await?;
+
+    let resource_uris: HashSet<_> =
+        tinytown::app::mcp::resources::all_resources(ctx.mcp_state.clone())
+            .into_iter()
+            .map(|resource| resource.uri)
+            .collect();
+    let template_uris: HashSet<_> =
+        tinytown::app::mcp::resources::all_templates(ctx.mcp_state.clone())
+            .into_iter()
+            .map(|template| template.uri_template)
+            .collect();
+
+    assert!(resource_uris.contains("tinytown://missions"));
+    assert!(template_uris.contains("tinytown://missions/{mission_id}"));
 
     Ok(())
 }

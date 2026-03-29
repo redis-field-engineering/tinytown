@@ -157,6 +157,26 @@ pub enum MissionState {
     Failed,
 }
 
+impl MissionState {
+    /// Check if the mission is in a terminal state.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed | Self::Failed)
+    }
+
+    /// Check if the mission can be paused.
+    #[must_use]
+    pub fn can_pause(&self) -> bool {
+        matches!(self, Self::Running)
+    }
+
+    /// Check if the mission can be resumed.
+    #[must_use]
+    pub fn can_resume(&self) -> bool {
+        matches!(self, Self::Blocked)
+    }
+}
+
 /// Type of work item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]

@@ -218,40 +218,64 @@ impl<G: GitHubClient> MissionDispatcher<G> {
             let body = message.body.trim();
             let lower = body.to_ascii_lowercase();
             if lower.starts_with("resume") || lower.starts_with("retry") {
-                let completed_watches = self.force_complete_blocking_watches(mission_id).await?;
-                mission.start();
-                mission.set_next_wake_at(None);
-                progressed = true;
-                self.storage
-                    .log_event(
-                        mission_id,
-                        &format!(
-                            "Dispatcher received resume directive from {}: {}{}",
-                            message.sender,
-                            body,
-                            if completed_watches > 0 {
-                                format!(
-                                    " (force-completed {} blocking watch(es))",
-                                    completed_watches
-                                )
-                            } else {
-                                String::new()
-                            }
-                        ),
-                    )
-                    .await?;
+                if mission.state.can_resume() {
+                    let completed_watches = self.force_complete_blocking_watches(mission_id).await?;
+                    mission.start();
+                    mission.set_next_wake_at(None);
+                    progressed = true;
+                    self.storage
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Dispatcher received resume directive from {}: {}{}",
+                                message.sender,
+                                body,
+                                if completed_watches > 0 {
+                                    format!(
+                                        " (force-completed {} blocking watch(es))",
+                                        completed_watches
+                                    )
+                                } else {
+                                    String::new()
+                                }
+                            ),
+                        )
+                        .await?;
+                } else {
+                    self.storage
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Dispatcher ignored resume directive from {} while mission was {:?}: {}",
+                                message.sender, mission.state, body
+                            ),
+                        )
+                        .await?;
+                }
             } else if lower.starts_with("pause") || lower.starts_with("hold") {
-                mission.block(format!("Paused by {}: {}", message.sender, body));
-                progressed = true;
-                self.storage
-                    .log_event(
-                        mission_id,
-                        &format!(
-                            "Dispatcher received pause directive from {}: {}",
-                            message.sender, body
-                        ),
-                    )
-                    .await?;
+                if mission.state.can_pause() {
+                    mission.block(format!("Paused by {}: {}", message.sender, body));
+                    progressed = true;
+                    self.storage
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Dispatcher received pause directive from {}: {}",
+                                message.sender, body
+                            ),
+                        )
+                        .await?;
+                } else {
+                    self.storage
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Dispatcher ignored pause directive from {} while mission was {:?}: {}",
+                                message.sender, mission.state, body
+                            ),
+                        )
+                        .await?;
+                }
             } else {
                 self.storage
                     .log_event(

@@ -11,6 +11,11 @@ use tower_mcp::{Resource, ResourceBuilder, ResourceTemplate, ResourceTemplateBui
 
 use super::McpState;
 
+fn mission_storage(state: &McpState) -> crate::mission::MissionStorage {
+    let config = state.town.config();
+    crate::mission::MissionStorage::new(state.town.channel().conn().clone(), &config.name)
+}
+
 // ============================================================================
 // Static Resources
 // ============================================================================
@@ -137,6 +142,47 @@ pub fn backlog_resource(state: Arc<McpState>) -> Resource {
         .build()
 }
 
+/// Create the tinytown://missions resource.
+pub fn missions_resource(state: Arc<McpState>) -> Resource {
+    let s = state.clone();
+    ResourceBuilder::new("tinytown://missions")
+        .name("Missions")
+        .description("List of all mission runs known to the town")
+        .handler(move || {
+            let state = s.clone();
+            async move {
+                let storage = mission_storage(&state);
+                match storage.list_all_missions().await {
+                    Ok(missions) => {
+                        let json: Vec<_> = missions
+                            .iter()
+                            .map(|mission| {
+                                serde_json::json!({
+                                    "id": mission.id.to_string(),
+                                    "state": mission.state,
+                                    "objective_refs": mission.objective_refs,
+                                    "created_at": mission.created_at,
+                                    "updated_at": mission.updated_at,
+                                    "blocked_reason": mission.blocked_reason,
+                                    "next_wake_at": mission.next_wake_at
+                                })
+                            })
+                            .collect();
+                        Ok(ReadResourceResult::text(
+                            "tinytown://missions",
+                            serde_json::to_string_pretty(&json).unwrap_or_default(),
+                        ))
+                    }
+                    Err(e) => Ok(ReadResourceResult::text(
+                        "tinytown://missions",
+                        format!("Error: {}", e),
+                    )),
+                }
+            }
+        })
+        .build()
+}
+
 // ============================================================================
 // Resource Templates
 // ============================================================================
@@ -232,6 +278,65 @@ pub fn task_by_id_template(state: Arc<McpState>) -> ResourceTemplate {
         )
 }
 
+/// Create the tinytown://missions/{mission_id} resource template.
+pub fn mission_by_id_template(state: Arc<McpState>) -> ResourceTemplate {
+    let s = state.clone();
+    ResourceTemplateBuilder::new("tinytown://missions/{mission_id}")
+        .name("Mission Details")
+        .description("Detailed mission state including work items, watches, control messages, and recent events")
+        .handler(
+            move |uri: String, vars: std::collections::HashMap<String, String>| {
+                let state = s.clone();
+                async move {
+                    let mission_id_str = vars.get("mission_id").cloned().unwrap_or_default();
+                    let mission_id: crate::mission::MissionId = match mission_id_str.parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            return Ok(ReadResourceResult::text(
+                                uri,
+                                format!("Invalid mission ID: {}", mission_id_str),
+                            ));
+                        }
+                    };
+                    let storage = mission_storage(&state);
+
+                    let mission = match storage.get_mission(mission_id).await {
+                        Ok(Some(mission)) => mission,
+                        Ok(None) => {
+                            return Ok(ReadResourceResult::text(
+                                uri,
+                                format!("Mission not found: {}", mission_id_str),
+                            ));
+                        }
+                        Err(e) => return Ok(ReadResourceResult::text(uri, format!("Error: {}", e))),
+                    };
+
+                    match tokio::try_join!(
+                        storage.list_work_items(mission_id),
+                        storage.list_watch_items(mission_id),
+                        storage.list_control_messages(mission_id),
+                        storage.get_events(mission_id, 25),
+                    ) {
+                        Ok((work_items, watches, control_messages, events)) => {
+                            let json = serde_json::json!({
+                                "mission": mission,
+                                "work_items": work_items,
+                                "watches": watches,
+                                "control_messages": control_messages,
+                                "events": events,
+                            });
+                            Ok(ReadResourceResult::text(
+                                uri,
+                                serde_json::to_string_pretty(&json).unwrap_or_default(),
+                            ))
+                        }
+                        Err(e) => Ok(ReadResourceResult::text(uri, format!("Error: {}", e))),
+                    }
+                }
+            },
+        )
+}
+
 // ============================================================================
 // Resource Registration
 // ============================================================================
@@ -241,7 +346,8 @@ pub fn all_resources(state: Arc<McpState>) -> Vec<Resource> {
     vec![
         town_current_resource(state.clone()),
         agents_resource(state.clone()),
-        backlog_resource(state),
+        backlog_resource(state.clone()),
+        missions_resource(state),
     ]
 }
 
@@ -249,6 +355,7 @@ pub fn all_resources(state: Arc<McpState>) -> Vec<Resource> {
 pub fn all_templates(state: Arc<McpState>) -> Vec<ResourceTemplate> {
     vec![
         agent_by_name_template(state.clone()),
-        task_by_id_template(state),
+        task_by_id_template(state.clone()),
+        mission_by_id_template(state),
     ]
 }

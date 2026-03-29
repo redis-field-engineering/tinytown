@@ -25,6 +25,24 @@
 //! - `backlog.claim` - Claim a backlog task for an agent
 //! - `backlog.assign_all` - Assign all backlog tasks to agents
 //! - `backlog.remove` - Remove a task from the backlog
+//! - `mission.list` - List missions
+//! - `mission.get_status` - Get detailed mission status
+//! - `mission.status` - Alias for detailed mission status
+//! - `mission.list_work` - List mission work items
+//! - `mission.work_items` - Alias for mission work items
+//! - `mission.list_watches` - List mission watch items
+//! - `mission.watches` - Alias for mission watch items
+//! - `mission.get_events` - Get recent mission events
+//! - `mission.events` - Alias for recent mission events
+//! - `mission.start` - Start a new mission
+//! - `mission.approve` - Approve a mission work item review gate
+//! - `mission.reject` - Reject a mission work item review gate
+//! - `mission.pause` - Pause a mission through the dispatcher
+//! - `mission.resume` - Resume a mission
+//! - `mission.dispatch` - Run a single mission dispatcher tick
+//! - `mission.note` - Queue an operator note for the dispatcher
+//! - `mission.input` - Provide human input to a mission work item
+//! - `mission.stop` - Stop a mission
 //! - `recovery.recover_agents` - Recover orphaned agents
 //! - `recovery.reclaim_tasks` - Reclaim tasks from dead agents
 //!
@@ -34,6 +52,8 @@
 //! - `tinytown://agents/{agent_name}` - Specific agent details
 //! - `tinytown://backlog` - Current backlog
 //! - `tinytown://tasks/{task_id}` - Specific task details
+//! - `tinytown://missions` - All missions
+//! - `tinytown://missions/{mission_id}` - Specific mission details
 //!
 //! ## Prompts
 //! - `conductor.startup_context` - Context for conductor startup

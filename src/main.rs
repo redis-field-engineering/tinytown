@@ -4531,6 +4531,7 @@ Now, help the user orchestrate their project!
             use tinytown::mission::{
                 DispatcherConfig, GhCliGitHubClient, MissionDispatcher, MissionId, MissionPolicy,
                 MissionRun, MissionScheduler, MissionState, MissionStorage, ObjectiveRef,
+                build_mission_work_items, parse_issue_ref,
             };
 
             let town = Town::connect(&cli.town).await?;
@@ -4689,6 +4690,16 @@ Now, help the user orchestrate their project!
 
                     if mission.state == MissionState::Completed {
                         info!("ℹ️  Mission {} is already completed", run_id);
+                        return Ok(());
+                    }
+
+                    if mission.state == MissionState::Failed {
+                        info!("ℹ️  Mission {} has failed and cannot be resumed", run_id);
+                        return Ok(());
+                    }
+
+                    if !mission.state.can_resume() {
+                        info!("ℹ️  Mission {} is not blocked and cannot be resumed", run_id);
                         return Ok(());
                     }
 
@@ -4878,205 +4889,6 @@ Now, help the user orchestrate their project!
 }
 
 // ==================== Mission Helper Functions ====================
-
-/// Derive GitHub owner and repo from git remote URL.
-///
-/// Parses remote URLs in formats:
-/// - `git@github.com:owner/repo.git`
-/// - `https://github.com/owner/repo.git`
-/// - `https://github.com/owner/repo`
-fn derive_git_remote_info(town_path: &std::path::Path) -> Option<(String, String)> {
-    use std::process::Command;
-
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(town_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let url = String::from_utf8(output.stdout).ok()?.trim().to_string();
-
-    // Parse SSH format: git@github.com:owner/repo.git
-    if url.starts_with("git@github.com:") {
-        let path = url
-            .strip_prefix("git@github.com:")?
-            .trim_end_matches(".git");
-        let (owner, repo) = path.split_once('/')?;
-        return Some((owner.to_string(), repo.to_string()));
-    }
-
-    // Parse HTTPS format: https://github.com/owner/repo.git
-    if url.contains("github.com/") {
-        let path = url.split("github.com/").nth(1)?.trim_end_matches(".git");
-        let (owner, repo) = path.split_once('/')?;
-        return Some((owner.to_string(), repo.to_string()));
-    }
-
-    None
-}
-
-/// Parse an issue reference (e.g., "23", "owner/repo#23", or URL).
-fn parse_issue_ref(
-    input: &str,
-    default_repo: &str,
-    town_path: &std::path::Path,
-) -> Option<tinytown::mission::ObjectiveRef> {
-    use tinytown::mission::ObjectiveRef;
-
-    // Try as plain number first
-    if let Ok(number) = input.parse::<u64>() {
-        // Try to derive owner/repo from git remote
-        if let Some((owner, repo)) = derive_git_remote_info(town_path) {
-            return Some(ObjectiveRef::Issue {
-                owner,
-                repo,
-                number,
-            });
-        }
-
-        // Fall back to deriving repo from town name (format: repo-branch)
-        let repo_part = default_repo.split('-').next().unwrap_or("tinytown");
-        warn!(
-            "Could not derive GitHub owner from git remote; using repo '{}' with unknown owner",
-            repo_part
-        );
-        return None;
-    }
-
-    // Try as owner/repo#number
-    if let Some((repo_part, num_part)) = input.split_once('#')
-        && let Ok(number) = num_part.parse::<u64>()
-        && let Some((owner, repo)) = repo_part.split_once('/')
-    {
-        return Some(ObjectiveRef::Issue {
-            owner: owner.into(),
-            repo: repo.into(),
-            number,
-        });
-    }
-
-    // Try as GitHub URL
-    if input.contains("github.com") && input.contains("/issues/") {
-        let parts: Vec<&str> = input.split('/').collect();
-        if parts.len() >= 4 {
-            let owner = parts[parts.len() - 4].to_string();
-            let repo = parts[parts.len() - 3].to_string();
-            if let Ok(number) = parts[parts.len() - 1].parse::<u64>() {
-                return Some(ObjectiveRef::Issue {
-                    owner,
-                    repo,
-                    number,
-                });
-            }
-        }
-    }
-
-    None
-}
-
-#[derive(serde::Deserialize)]
-struct GitHubIssueView {
-    title: String,
-    body: Option<String>,
-}
-
-fn fetch_issue_view(
-    town_path: &std::path::Path,
-    owner: &str,
-    repo: &str,
-    number: u64,
-) -> Result<Option<GitHubIssueView>> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "issue",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &format!("{owner}/{repo}"),
-            "--json",
-            "title,body",
-        ])
-        .current_dir(town_path)
-        .output();
-
-    match output {
-        Ok(output) if output.status.success() => {
-            let issue = serde_json::from_slice::<GitHubIssueView>(&output.stdout)?;
-            Ok(Some(issue))
-        }
-        Ok(output) => {
-            warn!(
-                "⚠️  Could not fetch issue {}/{}#{} via gh: {}",
-                owner,
-                repo,
-                number,
-                String::from_utf8_lossy(&output.stderr).trim()
-            );
-            Ok(None)
-        }
-        Err(err) => {
-            warn!(
-                "⚠️  Could not run gh for issue {}/{}#{}: {}",
-                owner, repo, number, err
-            );
-            Ok(None)
-        }
-    }
-}
-
-fn build_mission_work_items(
-    town_path: &std::path::Path,
-    mission_id: tinytown::mission::MissionId,
-    objectives: &[tinytown::mission::ObjectiveRef],
-) -> Result<Vec<tinytown::mission::WorkItem>> {
-    use tinytown::mission::{ObjectiveRef, ParsedIssue, WorkGraphCompiler, WorkItem, WorkKind};
-
-    let compiler = WorkGraphCompiler::new();
-    let mut parsed_issues: Vec<ParsedIssue> = Vec::new();
-    let mut doc_items = Vec::new();
-
-    for objective in objectives {
-        match objective {
-            ObjectiveRef::Issue {
-                owner,
-                repo,
-                number,
-            } => {
-                let issue = fetch_issue_view(town_path, owner, repo, *number)?;
-                let title = issue
-                    .as_ref()
-                    .map(|data| data.title.clone())
-                    .unwrap_or_else(|| format!("Issue #{}", number));
-                let body = issue.and_then(|data| data.body).unwrap_or_default();
-                parsed_issues.push(compiler.parse_issue(
-                    *number,
-                    title,
-                    body,
-                    owner.clone(),
-                    repo.clone(),
-                ));
-            }
-            ObjectiveRef::Doc { path } => {
-                doc_items.push(
-                    WorkItem::new(mission_id, path.clone(), WorkKind::Design)
-                        .with_source_ref(path.clone()),
-                );
-            }
-        }
-    }
-
-    let mut work_items = if parsed_issues.is_empty() {
-        Vec::new()
-    } else {
-        compiler.compile(mission_id, parsed_issues, None)?.items
-    };
-    work_items.extend(doc_items);
-    Ok(work_items)
-}
 
 /// Print a summary of a mission.
 fn print_mission_summary(mission: &tinytown::mission::MissionRun) {
