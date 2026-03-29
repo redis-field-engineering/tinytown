@@ -43,7 +43,7 @@ pub enum ReclaimDestination {
 pub struct RecoveryService;
 
 impl RecoveryService {
-    /// Recover orphaned agents (mark stale working agents as stopped).
+    /// Recover orphaned agents (mark stale active agents as stopped).
     pub async fn recover(town: &Town, town_path: &Path) -> Result<RecoverResult> {
         let agents = town.list_agents().await;
         let channel = town.channel();
@@ -52,10 +52,9 @@ impl RecoveryService {
         let checked = agents.len();
 
         for agent in agents {
-            // Only check "active" state agents
-            let is_active_state = matches!(agent.state, AgentState::Working | AgentState::Starting);
-
-            if !is_active_state {
+            // Match the CLI recover behavior so reboot-driven recovery and
+            // service-backed recovery paths classify orphaned agents the same way.
+            if !Self::is_recoverable_state(agent.state) {
                 continue;
             }
 
@@ -181,6 +180,13 @@ impl RecoveryService {
         // Fallback to heartbeat check
         let heartbeat_age = chrono::Utc::now() - agent.last_heartbeat;
         heartbeat_age.num_seconds() > 120
+    }
+
+    fn is_recoverable_state(state: AgentState) -> bool {
+        matches!(
+            state,
+            AgentState::Working | AgentState::Starting | AgentState::Idle | AgentState::Draining
+        )
     }
 
     async fn handle_reclaim(

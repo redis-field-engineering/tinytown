@@ -400,9 +400,12 @@ impl<G: GitHubClient> WatchEngine<G> {
             .await?;
 
         if comments.is_empty() {
-            // No bugbot issues yet - continue watching (bugbot may not have posted yet)
-            // The watch should only complete when CI passes and we've confirmed no bugbot issues
-            Ok((false, false))
+            // Self-resolve once the PR is otherwise healthy. This lets the watch
+            // clear after bots stay quiet and after previously reported issues are fixed.
+            Ok((
+                false,
+                self.pr_checks_succeeded(owner, repo, pr_number).await?,
+            ))
         } else {
             // Bugbot found issues - trigger action
             Ok((true, false))
@@ -418,8 +421,12 @@ impl<G: GitHubClient> WatchEngine<G> {
             // Actionable review comments - trigger action
             Ok((true, false))
         } else {
-            // No actionable comments - continue watching
-            Ok((false, false))
+            // Once CI is green and there are no actionable review comments, the
+            // watch can close instead of polling forever.
+            Ok((
+                false,
+                self.pr_checks_succeeded(owner, repo, pr_number).await?,
+            ))
         }
     }
 
@@ -439,6 +446,11 @@ impl<G: GitHubClient> WatchEngine<G> {
             // Not mergeable yet
             Ok((false, false))
         }
+    }
+
+    async fn pr_checks_succeeded(&self, owner: &str, repo: &str, pr_number: u64) -> Result<bool> {
+        let pr_result = self.github.get_pr_checks(owner, repo, pr_number).await?;
+        Ok(matches!(pr_result.status, CheckStatus::Success))
     }
 
     /// Execute a trigger action.

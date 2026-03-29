@@ -318,11 +318,20 @@ impl<G: GitHubClient> MissionDispatcher<G> {
             }
 
             if let Some(reason) = &mission.blocked_reason {
+                // Don't escalate when the mission is simply waiting on active
+                // watches – that is normal async operation, not a stall.
+                let watches = self.storage.list_watch_items(mission.id).await?;
+                let has_active_watches = watches.iter().any(|w| {
+                    w.status == crate::mission::WatchStatus::Active
+                        || w.status == crate::mission::WatchStatus::Snoozed
+                });
+                if has_active_watches {
+                    return Ok(None);
+                }
+
                 return Ok(Some(format!(
-                    "Mission {} is still blocked after {}s: {}",
-                    mission.id,
-                    stalled_for.num_seconds(),
-                    reason
+                    "Mission {} is still blocked: {}",
+                    mission.id, reason
                 )));
             }
         }
