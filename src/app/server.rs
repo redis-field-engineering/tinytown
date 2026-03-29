@@ -349,6 +349,12 @@ async fn gather_metrics(state: &AppState) -> std::result::Result<MetricsSnapshot
 }
 
 fn render_metrics(snapshot: &MetricsSnapshot, scrape_error: Option<&str>) -> String {
+    let agent_lines: Vec<String> = snapshot
+        .agent_states
+        .iter()
+        .map(|(state, count)| format!("tinytown_agents_total{{state=\"{}\"}} {}", state, count))
+        .collect();
+
     let mut lines = vec![
         "# HELP tinytown_up Whether the townhall process is running.".to_string(),
         "# TYPE tinytown_up gauge".to_string(),
@@ -358,6 +364,9 @@ fn render_metrics(snapshot: &MetricsSnapshot, scrape_error: Option<&str>) -> Str
         "tinytown_ready 1".to_string(),
         "# HELP tinytown_agents_total Number of registered agents by state.".to_string(),
         "# TYPE tinytown_agents_total gauge".to_string(),
+    ];
+    lines.extend(agent_lines);
+    lines.extend([
         "# HELP tinytown_tasks_pending Number of queued tasks across backlog and agent inboxes."
             .to_string(),
         "# TYPE tinytown_tasks_pending gauge".to_string(),
@@ -392,14 +401,7 @@ fn render_metrics(snapshot: &MetricsSnapshot, scrape_error: Option<&str>) -> Str
         "# HELP tinytown_urgent_messages Urgent inbox messages across all agents.".to_string(),
         "# TYPE tinytown_urgent_messages gauge".to_string(),
         format!("tinytown_urgent_messages {}", snapshot.urgent_message_count),
-    ];
-
-    for (state, count) in &snapshot.agent_states {
-        lines.push(format!(
-            "tinytown_agents_total{{state=\"{}\"}} {}",
-            state, count
-        ));
-    }
+    ]);
 
     if let Some(error) = scrape_error {
         lines.push(format!(
