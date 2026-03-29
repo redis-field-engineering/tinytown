@@ -661,7 +661,7 @@ fn build_mission_status_tool(
                         include_work: true,
                         include_watch: true,
                         include_events: input.include_events,
-                        include_dispatcher: input.include_dispatcher,
+                        include_dispatcher: true,
                     }
                 } else {
                     input

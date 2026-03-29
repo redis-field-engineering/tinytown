@@ -560,6 +560,7 @@ async fn test_mcp_mission_status_tool_returns_detailed_status()
     );
     assert!(payload["data"]["work_items"].is_array());
     assert!(payload["data"]["watch_items"].is_array());
+    assert!(payload["data"]["dispatcher"].is_object());
 
     Ok(())
 }
