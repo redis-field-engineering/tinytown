@@ -28,10 +28,18 @@ request_timeout_ms = 30000
 
 The router is split into public/read/write/management groups:
 
-- Public: `GET /healthz`
+- Public: `GET /health`, `GET /ready`, `GET /metrics`
 - Read (`town.read`): `GET /v1/town`, `GET /v1/status`, `GET /v1/agents`, `GET /v1/tasks/pending`, `GET /v1/backlog`, `GET /v1/agents/{agent}/inbox`
 - Write (`town.write`): `POST /v1/tasks/assign`, `POST /v1/backlog`, `POST /v1/backlog/{task_id}/claim`, `POST /v1/backlog/assign-all`, `DELETE /v1/backlog/{task_id}`, `POST /v1/messages/send`
 - Agent management (`agent.manage`): `POST /v1/agents`, `POST /v1/agents/{agent}/kill`, `POST /v1/agents/{agent}/restart`, `POST /v1/agents/prune`, `POST /v1/recover`, `POST /v1/reclaim`
+
+The public probes have distinct purposes:
+
+- `/health`: lightweight process liveness with `uptime_secs`
+- `/ready`: verifies townhall can still reach Redis, reporting Redis latency, town name, and dispatcher heartbeat state
+- `/metrics`: Prometheus-style text metrics for agent counts by state, task queue depth, completed tasks, active missions, and Redis latency
+
+Compatibility aliases `/healthz` and `/readyz` remain available for existing deployments.
 
 ## Authentication
 

@@ -74,7 +74,9 @@ See [MCP Interface](./mcp.md) for detailed MCP documentation.
 
 | Endpoint | Method | Scope | Description |
 |----------|--------|-------|-------------|
-| `/healthz` | GET | *public* | Health check |
+| `/health` | GET | *public* | Liveness check with process uptime |
+| `/ready` | GET | *public* | Readiness check against Redis-backed town state |
+| `/metrics` | GET | *public* | Prometheus text metrics |
 | `/v1/town` | GET | `town.read` | Get town info |
 | `/v1/status` | GET | `town.read` | Get full status |
 | `/v1/agents` | GET | `town.read` | List agents |
@@ -91,6 +93,8 @@ See [MCP Interface](./mcp.md) for detailed MCP documentation.
 | `/v1/backlog/{task_id}` | DELETE | `town.write` | Remove backlog task |
 | `/v1/messages/send` | POST | `town.write` | Send message |
 | `/v1/agents/{agent}/inbox` | GET | `town.read` | Get inbox |
+
+Compatibility aliases `/healthz` and `/readyz` are also available.
 | `/v1/recover` | POST | `agent.manage` | Recover orphaned agents |
 | `/v1/reclaim` | POST | `agent.manage` | Reclaim tasks |
 

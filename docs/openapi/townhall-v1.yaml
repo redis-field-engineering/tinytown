@@ -41,14 +41,14 @@ tags:
       work graph with automatic PR/CI monitoring.
 
 paths:
-  /healthz:
+  /health:
     get:
       tags: [Health]
-      summary: Health check
+      summary: Liveness check
       operationId: healthCheck
       responses:
         '200':
-          description: Service is healthy
+          description: Service is alive
           content:
             application/json:
               schema:
@@ -57,6 +57,90 @@ paths:
                   status:
                     type: string
                     example: ok
+                  uptime_secs:
+                    type: integer
+                    example: 3600
+
+  /ready:
+    get:
+      tags: [Health]
+      summary: Readiness check
+      operationId: readinessCheck
+      responses:
+        '200':
+          description: Service is ready to serve requests
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ready
+                  redis:
+                    type: string
+                    example: connected
+                  redis_latency_ms:
+                    type: number
+                    format: double
+                    example: 1.2
+                  dispatcher:
+                    type: string
+                    example: running
+                  town:
+                    type: string
+                    example: mytown
+        '503':
+          description: Service is running but cannot reach required dependencies
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: not_ready
+                  redis:
+                    type: string
+                    example: disconnected
+                  dispatcher:
+                    type: string
+                    example: unknown
+                  town:
+                    type: string
+                    example: mytown
+                  detail:
+                    type: string
+                    example: Redis ping failed
+
+  /metrics:
+    get:
+      tags: [Health]
+      summary: Prometheus metrics
+      operationId: metrics
+      responses:
+        '200':
+          description: Prometheus text exposition for townhall metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: |
+                  # HELP tinytown_up Whether the townhall process is running.
+                  # TYPE tinytown_up gauge
+                  tinytown_up 1
+                  # HELP tinytown_tasks_pending Number of queued tasks across backlog and agent inboxes.
+                  # TYPE tinytown_tasks_pending gauge
+                  tinytown_tasks_pending 5
+                  # HELP tinytown_missions_active Number of active missions.
+                  # TYPE tinytown_missions_active gauge
+                  tinytown_missions_active 1
+        '503':
+          description: Metrics scrape failed because backing services are unavailable
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /v1/town:
     get:
