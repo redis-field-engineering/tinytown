@@ -133,7 +133,9 @@ For local development, this means near-instant coordination.
 
 ## Persistence
 
-By default, Redis runs in-memory only. For durability:
+Tinytown's managed local Redis uses Redis's default RDB snapshot behavior, so channel state is normally recovered from the local snapshot after a restart instead of starting empty.
+
+For tighter durability guarantees, or when you want every write appended to disk, add AOF on top of the default snapshots:
 
 ### Option 1: RDB Snapshots
 
@@ -165,4 +167,3 @@ let client = redis::Client::open("unix:///path/to/redis.sock")?;
 let conn = ConnectionManager::new(client).await?;
 let channel = Channel::new(conn);
 ```
-

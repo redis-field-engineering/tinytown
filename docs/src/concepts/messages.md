@@ -198,5 +198,4 @@ Supervisor                    Worker
 | Routing | Direct to inbox | Complex routing |
 | Recovery | Redis replays | Event replay |
 
-Tinytown messages are ephemeral by default (in Redis memory). Enable Redis persistence for durability.
-
+Tinytown messages live in Redis, and Tinytown-managed local Redis uses the default RDB snapshot flow so message state is typically restored after a restart. If you want stronger write-by-write durability, enable AOF as well. With Redis Cloud, persistence and backup policy are handled by the managed service.

@@ -8,7 +8,7 @@ By default, Tinytown:
 1. Starts a local Redis server
 2. Uses a Unix socket at `./redis.sock`
 3. Disables TCP (port 0)
-4. Runs in-memory only
+4. Uses Redis's default local RDB snapshot behavior for restart recovery
 
 ## Unix Socket vs TCP
 
@@ -149,7 +149,11 @@ On startup Tinytown validates:
 
 ## Persistence
 
-By default, Redis runs in-memory. Data is lost on restart.
+For Tinytown-managed local Redis, the default behavior is Redis's normal RDB snapshot flow. That means local state is periodically exported to `dump.rdb` and reloaded when Redis starts again, so a restart does not begin from an empty store.
+
+If you need stronger durability guarantees than the default snapshot cadence, enable AOF in addition to RDB.
+
+If you are connecting to Redis Cloud or another managed Redis service, persistence is typically handled by the provider. Redis Cloud already supports managed RDB/AOF persistence and optional backup workflows such as S3 exports, so you usually do not need to configure Tinytown-specific restart recovery for that case.
 
 ### Enable RDB Snapshots
 
