@@ -743,7 +743,7 @@ impl Config {
 
         let userinfo = &authority[..at_idx];
         let redacted_userinfo = match userinfo.split_once(':') {
-            Some((username, _)) if username.is_empty() => ":****".to_string(),
+            Some(("", _)) => ":****".to_string(),
             Some((username, _)) => format!("{username}:****"),
             None => userinfo.to_string(),
         };
