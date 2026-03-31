@@ -32,7 +32,8 @@ const LOGS_DIR: &str = ".tt/logs";
 const TASKS_DIR: &str = ".tt/tasks";
 
 /// Minimum required Redis version
-const MIN_REDIS_VERSION: (u32, u32) = (8, 0);
+const MIN_MANAGED_REDIS_VERSION: (u32, u32) = (8, 0);
+const MIN_HEALTHCHECK_REDIS_VERSION: (u32, u32) = (7, 0);
 
 /// The Town orchestrates agents and message passing.
 #[derive(Clone)]
@@ -64,7 +65,7 @@ fn find_redis_server() -> std::path::PathBuf {
 
 impl Town {
     /// Check that Redis is installed and meets minimum version requirements.
-    fn check_redis_version() -> Result<()> {
+    fn check_managed_redis_version() -> Result<()> {
         use std::process::Command as StdCommand;
 
         let redis_bin = find_redis_server();
@@ -84,7 +85,7 @@ impl Town {
         // Parse version from output like: "Redis server v=8.0.0 sha=..."
         let version = Self::parse_redis_version(&version_str)?;
 
-        if version < MIN_REDIS_VERSION {
+        if version < MIN_MANAGED_REDIS_VERSION {
             return Err(Error::RedisVersionTooOld(format!(
                 "{}.{}",
                 version.0, version.1
@@ -133,7 +134,9 @@ impl Town {
         let path = &config.root;
 
         // Check Redis version first
-        Self::check_redis_version()?;
+        if !config.is_remote_redis() {
+            Self::check_managed_redis_version()?;
+        }
 
         info!("Initializing town '{}' at {}", config.name, path.display());
 
@@ -165,7 +168,7 @@ impl Town {
         let config = Config::load(&path)?;
 
         if !config.is_remote_redis() {
-            Self::check_redis_version()?;
+            Self::check_managed_redis_version()?;
         }
 
         // Determine if Redis appears to be running
@@ -218,10 +221,7 @@ impl Town {
     async fn start_redis(config: &Config) -> Result<()> {
         // Skip starting local server for external/remote Redis
         if config.is_remote_redis() {
-            info!(
-                "Using external Redis at {}:{}",
-                config.redis.host, config.redis.port
-            );
+            info!("Using external Redis: {}", config.redis_url_redacted());
             return Ok(());
         }
 
@@ -361,7 +361,14 @@ impl Town {
         // Use redacted URL for logging to avoid exposing password
         debug!("Connecting to Redis: {}", config.redis_url_redacted());
 
-        let client = Client::open(url)?;
+        let client = Client::open(url).map_err(|err| {
+            Error::Config(format!(
+                "Invalid Redis configuration for {}: {}",
+                config.redis_url_redacted(),
+                err
+            ))
+        })?;
+        Self::run_redis_startup_health_check(&client, config).await?;
 
         // Short timeout - Redis should connect in milliseconds if healthy
         // Stale sockets can hang indefinitely, so fail fast and restart Redis
@@ -373,6 +380,60 @@ impl Town {
         .map_err(|_| Error::Timeout("Redis connection timed out".into()))??;
 
         Ok(Channel::new(conn, &config.name))
+    }
+
+    async fn run_redis_startup_health_check(client: &Client, config: &Config) -> Result<()> {
+        let mut conn = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.get_multiplexed_async_connection(),
+        )
+        .await
+        .map_err(|_| {
+            Self::redis_connection_error(
+                config,
+                "Timed out while opening the configured Redis connection",
+            )
+        })?
+        .map_err(|err| Self::redis_connection_error(config, &err.to_string()))?;
+
+        let response: String = tokio::time::timeout(
+            Duration::from_secs(2),
+            redis::cmd("PING").query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| Self::redis_connection_error(config, "Timed out waiting for Redis PING"))?
+        .map_err(|err| Self::redis_connection_error(config, &err.to_string()))?;
+
+        if response != "PONG" {
+            return Err(Self::redis_connection_error(
+                config,
+                &format!("Unexpected PING response: {}", response),
+            ));
+        }
+
+        let info: String = tokio::time::timeout(
+            Duration::from_secs(2),
+            redis::cmd("INFO").arg("server").query_async(&mut conn),
+        )
+        .await
+        .map_err(|_| {
+            Self::redis_connection_error(config, "Timed out while fetching Redis server info")
+        })?
+        .map_err(|err| Self::redis_connection_error(config, &err.to_string()))?;
+
+        let version = Self::parse_info_redis_version(&info)?;
+        if version < MIN_HEALTHCHECK_REDIS_VERSION {
+            return Err(Error::Config(format!(
+                "Configured Redis at {} is version {}.{}. Tinytown requires Redis {}.{}+ for connectivity.",
+                config.redis_url_redacted(),
+                version.0,
+                version.1,
+                MIN_HEALTHCHECK_REDIS_VERSION.0,
+                MIN_HEALTHCHECK_REDIS_VERSION.1
+            )));
+        }
+
+        Ok(())
     }
 
     async fn wait_for_redis_ready(config: &Config) -> Result<()> {
@@ -420,6 +481,32 @@ impl Town {
                 response
             )))
         }
+    }
+
+    fn parse_info_redis_version(info: &str) -> Result<(u32, u32)> {
+        let version = info
+            .lines()
+            .find_map(|line| line.strip_prefix("redis_version:"))
+            .ok_or_else(|| {
+                Error::Config("Redis INFO response did not include redis_version".into())
+            })?;
+
+        Self::parse_redis_version(&format!("Redis server v={version}"))
+    }
+
+    fn redis_connection_error(config: &Config, detail: &str) -> Error {
+        let detail = detail.trim();
+        let uppercase = detail.to_ascii_uppercase();
+        let prefix = if uppercase.contains("WRONGPASS") || uppercase.contains("NOAUTH") {
+            "Redis authentication failed"
+        } else {
+            "Failed to connect to configured Redis"
+        };
+
+        Error::Config(format!(
+            "{prefix} at {}: {detail}",
+            config.redis_url_redacted()
+        ))
     }
 
     /// Spawn a new worker agent.
