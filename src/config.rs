@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use url::Url;
 
 use crate::agent::AgentCli;
 use crate::error::{Error, Result};
@@ -326,6 +327,10 @@ fn default_max_agents() -> usize {
 /// Redis connection configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfig {
+    /// Explicit Redis connection URL (e.g. redis:// or rediss://)
+    #[serde(default)]
+    pub url: Option<String>,
+
     /// Use Unix socket (faster) vs TCP
     #[serde(default = "default_true")]
     pub use_socket: bool,
@@ -403,6 +408,7 @@ fn default_bind() -> String {
 impl Default for RedisConfig {
     fn default() -> Self {
         Self {
+            url: None,
             use_socket: true,
             socket_path: DEFAULT_SOCKET_NAME.to_string(),
             host: "127.0.0.1".to_string(),
@@ -504,6 +510,7 @@ impl Config {
         } else if global.redis.use_central {
             (
                 RedisConfig {
+                    url: None,
                     use_socket: false,
                     socket_path: DEFAULT_SOCKET_NAME.to_string(),
                     host: global.redis.host.clone(),
@@ -599,7 +606,9 @@ impl Config {
     /// Do NOT log the full URL. Use `redis_url_redacted()` for logging.
     #[must_use]
     pub fn redis_url(&self) -> String {
-        if self.redis.use_socket {
+        if let Some(url) = self.explicit_redis_url() {
+            url
+        } else if self.redis.use_socket {
             format!("unix://{}", self.socket_path().display())
         } else {
             // Use rediss:// scheme for TLS, redis:// for plain TCP
@@ -635,11 +644,27 @@ impl Config {
             .or_else(|| self.redis.password.clone())
     }
 
+    /// Get an explicit Redis URL override from the environment or config.
+    #[must_use]
+    pub fn explicit_redis_url(&self) -> Option<String> {
+        std::env::var("REDIS_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                self.redis
+                    .url
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+            })
+    }
+
     /// Get a redacted version of the Redis URL safe for logging.
     /// Masks the password with **** if one is configured.
     #[must_use]
     pub fn redis_url_redacted(&self) -> String {
-        if self.redis.use_socket {
+        if let Some(url) = self.explicit_redis_url() {
+            Self::redact_redis_url(&url)
+        } else if self.redis.use_socket {
             format!("unix://{}", self.socket_path().display())
         } else {
             let scheme = if self.redis.tls_enabled {
@@ -660,13 +685,18 @@ impl Config {
         }
     }
 
-    /// Check if Redis host is remote (not localhost/127.0.0.1)
+    /// Check if Tinytown should treat Redis as externally managed.
+    ///
+    /// Any explicit URL override is treated as external, even if it points to
+    /// localhost, because Tinytown should connect to it directly rather than
+    /// trying to start its own redis-server.
     #[must_use]
     pub fn is_remote_redis(&self) -> bool {
-        !self.redis.use_socket
-            && self.redis.host != "127.0.0.1"
-            && self.redis.host != "localhost"
-            && !self.redis.host.starts_with("127.")
+        if self.explicit_redis_url().is_some() {
+            return true;
+        }
+
+        !self.redis.use_socket && !Self::is_loopback_host(&self.redis.host)
     }
 
     /// Check if using central Redis (TCP on localhost with global config port).
@@ -675,5 +705,52 @@ impl Config {
     #[must_use]
     pub fn is_central_redis(&self) -> bool {
         self.use_central_redis
+    }
+
+    fn is_loopback_host(host: &str) -> bool {
+        host == "localhost" || host == "::1" || host.starts_with("127.")
+    }
+
+    fn redact_redis_url(url: &str) -> String {
+        let Ok(mut parsed) = Url::parse(url) else {
+            return Self::redact_redis_url_fallback(url);
+        };
+
+        if parsed.password().is_some() {
+            let _ = parsed.set_password(Some("****"));
+        }
+
+        parsed.to_string()
+    }
+
+    fn redact_redis_url_fallback(url: &str) -> String {
+        let Some(scheme_idx) = url.find("://") else {
+            return url.to_string();
+        };
+
+        let authority_start = scheme_idx + 3;
+        let authority_end = url[authority_start..]
+            .find(['/', '?', '#'])
+            .map_or(url.len(), |idx| authority_start + idx);
+        let authority = &url[authority_start..authority_end];
+
+        let Some(at_idx) = authority.rfind('@') else {
+            return url.to_string();
+        };
+
+        let userinfo = &authority[..at_idx];
+        let redacted_userinfo = match userinfo.split_once(':') {
+            Some(("", _)) => ":****".to_string(),
+            Some((username, _)) => format!("{username}:****"),
+            None => userinfo.to_string(),
+        };
+
+        format!(
+            "{}{}{}{}",
+            &url[..authority_start],
+            redacted_userinfo,
+            &authority[at_idx..],
+            &url[authority_end..]
+        )
     }
 }

@@ -8,7 +8,7 @@ By default, Tinytown:
 1. Starts a local Redis server
 2. Uses a Unix socket at `./redis.sock`
 3. Disables TCP (port 0)
-4. Runs in-memory only
+4. Uses Redis's default local RDB snapshot behavior for restart recovery
 
 ## Unix Socket vs TCP
 
@@ -47,6 +47,27 @@ bind = "127.0.0.1"
 - Docker containers
 - Networked deployments
 
+### Explicit Redis URLs
+
+Tinytown now supports first-class explicit Redis URLs in config and via `REDIS_URL`.
+
+```toml
+[redis]
+url = "redis://default:secret@redis.example.com:6379/0"
+```
+
+If `REDIS_URL` is set, it overrides `tinytown.toml` completely:
+
+```bash
+export REDIS_URL='rediss://default:secret@my-db.redis-cloud.com:10000/0'
+```
+
+When an explicit URL is configured:
+- Tinytown connects to that Redis endpoint directly
+- Tinytown does not start a local `redis-server`
+- `redis://` and `rediss://` URLs are both supported
+- Username/password auth in Redis Cloud URLs is passed through unchanged
+
 ## Security
 
 ### Password Authentication
@@ -84,6 +105,13 @@ When TLS is enabled:
 - The non-TLS port is disabled
 - Certificates are passed to Redis server on startup
 
+For managed services such as Redis Cloud, prefer a direct `rediss://` URL:
+
+```toml
+[redis]
+url = "rediss://default:secret@my-db.redis-cloud.com:10000/0"
+```
+
 ### Security Recommendations
 
 1. **Use Unix sockets for local development** - Most secure, no network exposure
@@ -106,9 +134,26 @@ password = "your-password"
 
 Tinytown will connect without starting a new server (external hosts are auto-detected).
 
+You can also use an explicit URL, which is the recommended option for Redis Cloud and other managed services:
+
+```toml
+[redis]
+url = "rediss://default:secret@my-db.redis-cloud.com:10000/0"
+```
+
+On startup Tinytown validates:
+- connection establishment
+- authentication
+- `PING`
+- Redis version (`7.0+` required for external connectivity)
+
 ## Persistence
 
-By default, Redis runs in-memory. Data is lost on restart.
+For Tinytown-managed local Redis, the default behavior is Redis's normal RDB snapshot flow. That means local state is periodically exported to `dump.rdb` and reloaded when Redis starts again, so a restart does not begin from an empty store.
+
+If you need stronger durability guarantees than the default snapshot cadence, enable AOF in addition to RDB.
+
+If you are connecting to Redis Cloud or another managed Redis service, persistence is typically handled by the provider. Redis Cloud already supports managed RDB/AOF persistence and optional backup workflows such as S3 exports, so you usually do not need to configure Tinytown-specific restart recovery for that case.
 
 ### Enable RDB Snapshots
 
@@ -153,6 +198,21 @@ redis-cli CONFIG SET maxmemory-policy allkeys-lru
 redis-cli INFO memory
 ```
 
+## Latency-Sensitive Operations
+
+Remote Redis works well, but Tinytown was originally optimized for local Unix-socket Redis. Over WAN or managed-service links, these operations are most sensitive to latency:
+
+- agent inbox polling and message delivery
+- task assignment, claim, and completion updates
+- backlog inspection and status commands
+- mission scheduling and dispatcher loops
+
+Practical guidance:
+- Prefer Redis in the same region or VPC as Tinytown agents
+- Prefer `rediss://` for cloud services instead of tunneling plain TCP
+- Expect `tt status`, `tt inbox`, and busy multi-agent loops to feel slower over high-latency links
+- Use local Unix socket Redis for the lowest-latency development workflow
+
 ## Key Patterns
 
 Tinytown uses town-isolated key patterns:
@@ -176,6 +236,9 @@ redis-cli -s ./redis.sock
 
 # TCP
 redis-cli -h 127.0.0.1 -p 6379
+
+# Explicit URL
+redis-cli -u "$REDIS_URL"
 ```
 
 ### Useful Commands
@@ -250,4 +313,3 @@ password = "your-docker-redis-password"
 - Increase `tcp-backlog`
 - Tune `timeout` and `tcp-keepalive`
 - Use pipelining in code
-

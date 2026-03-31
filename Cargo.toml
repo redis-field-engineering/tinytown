@@ -53,6 +53,7 @@ tower-mcp = { version = "0.8", features = ["http", "testing"] }
 schemars = "1.2"
 regex = "1.12.3"
 async-trait = "0.1.89"
+url = "2.5"
 
 [dev-dependencies]
 tokio-test = "0.4"

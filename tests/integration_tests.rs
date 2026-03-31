@@ -66,6 +66,13 @@ fn unique_town_name(prefix: &str) -> String {
     format!("{prefix}-{}", Uuid::new_v4())
 }
 
+fn reserve_unused_port() -> Result<u16, Box<dyn std::error::Error>> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let port = listener.local_addr()?.port();
+    drop(listener);
+    Ok(port)
+}
+
 // ============================================================================
 // TOWN INITIALIZATION AND CONFIGURATION TESTS
 // ============================================================================
@@ -1713,6 +1720,7 @@ async fn test_redis_url_unix_socket() -> Result<(), Box<dyn std::error::Error>> 
 
     // Explicitly set Unix socket mode (may not be default if global config uses central Redis)
     config.redis = RedisConfig {
+        url: None,
         use_socket: true,
         socket_path: "redis.sock".to_string(),
         host: "127.0.0.1".to_string(),
@@ -1902,6 +1910,11 @@ async fn test_redis_config_defaults() -> Result<(), Box<dyn std::error::Error>> 
 
     let config = RedisConfig::default();
 
+    assert!(
+        config.url.is_none(),
+        "Explicit URL should be unset by default"
+    );
+
     // Unix socket is default (under .tt/)
     assert!(config.use_socket, "Default should use Unix socket");
     assert_eq!(config.socket_path, ".tt/redis.sock");
@@ -2081,6 +2094,199 @@ async fn test_redis_url_redacted_no_password() -> Result<(), Box<dyn std::error:
     let redacted_url = config.redis_url_redacted();
     assert_eq!(real_url, redacted_url, "URLs should match when no password");
     assert_eq!(real_url, "redis://localhost:6379");
+
+    Ok(())
+}
+
+/// Test that an explicit Redis URL from config takes precedence over host/port fields.
+#[tokio::test]
+async fn test_redis_url_config_override() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+    config.redis.use_socket = false;
+    config.redis.host = "should-not-be-used".to_string();
+    config.redis.port = 6399;
+    config.redis.url = Some("redis://override.example.com:6381/2".to_string());
+
+    assert_eq!(config.redis_url(), "redis://override.example.com:6381/2");
+    assert!(config.is_remote_redis());
+
+    Ok(())
+}
+
+/// Test that explicit Redis URLs redact passwords while preserving usernames.
+#[tokio::test]
+async fn test_redis_url_redacted_masks_explicit_url_password()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+    config.redis.url = Some("rediss://default:cloud-secret@redis.example.com:6380/0".to_string());
+
+    assert_eq!(
+        config.redis_url_redacted(),
+        "rediss://default:****@redis.example.com:6380/0"
+    );
+    assert!(!config.redis_url_redacted().contains("cloud-secret"));
+
+    Ok(())
+}
+
+/// Test that explicit Redis URLs preserve already-encoded usernames when masking passwords.
+#[tokio::test]
+async fn test_redis_url_redacted_preserves_encoded_username()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+    config.redis.url =
+        Some("rediss://user%40name:cloud-secret@redis.example.com:6380/0".to_string());
+
+    assert_eq!(
+        config.redis_url_redacted(),
+        "rediss://user%40name:****@redis.example.com:6380/0"
+    );
+    assert!(!config.redis_url_redacted().contains("%2540"));
+
+    Ok(())
+}
+
+/// Test that malformed explicit Redis URLs still redact credentials in logs.
+#[tokio::test]
+async fn test_redis_url_redacted_masks_malformed_explicit_url_password()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+    config.redis.url = Some("redis://default:cloud-secret@".to_string());
+
+    assert_eq!(config.redis_url_redacted(), "redis://default:****@");
+    assert!(!config.redis_url_redacted().contains("cloud-secret"));
+
+    Ok(())
+}
+
+/// Test that REDIS_URL env var overrides config and marks Redis as external.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_redis_url_env_override() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    unsafe {
+        std::env::remove_var("REDIS_URL");
+    }
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+    config.redis.url = Some("redis://config.example.com:6379".to_string());
+
+    unsafe {
+        std::env::set_var("REDIS_URL", "redis://env.example.com:6380/5");
+    }
+
+    assert_eq!(config.redis_url(), "redis://env.example.com:6380/5");
+    assert_eq!(
+        config.redis_url_redacted(),
+        "redis://env.example.com:6380/5"
+    );
+    assert!(config.is_remote_redis());
+
+    unsafe {
+        std::env::remove_var("REDIS_URL");
+    }
+
+    Ok(())
+}
+
+/// Test that init_with_config skips local redis startup when an explicit URL is configured.
+#[tokio::test]
+async fn test_town_init_with_explicit_redis_url_skips_local_startup()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let source_dir = TempDir::new()?;
+    let source_town = Town::init(source_dir.path(), unique_town_name("redis-source")).await?;
+    let source_url = source_town.config().redis_url();
+
+    let target_dir = TempDir::new()?;
+    let mut config = Config::new(unique_town_name("redis-target"), target_dir.path());
+    config.redis.url = Some(source_url);
+    config.redis.host = "invalid-host".to_string();
+    config.redis.port = 1;
+    config.redis.use_socket = false;
+
+    let target_town = Town::init_with_config(config).await?;
+    assert!(target_town.config().is_remote_redis());
+    assert!(!target_dir.path().join(".tt/redis.pid").exists());
+
+    Ok(())
+}
+
+/// Test that REDIS_URL env override skips local startup and is used for connection.
+#[tokio::test]
+#[serial_test::serial]
+async fn test_town_init_with_redis_url_env_override_skips_local_startup()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    unsafe {
+        std::env::remove_var("REDIS_URL");
+    }
+
+    let source_dir = TempDir::new()?;
+    let source_town = Town::init(source_dir.path(), unique_town_name("redis-env-source")).await?;
+
+    unsafe {
+        std::env::set_var("REDIS_URL", source_town.config().redis_url());
+    }
+
+    let target_dir = TempDir::new()?;
+    let mut config = Config::new(unique_town_name("redis-env-target"), target_dir.path());
+    config.redis.host = "invalid-host".to_string();
+    config.redis.port = 1;
+    config.redis.use_socket = false;
+
+    let target_town = Town::init_with_config(config).await?;
+    assert!(target_town.config().is_remote_redis());
+    assert!(!target_dir.path().join(".tt/redis.pid").exists());
+
+    unsafe {
+        std::env::remove_var("REDIS_URL");
+    }
+
+    Ok(())
+}
+
+/// Test that unreachable explicit Redis URLs fail with a clear error.
+#[tokio::test]
+async fn test_town_init_with_unreachable_explicit_redis_url_returns_clear_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::{Config, Error};
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new(unique_town_name("redis-fail"), temp_dir.path());
+    let unused_port = reserve_unused_port()?;
+    config.redis.url = Some(format!("redis://127.0.0.1:{unused_port}"));
+
+    match Town::init_with_config(config).await {
+        Err(Error::Config(message)) => {
+            assert!(
+                message.contains("Failed to connect to configured Redis"),
+                "unexpected message: {message}"
+            );
+            assert!(
+                message.contains(&format!("redis://127.0.0.1:{unused_port}")),
+                "unexpected message: {message}"
+            );
+        }
+        Ok(_) => panic!("expected config error, got successful town init"),
+        Err(other) => panic!("expected config error, got {other}"),
+    }
 
     Ok(())
 }
