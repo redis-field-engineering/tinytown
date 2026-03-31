@@ -717,10 +717,7 @@ impl Config {
         };
 
         if parsed.password().is_some() {
-            let username = parsed.username().to_string();
-            if parsed.set_password(Some("****")).is_ok() {
-                let _ = parsed.set_username(&username);
-            }
+            let _ = parsed.set_password(Some("****"));
         }
 
         parsed.to_string()

@@ -2135,6 +2135,26 @@ async fn test_redis_url_redacted_masks_explicit_url_password()
     Ok(())
 }
 
+/// Test that explicit Redis URLs preserve already-encoded usernames when masking passwords.
+#[tokio::test]
+async fn test_redis_url_redacted_preserves_encoded_username()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+    config.redis.url =
+        Some("rediss://user%40name:cloud-secret@redis.example.com:6380/0".to_string());
+
+    assert_eq!(
+        config.redis_url_redacted(),
+        "rediss://user%40name:****@redis.example.com:6380/0"
+    );
+    assert!(!config.redis_url_redacted().contains("%2540"));
+
+    Ok(())
+}
+
 /// Test that malformed explicit Redis URLs still redact credentials in logs.
 #[tokio::test]
 async fn test_redis_url_redacted_masks_malformed_explicit_url_password()
