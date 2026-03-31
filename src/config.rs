@@ -713,7 +713,7 @@ impl Config {
 
     fn redact_redis_url(url: &str) -> String {
         let Ok(mut parsed) = Url::parse(url) else {
-            return url.to_string();
+            return Self::redact_redis_url_fallback(url);
         };
 
         if parsed.password().is_some() {
@@ -724,5 +724,36 @@ impl Config {
         }
 
         parsed.to_string()
+    }
+
+    fn redact_redis_url_fallback(url: &str) -> String {
+        let Some(scheme_idx) = url.find("://") else {
+            return url.to_string();
+        };
+
+        let authority_start = scheme_idx + 3;
+        let authority_end = url[authority_start..]
+            .find(['/', '?', '#'])
+            .map_or(url.len(), |idx| authority_start + idx);
+        let authority = &url[authority_start..authority_end];
+
+        let Some(at_idx) = authority.rfind('@') else {
+            return url.to_string();
+        };
+
+        let userinfo = &authority[..at_idx];
+        let redacted_userinfo = match userinfo.split_once(':') {
+            Some((username, _)) if username.is_empty() => ":****".to_string(),
+            Some((username, _)) => format!("{username}:****"),
+            None => userinfo.to_string(),
+        };
+
+        format!(
+            "{}{}{}{}",
+            &url[..authority_start],
+            redacted_userinfo,
+            &authority[at_idx..],
+            &url[authority_end..]
+        )
     }
 }

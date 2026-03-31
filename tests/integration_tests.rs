@@ -2135,6 +2135,22 @@ async fn test_redis_url_redacted_masks_explicit_url_password()
     Ok(())
 }
 
+/// Test that malformed explicit Redis URLs still redact credentials in logs.
+#[tokio::test]
+async fn test_redis_url_redacted_masks_malformed_explicit_url_password()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new("test-town", temp_dir.path());
+    config.redis.url = Some("redis://default:cloud-secret@".to_string());
+
+    assert_eq!(config.redis_url_redacted(), "redis://default:****@");
+    assert!(!config.redis_url_redacted().contains("cloud-secret"));
+
+    Ok(())
+}
+
 /// Test that REDIS_URL env var overrides config and marks Redis as external.
 #[tokio::test]
 #[serial_test::serial]
