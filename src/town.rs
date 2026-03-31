@@ -490,8 +490,25 @@ impl Town {
             .ok_or_else(|| {
                 Error::Config("Redis INFO response did not include redis_version".into())
             })?;
+        let parts: Vec<&str> = version.split('.').collect();
+        if parts.len() < 2 {
+            return Err(Error::Config(format!(
+                "Redis INFO reported an invalid redis_version value: {version}"
+            )));
+        }
 
-        Self::parse_redis_version(&format!("Redis server v={version}"))
+        let major = parts[0].parse::<u32>().map_err(|_| {
+            Error::Config(format!(
+                "Redis INFO reported an invalid redis_version value: {version}"
+            ))
+        })?;
+        let minor = parts[1].parse::<u32>().map_err(|_| {
+            Error::Config(format!(
+                "Redis INFO reported an invalid redis_version value: {version}"
+            ))
+        })?;
+
+        Ok((major, minor))
     }
 
     fn redis_connection_error(config: &Config, detail: &str) -> Error {
@@ -650,6 +667,28 @@ impl AgentHandle {
                 }
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Town;
+    use crate::Error;
+
+    #[test]
+    fn parse_info_redis_version_rejects_invalid_values_with_config_error() {
+        let err = Town::parse_info_redis_version("redis_version:not-a-version")
+            .expect_err("invalid INFO version should fail");
+
+        match err {
+            Error::Config(message) => {
+                assert!(message.contains("invalid redis_version value"));
+                assert!(message.contains("not-a-version"));
+                assert!(!message.contains("requires Redis 8.0+"));
+                assert!(!message.contains("tt bootstrap"));
+            }
+            other => panic!("expected config error, got {other}"),
         }
     }
 }
