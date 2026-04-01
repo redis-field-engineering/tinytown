@@ -10,6 +10,7 @@
 
 # Tinytown runtime artifacts
 /.tt/
+/tinytown.toml
 /agents/
 /logs/
 /tasks/
