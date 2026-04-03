@@ -24,12 +24,8 @@ fi
 cleanup() {
   local exit_code=$?
 
-  if [[ -n "${dispatcher_pid:-}" ]]; then
-    kill "${dispatcher_pid}" 2>/dev/null || true
-  fi
-
-  if [[ -n "${mcp_pid:-}" ]]; then
-    kill "${mcp_pid}" 2>/dev/null || true
+  if [[ ${#pids[@]} -gt 0 ]]; then
+    kill "${pids[@]}" 2>/dev/null || true
   fi
 
   wait 2>/dev/null || true
