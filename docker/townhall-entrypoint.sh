@@ -38,12 +38,20 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
+pids=()
+
 tt --town "${TOWN_DIR}" mission dispatch &
 dispatcher_pid=$!
+pids+=("${dispatcher_pid}")
 
 if [[ "${ENABLE_MCP_HTTP}" != "0" ]]; then
   townhall --town "${TOWN_DIR}" mcp-http --bind "${MCP_BIND}" --port "${MCP_PORT}" &
   mcp_pid=$!
+  pids+=("${mcp_pid}")
 fi
 
-exec townhall --town "${TOWN_DIR}" rest --bind "${REST_BIND}" --port "${REST_PORT}"
+townhall --town "${TOWN_DIR}" rest --bind "${REST_BIND}" --port "${REST_PORT}" &
+rest_pid=$!
+pids+=("${rest_pid}")
+
+wait -n "${pids[@]}"
