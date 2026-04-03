@@ -130,10 +130,13 @@ docker compose up --build redis townhall
 OPENAI_API_KEY=... docker compose --profile worker up --build agent-worker
 ```
 
+When the townhall container first exposes REST on a non-loopback bind, it auto-generates a development API key, switches the town config to `api_key` auth, and stores the raw key in `${TINYTOWN_TOWN_DIR}/.townhall-api-key` (the default compose setup writes that file into your checked-out workspace).
+
 Environment knobs used by the images:
 - `REDIS_URL` points Tinytown at external or managed Redis
 - `TINYTOWN_TOWN_DIR` chooses the workspace/town path inside the container
 - `TINYTOWN_TOWN_NAME` sets the initial town name when the container bootstraps a fresh workspace
+- `TINYTOWN_TOWNHALL_API_KEY_PATH` overrides where the auto-generated REST API key is written
 - `TINYTOWN_AGENT_*` variables configure the worker container (`NAME`, `ROLE`, `CLI`, `MAX_ROUNDS`)
 
 Release builds now publish both images to GHCR:

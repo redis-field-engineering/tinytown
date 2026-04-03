@@ -305,6 +305,8 @@ docker compose up --build redis townhall
 docker compose --profile worker up --build agent-worker
 ```
 
+When `townhall` first starts with a non-loopback REST bind, the container bootstraps API-key auth automatically and writes the raw development key to `${TINYTOWN_TOWN_DIR}/.townhall-api-key` so the exposed control plane can start safely.
+
 ## Performance Tuning
 
 ### For Low Latency
