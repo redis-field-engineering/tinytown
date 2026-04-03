@@ -1704,6 +1704,7 @@ async fn main() -> Result<()> {
                         .unwrap_or_else(|_| "claude".to_string())
                 }
             });
+            let cli_name = town.config().resolve_cli_name(&cli_name);
             let agent = town.spawn_agent(&name, &cli_name).await?;
             let agent_id = agent.id();
 
@@ -2894,15 +2895,12 @@ async fn main() -> Result<()> {
 
             // Get CLI command
             let agent_state = channel.get_agent_state(agent_id).await?;
-            let cli_name = agent_state
+            let cli_ref = agent_state
                 .as_ref()
                 .map(|a| a.cli.clone())
                 .unwrap_or_else(|| config.default_cli.clone());
-            let cli_cmd = config
-                .agent_clis
-                .get(&cli_name)
-                .map(|c| c.command.clone())
-                .unwrap_or_else(|| cli_name.clone());
+            let cli_name = config.resolve_cli_name(&cli_ref);
+            let cli_cmd = config.resolve_cli_command(&cli_ref);
 
             info!(
                 "🔄 Agent '{}' starting loop (max {} rounds)",

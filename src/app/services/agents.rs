@@ -64,6 +64,7 @@ impl AgentService {
         let cli_name = cli
             .map(|s| s.to_string())
             .unwrap_or_else(|| config.default_cli.clone());
+        let cli_name = config.resolve_cli_name(&cli_name);
 
         let agent = town.spawn_agent(name, &cli_name).await?;
 
@@ -91,6 +92,7 @@ impl AgentService {
         let cli_name = cli
             .map(|s| s.to_string())
             .unwrap_or_else(|| config.default_cli.clone());
+        let cli_name = config.resolve_cli_name(&cli_name);
 
         let handle = town.spawn_agent(name, &cli_name).await?;
 

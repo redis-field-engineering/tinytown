@@ -1031,8 +1031,17 @@ async fn test_default_cli_config() -> Result<(), Box<dyn std::error::Error>> {
     let config = town.config();
     let global = GlobalConfig::load().unwrap_or_default();
     assert!(!config.default_cli.is_empty());
-    assert_eq!(config.default_cli, global.default_cli); // Should match global config
-    assert_eq!(config.conductor_cli_name(), global.default_cli);
+    assert_eq!(
+        config.default_cli,
+        config.resolve_cli_name(&global.default_cli)
+    );
+    assert_eq!(
+        config.conductor_cli_name(),
+        global
+            .conductor_cli
+            .as_deref()
+            .unwrap_or(global.default_cli.as_str())
+    );
 
     // Agent CLIs should include built-in presets
     assert!(config.agent_clis.contains_key("claude"));

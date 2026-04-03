@@ -87,6 +87,49 @@ fn default_true() -> bool {
     true
 }
 
+pub(crate) fn normalize_builtin_cli_reference(value: &str) -> Option<&'static str> {
+    match value.trim() {
+        "claude --print --dangerously-skip-permissions" => Some("claude"),
+        "auggie --print" => Some("auggie"),
+        "codex --dangerously-bypass-approvals-and-sandbox" => Some("codex"),
+        "codex exec --dangerously-bypass-approvals-and-sandbox" => Some("codex"),
+        "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\"" => {
+            Some("codex-mini")
+        }
+        "aider --yes --no-auto-commits --message" => Some("aider"),
+        _ => None,
+    }
+}
+
+fn normalize_cli_reference(value: &mut String) -> bool {
+    let Some(normalized) = normalize_builtin_cli_reference(value) else {
+        return false;
+    };
+
+    if value == normalized {
+        return false;
+    }
+
+    *value = normalized.to_string();
+    true
+}
+
+fn normalize_optional_cli_reference(value: &mut Option<String>) -> bool {
+    let Some(current) = value.as_deref() else {
+        return false;
+    };
+    let Some(normalized) = normalize_builtin_cli_reference(current) else {
+        return false;
+    };
+
+    if current == normalized {
+        return false;
+    }
+
+    *value = Some(normalized.to_string());
+    true
+}
+
 impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
@@ -126,8 +169,9 @@ impl GlobalConfig {
         }
 
         let content = std::fs::read_to_string(&config_path)?;
-        let config: GlobalConfig = toml::from_str(&content)
+        let mut config: GlobalConfig = toml::from_str(&content)
             .map_err(|e| Error::Io(std::io::Error::other(format!("Invalid config.toml: {}", e))))?;
+        config.normalize_cli_references();
 
         Ok(config)
     }
@@ -194,13 +238,25 @@ impl GlobalConfig {
             Self::default()
         };
 
+        let mut changed = config.normalize_cli_references();
+
         // Ensure password is set
         if config.ensure_redis_password() {
             // Password was generated, save config
+            changed = true;
+        }
+
+        if changed {
             config.save()?;
         }
 
         Ok(config)
+    }
+
+    fn normalize_cli_references(&mut self) -> bool {
+        let mut changed = normalize_cli_reference(&mut self.default_cli);
+        changed |= normalize_optional_cli_reference(&mut self.conductor_cli);
+        changed
     }
 
     /// Set a config value by key
@@ -317,5 +373,46 @@ impl GlobalConfig {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{GlobalConfig, GlobalRedisConfig, normalize_builtin_cli_reference};
+
+    #[test]
+    fn normalizes_legacy_builtin_cli_commands() {
+        assert_eq!(
+            normalize_builtin_cli_reference("codex --dangerously-bypass-approvals-and-sandbox"),
+            Some("codex")
+        );
+        assert_eq!(
+            normalize_builtin_cli_reference(
+                "codex exec --dangerously-bypass-approvals-and-sandbox"
+            ),
+            Some("codex")
+        );
+        assert_eq!(
+            normalize_builtin_cli_reference(
+                "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\""
+            ),
+            Some("codex-mini")
+        );
+    }
+
+    #[test]
+    fn global_config_normalizes_legacy_cli_references() {
+        let mut config = GlobalConfig {
+            default_cli: "codex --dangerously-bypass-approvals-and-sandbox".to_string(),
+            conductor_cli: Some(
+                "codex exec --dangerously-bypass-approvals-and-sandbox".to_string(),
+            ),
+            agent_clis: std::collections::HashMap::new(),
+            redis: GlobalRedisConfig::default(),
+        };
+
+        assert!(config.normalize_cli_references());
+        assert_eq!(config.default_cli, "codex");
+        assert_eq!(config.conductor_cli.as_deref(), Some("codex"));
     }
 }
