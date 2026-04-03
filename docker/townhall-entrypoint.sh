@@ -53,7 +53,7 @@ configure_remote_rest_auth() {
   fi
 
   auth_mode="$(current_auth_mode)"
-  if [[ "${auth_mode}" != "none" ]]; then
+  if [[ -n "${auth_mode}" && "${auth_mode}" != "none" ]]; then
     return
   fi
 
@@ -69,9 +69,21 @@ configure_remote_rest_auth() {
 
   tmp_config="$(mktemp)"
   awk -v hash="${api_key_hash}" '
-    BEGIN { in_auth=0; inserted=0 }
-    /^\[townhall\.auth\]/ { in_auth=1; print; next }
-    /^\[/ && in_auth { in_auth=0 }
+    BEGIN { in_auth=0; inserted=0; saw_auth=0 }
+    /^\[townhall\.auth\]/ {
+      in_auth=1
+      saw_auth=1
+      print
+      next
+    }
+    /^\[/ && in_auth {
+      if (!inserted) {
+        print "mode = \"api_key\""
+        print "api_key_hash = \"" hash "\""
+        inserted=1
+      }
+      in_auth=0
+    }
     in_auth && /^mode = / {
       print "mode = \"api_key\""
       print "api_key_hash = \"" hash "\""
@@ -80,6 +92,17 @@ configure_remote_rest_auth() {
     }
     in_auth && /^api_key_hash = / { next }
     { print }
+    END {
+      if (in_auth && !inserted) {
+        print "mode = \"api_key\""
+        print "api_key_hash = \"" hash "\""
+      } else if (!saw_auth) {
+        print ""
+        print "[townhall.auth]"
+        print "mode = \"api_key\""
+        print "api_key_hash = \"" hash "\""
+      }
+    }
   ' "${TOWN_DIR}/tinytown.toml" > "${tmp_config}"
   mv "${tmp_config}" "${TOWN_DIR}/tinytown.toml"
 

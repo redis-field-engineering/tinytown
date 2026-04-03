@@ -29,7 +29,6 @@ WORKDIR /workspace
 
 COPY --from=builder /src/target/release/tt /usr/local/bin/tt
 COPY docker/agent-worker-entrypoint.sh /usr/local/bin/agent-worker-entrypoint
-COPY . /workspace
 
 RUN chmod +x /usr/local/bin/agent-worker-entrypoint
 
