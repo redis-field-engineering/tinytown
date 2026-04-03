@@ -1,0 +1,14 @@
+target/
+.git/
+.github/
+.tt/
+docs/
+scratch-issue37-clone/
+worktrees/
+dump.rdb
+*.rdb
+*.aof
+*.sock
+*.pid
+tinytown.toml
+.env

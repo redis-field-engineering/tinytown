@@ -113,3 +113,16 @@ jobs:
 
       - name: Test binary
         run: ./target/release/tt --help
+
+  docker-images:
+    name: Docker Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build townhall image
+        run: docker build --file Dockerfile.townhall --tag tinytown-townhall:test .
+
+      - name: Build agent worker image
+        run: docker build --file Dockerfile.agent-worker --tag tinytown-agent-worker:test .

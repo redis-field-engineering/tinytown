@@ -1,0 +1,26 @@
+FROM rust:1.90-bookworm AS builder
+
+WORKDIR /src
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+RUN cargo build --release --bin tt --bin townhall
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY --from=builder /src/target/release/tt /usr/local/bin/tt
+COPY --from=builder /src/target/release/townhall /usr/local/bin/townhall
+COPY docker/townhall-entrypoint.sh /usr/local/bin/townhall-entrypoint
+
+RUN chmod +x /usr/local/bin/townhall-entrypoint
+
+EXPOSE 8080 8081
+
+ENTRYPOINT ["tini", "--", "townhall-entrypoint"]
