@@ -18,7 +18,6 @@ WORKDIR /workspace
 COPY --from=builder /src/target/release/tt /usr/local/bin/tt
 COPY --from=builder /src/target/release/townhall /usr/local/bin/townhall
 COPY docker/townhall-entrypoint.sh /usr/local/bin/townhall-entrypoint
-COPY . /workspace
 
 RUN chmod +x /usr/local/bin/townhall-entrypoint
 

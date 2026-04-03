@@ -9,6 +9,8 @@ RUN cargo build --release --bin tt
 
 FROM debian:bookworm-slim AS runtime
 
+ARG CODEX_NPM_VERSION=0.118.0
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         bash \
@@ -19,7 +21,7 @@ RUN apt-get update \
         npm \
         openssh-client \
         tini \
-    && npm install -g @openai/codex \
+    && npm install -g "@openai/codex@${CODEX_NPM_VERSION}" \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 
