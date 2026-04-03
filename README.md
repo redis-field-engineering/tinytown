@@ -114,6 +114,32 @@ townhall mcp-http
 
 REST OpenAPI spec: `docs/openapi/townhall-v1.yaml`
 
+## 🐳 Docker Quickstart
+
+Tinytown now ships two container targets:
+- `Dockerfile.townhall` for the always-on control plane (`townhall rest`, `townhall mcp-http`, and the mission dispatcher)
+- `Dockerfile.agent-worker` for on-demand coding workers (`tt spawn --foreground` plus a coding CLI)
+
+The images assume Redis is external. For local development, `docker-compose.yml` wires both containers to a disposable Redis service and leaves the worker behind an opt-in profile so the default stack stays scale-to-zero.
+
+```bash
+# Start Redis + townhall control plane
+docker compose up --build redis townhall
+
+# In another terminal, start a worker when you actually want one
+OPENAI_API_KEY=... docker compose --profile worker up --build agent-worker
+```
+
+Environment knobs used by the images:
+- `REDIS_URL` points Tinytown at external or managed Redis
+- `TINYTOWN_TOWN_DIR` chooses the workspace/town path inside the container
+- `TINYTOWN_TOWN_NAME` sets the initial town name when the container bootstraps a fresh workspace
+- `TINYTOWN_AGENT_*` variables configure the worker container (`NAME`, `ROLE`, `CLI`, `MAX_ROUNDS`)
+
+Release builds now publish both images to GHCR:
+- `ghcr.io/redis-field-engineering/tinytown-townhall`
+- `ghcr.io/redis-field-engineering/tinytown-agent-worker`
+
 ## 🏗️ Architecture
 
 Tinytown is built on **7 core concepts**:

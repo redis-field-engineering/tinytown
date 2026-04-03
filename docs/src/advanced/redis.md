@@ -270,28 +270,39 @@ redis-cli -s ./redis.sock FLUSHALL
 ## Docker Deployment
 
 ```yaml
-# docker-compose.yml
-version: '3'
 services:
   redis:
     image: redis:8
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis-data:/data
-    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
 
-volumes:
-  redis-data:
+  townhall:
+    build:
+      context: .
+      dockerfile: Dockerfile.townhall
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+
+  agent-worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TINYTOWN_AGENT_CLI: codex
 ```
 
-Then configure Tinytown:
-```toml
-[redis]
-use_socket = false
-host = "localhost"
-port = 6379
-password = "your-docker-redis-password"
+The production images do not start Redis inside the container. They expect `REDIS_URL` to point at external Redis, which lets the same images work with Redis Cloud, managed Redis, or a local `docker compose` Redis service.
+
+For local development, start the worker only when you want one:
+
+```bash
+docker compose up --build redis townhall
+docker compose --profile worker up --build agent-worker
 ```
 
 ## Performance Tuning

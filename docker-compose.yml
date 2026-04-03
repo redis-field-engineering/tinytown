@@ -1,0 +1,55 @@
+services:
+  redis:
+    image: redis:8.0
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  townhall:
+    build:
+      context: .
+      dockerfile: Dockerfile.townhall
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TINYTOWN_TOWN_DIR: /workspace
+      TINYTOWN_TOWN_NAME: tinytown-docker
+      TINYTOWN_REST_BIND: 0.0.0.0
+      TINYTOWN_REST_PORT: 8080
+      TINYTOWN_MCP_BIND: 0.0.0.0
+      TINYTOWN_MCP_PORT: 8081
+    volumes:
+      - .:/workspace
+
+  agent-worker:
+    profiles: ["worker"]
+    build:
+      context: .
+      dockerfile: Dockerfile.agent-worker
+    depends_on:
+      redis:
+        condition: service_healthy
+      townhall:
+        condition: service_started
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      TINYTOWN_TOWN_DIR: /workspace
+      TINYTOWN_TOWN_NAME: tinytown-docker
+      TINYTOWN_AGENT_NAME: worker-compose
+      TINYTOWN_AGENT_ROLE: backend
+      TINYTOWN_AGENT_CLI: codex
+      TINYTOWN_AGENT_MAX_ROUNDS: 200
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    volumes:
+      - .:/workspace
