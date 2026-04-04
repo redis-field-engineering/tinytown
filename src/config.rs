@@ -553,10 +553,7 @@ impl Config {
         }
 
         let normalized_default_cli = normalize_cli_reference(&global.default_cli, &agent_clis);
-        let conductor_cli = global.conductor_cli.clone().or_else(|| {
-            (normalized_default_cli != global.default_cli.trim())
-                .then(|| global.default_cli.trim().to_string())
-        });
+        let conductor_cli = global.conductor_cli.clone();
 
         // Build Redis config from global settings
         // By default, use central TCP Redis (not per-town Unix sockets)
