@@ -13,7 +13,7 @@ use url::Url;
 
 use crate::agent::AgentCli;
 use crate::error::{Error, Result};
-use crate::global_config::GlobalConfig;
+use crate::global_config::{GlobalConfig, normalize_builtin_cli_reference};
 
 /// Default Redis socket path within a town (under .tt/).
 pub const DEFAULT_SOCKET_NAME: &str = ".tt/redis.sock";
@@ -324,6 +324,54 @@ fn default_max_agents() -> usize {
     10
 }
 
+fn inferred_cli_alias(cli: &str) -> Option<&'static str> {
+    let trimmed = cli.trim();
+    let first = trimmed.split_whitespace().next()?;
+
+    match first {
+        "claude" => Some("claude"),
+        "auggie" => Some("auggie"),
+        "aider" => Some("aider"),
+        "gemini" => Some("gemini"),
+        "cursor" => Some("cursor"),
+        "gh" if trimmed.starts_with("gh copilot") => Some("copilot"),
+        "codex" => {
+            if trimmed.contains("gpt-5.4-mini") {
+                Some("codex-mini")
+            } else {
+                Some("codex")
+            }
+        }
+        _ => None,
+    }
+}
+
+fn normalize_cli_reference(cli: &str, agent_clis: &HashMap<String, AgentCli>) -> String {
+    let trimmed = cli.trim();
+    if trimmed.is_empty() {
+        return default_cli();
+    }
+
+    if agent_clis.contains_key(trimmed) {
+        return trimmed.to_string();
+    }
+
+    if let Some((name, _)) = agent_clis
+        .iter()
+        .find(|(_, config)| config.command.trim() == trimmed)
+    {
+        return name.clone();
+    }
+
+    if let Some(alias) = inferred_cli_alias(trimmed)
+        && agent_clis.contains_key(alias)
+    {
+        return alias.to_string();
+    }
+
+    trimmed.to_string()
+}
+
 /// Redis connection configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedisConfig {
@@ -500,6 +548,12 @@ impl Config {
             AgentCli::new("copilot", "gh copilot"),
         );
         agent_clis.insert("cursor".to_string(), AgentCli::new("cursor", "cursor"));
+        for (name, command) in &global.agent_clis {
+            agent_clis.insert(name.clone(), AgentCli::new(name, command));
+        }
+
+        let normalized_default_cli = normalize_cli_reference(&global.default_cli, &agent_clis);
+        let conductor_cli = global.conductor_cli.clone();
 
         // Build Redis config from global settings
         // By default, use central TCP Redis (not per-town Unix sockets)
@@ -536,8 +590,8 @@ impl Config {
             root: root.into(),
             redis,
             agent_clis,
-            default_cli: global.default_cli.clone(),
-            conductor_cli: global.conductor_cli.clone(),
+            default_cli: normalized_default_cli,
+            conductor_cli,
             max_agents: 10,
             use_central_redis,
             use_streams: false,
@@ -562,6 +616,7 @@ impl Config {
             )))
         })?;
         config.root = root.to_path_buf();
+        config.normalize_cli_references();
 
         Ok(config)
     }
@@ -575,6 +630,22 @@ impl Config {
             .unwrap_or(&self.default_cli)
     }
 
+    /// Resolve a configured CLI reference to a stable CLI name when possible.
+    #[must_use]
+    pub fn resolve_cli_name(&self, cli: &str) -> String {
+        normalize_cli_reference(cli, &self.agent_clis)
+    }
+
+    /// Resolve a configured CLI reference to the command Tinytown should execute.
+    #[must_use]
+    pub fn resolve_cli_command(&self, cli: &str) -> String {
+        let resolved = self.resolve_cli_name(cli);
+        self.agent_clis
+            .get(&resolved)
+            .map(|cfg| cfg.command.clone())
+            .unwrap_or_else(|| cli.trim().to_string())
+    }
+
     /// Save configuration to the town directory.
     pub fn save(&self) -> Result<()> {
         let config_path = self.root.join(CONFIG_FILE);
@@ -586,6 +657,21 @@ impl Config {
         })?;
         std::fs::write(&config_path, content)?;
         Ok(())
+    }
+
+    fn normalize_cli_references(&mut self) {
+        if let Some(normalized) = normalize_builtin_cli_reference(&self.default_cli)
+            && self.default_cli != normalized
+        {
+            self.default_cli = normalized.to_string();
+        }
+
+        if let Some(current) = self.conductor_cli.as_deref()
+            && let Some(normalized) = normalize_builtin_cli_reference(current)
+            && current != normalized
+        {
+            self.conductor_cli = Some(normalized.to_string());
+        }
     }
 
     /// Get the Redis socket path.
@@ -752,5 +838,67 @@ impl Config {
             &authority[at_idx..],
             &url[authority_end..]
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn normalize_cli_reference_maps_interactive_codex_to_agent_preset() {
+        let mut agent_clis = HashMap::new();
+        agent_clis.insert(
+            "codex".to_string(),
+            AgentCli::new(
+                "codex",
+                "codex exec --dangerously-bypass-approvals-and-sandbox",
+            ),
+        );
+        agent_clis.insert(
+            "codex-mini".to_string(),
+            AgentCli::new(
+                "codex-mini",
+                "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\"",
+            ),
+        );
+
+        assert_eq!(
+            normalize_cli_reference(
+                "codex --dangerously-bypass-approvals-and-sandbox",
+                &agent_clis
+            ),
+            "codex"
+        );
+        assert_eq!(
+            normalize_cli_reference(
+                "codex --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini",
+                &agent_clis
+            ),
+            "codex-mini"
+        );
+    }
+
+    #[test]
+    fn load_normalizes_legacy_cli_references() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let temp_dir = TempDir::new()?;
+        let config_path = temp_dir.path().join("tinytown.toml");
+
+        std::fs::write(
+            &config_path,
+            r#"
+name = "legacy-cli-town"
+default_cli = "codex --dangerously-bypass-approvals-and-sandbox"
+conductor_cli = "codex exec --dangerously-bypass-approvals-and-sandbox -m gpt-5.4-mini -c model_reasoning_effort=\"medium\""
+"#,
+        )?;
+
+        let config = Config::load(temp_dir.path())?;
+        assert_eq!(config.default_cli, "codex");
+        assert_eq!(config.conductor_cli.as_deref(), Some("codex-mini"));
+
+        Ok(())
     }
 }
