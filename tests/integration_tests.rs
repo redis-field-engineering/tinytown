@@ -4431,6 +4431,120 @@ use_streams = true
     Ok(())
 }
 
+/// Test that agent idle timeout can be parsed from config TOML.
+#[tokio::test]
+async fn test_agent_idle_timeout_config_parse() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("tinytown.toml");
+
+    std::fs::write(
+        &config_path,
+        r#"
+name = "agent-timeout-test"
+
+[agent]
+idle_timeout_secs = 42
+"#,
+    )?;
+
+    let config = Config::load(temp_dir.path())?;
+    assert_eq!(config.agent.idle_timeout_secs, 42);
+
+    Ok(())
+}
+
+/// Test that the worker loop exits cleanly after the idle timeout elapses.
+#[tokio::test]
+async fn test_agent_loop_exits_cleanly_after_idle_timeout() -> Result<(), Box<dyn std::error::Error>>
+{
+    let town = create_test_town("agent-loop-idle-timeout").await?;
+    let town_path = town.config().root.clone();
+
+    let mut config = tinytown::Config::load(&town_path)?;
+    config.agent.idle_timeout_secs = 1;
+    config.save()?;
+
+    let handle = town.spawn_agent("idle-worker", "claude").await?;
+    let agent_id = handle.id();
+
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tt"))
+            .arg("--town")
+            .arg(&town_path)
+            .arg("agent-loop")
+            .arg("idle-worker")
+            .arg(agent_id.to_string())
+            .arg("100")
+            .status()
+    })
+    .await??;
+
+    assert!(status.success(), "agent-loop should exit cleanly");
+
+    let agent = town
+        .channel()
+        .get_agent_state(agent_id)
+        .await?
+        .expect("idle worker should still be registered");
+    assert_eq!(agent.state, AgentState::Stopped);
+
+    Ok(())
+}
+
+/// Test that a stale terminal current_task does not block worker idle timeout.
+#[tokio::test]
+async fn test_agent_loop_ignores_stale_terminal_current_task()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("agent-loop-stale-current-task").await?;
+    let town_path = town.config().root.clone();
+
+    let mut config = tinytown::Config::load(&town_path)?;
+    config.agent.idle_timeout_secs = 1;
+    config.save()?;
+
+    let handle = town.spawn_agent("idle-worker", "claude").await?;
+    let agent_id = handle.id();
+    let mut task = Task::new("Already finished task");
+    task.assign(agent_id);
+    task.complete("done");
+    town.channel().set_task(&task).await?;
+
+    let mut agent = town
+        .channel()
+        .get_agent_state(agent_id)
+        .await?
+        .expect("idle worker should exist");
+    agent.state = AgentState::Idle;
+    agent.current_task = Some(task.id);
+    town.channel().set_agent_state(&agent).await?;
+
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tt"))
+            .arg("--town")
+            .arg(&town_path)
+            .arg("agent-loop")
+            .arg("idle-worker")
+            .arg(agent_id.to_string())
+            .arg("100")
+            .status()
+    })
+    .await??;
+
+    assert!(status.success(), "agent-loop should exit cleanly");
+
+    let agent = town
+        .channel()
+        .get_agent_state(agent_id)
+        .await?
+        .expect("idle worker should still be registered");
+    assert_eq!(agent.state, AgentState::Stopped);
+    assert_eq!(agent.current_task, None);
+
+    Ok(())
+}
+
 /// Test that multiple consumers can read from the same docket stream.
 #[tokio::test]
 async fn test_docket_multiple_consumers() -> Result<(), Box<dyn std::error::Error>> {

@@ -124,6 +124,21 @@ pub struct HealthResponse {
     pub version: Option<String>,
 }
 
+/// Scaling signal response.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ScalingSignalResponse {
+    pub town: String,
+    pub timestamp: String,
+    pub queue_depth: usize,
+    pub pending_tasks: usize,
+    pub in_flight_tasks: usize,
+    pub active_agents: usize,
+    pub cold_agents: usize,
+    pub desired_agents: usize,
+    pub max_agents: usize,
+    pub scaling_recommendation: String,
+}
+
 /// Town status response
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct TownStatusResponse {
@@ -611,6 +626,179 @@ async fn test_metrics_endpoint_reports_town_metrics() -> Result<(), Box<dyn std:
         .assert_text_contains("tinytown_missions_active 1")
         .assert_text_contains("tinytown_redis_latency_seconds ")
         .assert_text_contains("tinytown_backlog_tasks 1");
+
+    Ok(())
+}
+
+/// Test that the scaling endpoint reports pending work and recommends scaling up.
+#[tokio::test]
+async fn test_scaling_endpoint_reports_scale_up_signal() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, BacklogService, TaskService, create_router};
+
+    let server = TownhallTestServer::new("townhall-scaling-up-test").await?;
+    server.spawn_test_agent("worker-1").await?;
+    BacklogService::add(server.channel(), "Backlog scaling task", None).await?;
+    TaskService::assign(&server.town, "worker-1", "Assigned scaling task").await?;
+
+    let state = Arc::new(AppState {
+        town: server.town.clone(),
+        auth_config: Arc::new(AuthConfig::default()),
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    let response = test_server.get("/api/scaling").await;
+    response.assert_status_ok();
+    let body: ScalingSignalResponse = response.json();
+
+    assert_eq!(body.queue_depth, 2);
+    assert_eq!(body.pending_tasks, 2);
+    assert_eq!(body.in_flight_tasks, 0);
+    assert_eq!(body.active_agents, 1);
+    assert_eq!(body.cold_agents, 0);
+    assert_eq!(body.desired_agents, 2);
+    assert_eq!(body.max_agents, 10);
+    assert_eq!(body.scaling_recommendation, "scale_up");
+
+    Ok(())
+}
+
+/// Test that the scaling endpoint recommends scale-to-zero for long-idle workers.
+#[tokio::test]
+async fn test_scaling_endpoint_reports_scale_to_zero_for_idle_workers()
+-> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, Config, create_router};
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new(unique_town_name("townhall-scale-to-zero"), temp_dir.path());
+    config.agent.idle_timeout_secs = 1;
+    let town = tinytown::Town::init_with_config(config).await?;
+    let handle = town.spawn_agent("idle-worker", "test-cli").await?;
+
+    let mut agent = town
+        .channel()
+        .get_agent_state(handle.id())
+        .await?
+        .expect("idle worker should exist");
+    agent.state = tinytown::AgentState::Idle;
+    agent.last_active_at = chrono::Utc::now() - chrono::Duration::seconds(10);
+    town.channel().set_agent_state(&agent).await?;
+
+    let state = Arc::new(AppState {
+        town: town.clone(),
+        auth_config: Arc::new(AuthConfig::default()),
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    let response = test_server.get("/api/scaling").await;
+    response.assert_status_ok();
+    let body: ScalingSignalResponse = response.json();
+
+    assert_eq!(body.queue_depth, 0);
+    assert_eq!(body.pending_tasks, 0);
+    assert_eq!(body.in_flight_tasks, 0);
+    assert_eq!(body.active_agents, 1);
+    assert_eq!(body.desired_agents, 0);
+    assert_eq!(body.scaling_recommendation, "scale_to_zero");
+
+    Ok(())
+}
+
+/// Test that the scaling endpoint uses docket stream depth when streams are enabled.
+#[tokio::test]
+async fn test_scaling_endpoint_uses_docket_stream_depth() -> Result<(), Box<dyn std::error::Error>>
+{
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, Config, TaskId, create_router};
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new(
+        unique_town_name("townhall-scaling-streams"),
+        temp_dir.path(),
+    );
+    config.use_streams = true;
+    let town = tinytown::Town::init_with_config(config).await?;
+
+    town.channel().docket_ensure_group().await?;
+    let task_one = TaskId::new();
+    let task_two = TaskId::new();
+    town.channel()
+        .docket_push(task_one, "Stream task one", "normal", "conductor", "worker")
+        .await?;
+    town.channel()
+        .docket_push(task_two, "Stream task two", "normal", "conductor", "worker")
+        .await?;
+    let _ = town.channel().docket_read("worker-1", 100).await?;
+
+    let state = Arc::new(AppState {
+        town: town.clone(),
+        auth_config: Arc::new(AuthConfig::default()),
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    let response = test_server.get("/api/scaling").await;
+    response.assert_status_ok();
+    let body: ScalingSignalResponse = response.json();
+
+    assert_eq!(body.pending_tasks, 1);
+    assert_eq!(body.in_flight_tasks, 1);
+    assert_eq!(body.queue_depth, 2);
+    assert_eq!(body.desired_agents, 2);
+    assert_eq!(body.scaling_recommendation, "scale_up");
+
+    Ok(())
+}
+
+/// Test that acknowledged stream entries no longer contribute to scaling backlog.
+#[tokio::test]
+async fn test_scaling_endpoint_excludes_acknowledged_stream_entries()
+-> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, Config, TaskId, create_router};
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new(
+        unique_town_name("townhall-scaling-streams-acked"),
+        temp_dir.path(),
+    );
+    config.use_streams = true;
+    let town = tinytown::Town::init_with_config(config).await?;
+
+    town.channel().docket_ensure_group().await?;
+    let task_id = TaskId::new();
+    town.channel()
+        .docket_push(task_id, "Acked task", "normal", "conductor", "worker")
+        .await?;
+    let (entry_id, _) = town
+        .channel()
+        .docket_read("worker-1", 100)
+        .await?
+        .expect("stream entry should be readable");
+    town.channel().docket_ack(&entry_id).await?;
+
+    let state = Arc::new(AppState {
+        town: town.clone(),
+        auth_config: Arc::new(AuthConfig::default()),
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    let response = test_server.get("/api/scaling").await;
+    response.assert_status_ok();
+    let body: ScalingSignalResponse = response.json();
+
+    assert_eq!(body.pending_tasks, 0);
+    assert_eq!(body.in_flight_tasks, 0);
+    assert_eq!(body.queue_depth, 0);
+    assert_eq!(body.desired_agents, 0);
 
     Ok(())
 }

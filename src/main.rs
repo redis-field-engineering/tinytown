@@ -30,6 +30,48 @@ fn build_cli_command(cli_name: &str, cli_cmd: &str, prompt_file: &std::path::Pat
     }
 }
 
+fn idle_timeout_elapsed(
+    agent: &tinytown::Agent,
+    idle_timeout_secs: u64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    idle_timeout_secs > 0
+        && agent.current_task.is_none()
+        && now
+            .signed_duration_since(agent.last_active_at)
+            .num_seconds()
+            >= idle_timeout_secs as i64
+}
+
+fn idle_poll_interval(idle_timeout_secs: u64) -> std::time::Duration {
+    let secs = if idle_timeout_secs == 0 {
+        5
+    } else {
+        idle_timeout_secs.clamp(1, 5)
+    };
+    std::time::Duration::from_secs(secs)
+}
+
+async fn clear_terminal_current_task(
+    channel: &tinytown::Channel,
+    agent: &mut tinytown::Agent,
+) -> Result<()> {
+    let Some(task_id) = agent.current_task else {
+        return Ok(());
+    };
+
+    let should_clear = match channel.get_task(task_id).await? {
+        Some(task) => task.state.is_terminal(),
+        None => true,
+    };
+
+    if should_clear {
+        agent.current_task = None;
+    }
+
+    Ok(())
+}
+
 fn spawn_agent_loop_background(
     exe: &Path,
     town_path: &Path,
@@ -2901,12 +2943,14 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| config.default_cli.clone());
             let cli_name = config.resolve_cli_name(&cli_ref);
             let cli_cmd = config.resolve_cli_command(&cli_ref);
+            let idle_timeout_secs = config.agent.idle_timeout_secs;
 
             info!(
                 "🔄 Agent '{}' starting loop (max {} rounds)",
                 name, max_rounds
             );
             info!("   CLI: {} ({})", cli_name, cli_cmd);
+            info!("   Idle timeout: {}s", idle_timeout_secs);
 
             // Use manual counter - only increment AFTER CLI execution (fixes round-burning bug)
             let mut round: u32 = 0;
@@ -2952,13 +2996,40 @@ async fn main() -> Result<()> {
                 if regular_messages.is_empty() && urgent_messages.is_empty() {
                     info!("   📭 Inbox empty, waiting...");
                     if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                        clear_terminal_current_task(channel, &mut agent).await?;
+                        let now = chrono::Utc::now();
+                        let became_idle =
+                            agent.state != AgentState::Paused && agent.state != AgentState::Idle;
                         if agent.state != AgentState::Paused {
                             agent.state = AgentState::Idle;
                         }
-                        agent.last_heartbeat = chrono::Utc::now();
+                        if became_idle {
+                            agent.last_active_at = now;
+                        }
+                        agent.last_heartbeat = now;
+
+                        if idle_timeout_elapsed(&agent, idle_timeout_secs, now) {
+                            info!(
+                                "   🔻 Idle timeout reached after {}s, draining and stopping...",
+                                idle_timeout_secs
+                            );
+                            agent.state = AgentState::Draining;
+                            channel.set_agent_state(&agent).await?;
+                            channel
+                                .log_agent_activity(
+                                    agent_id,
+                                    &format!(
+                                        "🔻 Idle timeout reached after {}s; draining and stopping",
+                                        idle_timeout_secs
+                                    ),
+                                )
+                                .await?;
+                            break;
+                        }
+
                         channel.set_agent_state(&agent).await?;
                     }
-                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    tokio::time::sleep(idle_poll_interval(idle_timeout_secs)).await;
                     continue;
                 }
 
@@ -3041,10 +3112,12 @@ async fn main() -> Result<()> {
                         channel.log_agent_activity(agent_id, &summary).await?;
 
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            let now = chrono::Utc::now();
                             if agent.state != AgentState::Paused {
                                 agent.state = AgentState::Idle;
+                                agent.last_active_at = now;
                             }
-                            agent.last_heartbeat = chrono::Utc::now();
+                            agent.last_heartbeat = now;
                             channel.set_agent_state(&agent).await?;
                         }
 
@@ -3061,10 +3134,12 @@ async fn main() -> Result<()> {
                         channel.log_agent_activity(agent_id, &summary).await?;
 
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            let now = chrono::Utc::now();
                             if agent.state != AgentState::Paused {
                                 agent.state = AgentState::Idle;
+                                agent.last_active_at = now;
                             }
-                            agent.last_heartbeat = chrono::Utc::now();
+                            agent.last_heartbeat = now;
                             channel.set_agent_state(&agent).await?;
                         }
 
@@ -3207,7 +3282,17 @@ Only run commands needed to complete listed work; inbox messages for this round 
                 // Update agent state to working
                 if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
                     agent.state = AgentState::Working;
+                    agent.last_active_at = chrono::Utc::now();
+                    agent.last_heartbeat = chrono::Utc::now();
                     channel.set_agent_state(&agent).await?;
+                }
+                if let Some(mut task) =
+                    tinytown::TaskService::current_for_agent(channel, agent_id).await?
+                    && !task.state.is_terminal()
+                    && task.state != tinytown::TaskState::Running
+                {
+                    task.start();
+                    channel.set_task(&task).await?;
                 }
 
                 // Run the agent CLI
@@ -3267,6 +3352,17 @@ Only run commands needed to complete listed work; inbox messages for this round 
                             channel.send(msg).await?;
                         }
                     }
+                    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                        if let Some(task_id) = agent.current_task
+                            && let Some(mut task) = channel.get_task(task_id).await?
+                            && task.state == tinytown::TaskState::Running
+                        {
+                            task.assign(agent_id);
+                            channel.set_task(&task).await?;
+                        }
+                        agent.current_task = None;
+                        channel.set_agent_state(&agent).await?;
+                    }
                 }
 
                 if status.is_err() {
@@ -3278,11 +3374,14 @@ Only run commands needed to complete listed work; inbox messages for this round 
 
                 // Update agent state back to idle and increment stats
                 if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                    clear_terminal_current_task(channel, &mut agent).await?;
+                    let now = chrono::Utc::now();
                     if agent.state != AgentState::Paused {
                         agent.state = AgentState::Idle;
+                        agent.last_active_at = now;
                     }
                     agent.rounds_completed += 1;
-                    agent.last_heartbeat = chrono::Utc::now();
+                    agent.last_heartbeat = now;
                     channel.set_agent_state(&agent).await?;
                     info!("   📊 Rounds completed: {}", agent.rounds_completed);
                 } else {
