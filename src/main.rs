@@ -52,6 +52,26 @@ fn idle_poll_interval(idle_timeout_secs: u64) -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
+async fn clear_terminal_current_task(
+    channel: &tinytown::Channel,
+    agent: &mut tinytown::Agent,
+) -> Result<()> {
+    let Some(task_id) = agent.current_task else {
+        return Ok(());
+    };
+
+    let should_clear = match channel.get_task(task_id).await? {
+        Some(task) => task.state.is_terminal(),
+        None => true,
+    };
+
+    if should_clear {
+        agent.current_task = None;
+    }
+
+    Ok(())
+}
+
 fn spawn_agent_loop_background(
     exe: &Path,
     town_path: &Path,
@@ -2976,6 +2996,7 @@ async fn main() -> Result<()> {
                 if regular_messages.is_empty() && urgent_messages.is_empty() {
                     info!("   📭 Inbox empty, waiting...");
                     if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                        clear_terminal_current_task(channel, &mut agent).await?;
                         let now = chrono::Utc::now();
                         let became_idle =
                             agent.state != AgentState::Paused && agent.state != AgentState::Idle;
@@ -3353,6 +3374,7 @@ Only run commands needed to complete listed work; inbox messages for this round 
 
                 // Update agent state back to idle and increment stats
                 if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                    clear_terminal_current_task(channel, &mut agent).await?;
                     let now = chrono::Utc::now();
                     if agent.state != AgentState::Paused {
                         agent.state = AgentState::Idle;

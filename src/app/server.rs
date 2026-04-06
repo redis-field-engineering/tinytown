@@ -468,22 +468,29 @@ async fn gather_scaling_signal(
 
 async fn gather_queue_depth(state: &AppState) -> std::result::Result<QueueDepthSnapshot, String> {
     if state.town.config().use_streams {
-        let stream_len = state
-            .town
-            .channel()
-            .docket_len()
-            .await
-            .map_err(|e| format!("Failed to read docket length: {}", e))?;
         let pending_entries = match state.town.channel().docket_pending_count().await {
             Ok(count) => count,
             Err(e) if e.to_string().contains("NOGROUP") => 0,
             Err(e) => return Err(format!("Failed to read docket pending count: {}", e)),
         };
-        let pending_tasks = stream_len.saturating_sub(pending_entries);
+        let unread_entries = match state.town.channel().docket_group_lag().await {
+            Ok(count) => count,
+            Err(e)
+                if e.to_string().contains("NOGROUP") || e.to_string().contains("no such key") =>
+            {
+                state
+                    .town
+                    .channel()
+                    .docket_len()
+                    .await
+                    .map_err(|err| format!("Failed to read docket length: {}", err))?
+            }
+            Err(e) => return Err(format!("Failed to read docket group lag: {}", e)),
+        };
 
         return Ok(QueueDepthSnapshot {
-            queue_depth: stream_len,
-            pending_tasks,
+            queue_depth: unread_entries + pending_entries,
+            pending_tasks: unread_entries,
             in_flight_tasks: pending_entries,
         });
     }

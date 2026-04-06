@@ -77,7 +77,7 @@ idle_timeout_secs = 300
 
 When the timeout expires, the worker transitions `Idle -> Draining -> Stopped` and exits cleanly with status code `0`. That gives an external autoscaler a stable signal for both scale-down and full scale-to-zero.
 
-When `use_streams = true`, the scaling endpoint reports `queue_depth` from docket stream depth (`XLEN`), with `pending_tasks` excluding entries already claimed by consumers (`XPENDING`) and `in_flight_tasks` reporting the claimed subset.
+When `use_streams = true`, the scaling endpoint reports `pending_tasks` from the consumer-group unread lag, `in_flight_tasks` from `XPENDING`, and `queue_depth` as the sum of unread plus in-flight work. This avoids counting acknowledged stream entries that are retained for audit/history.
 
 ## Autoscaler Integration
 

@@ -756,6 +756,53 @@ async fn test_scaling_endpoint_uses_docket_stream_depth() -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// Test that acknowledged stream entries no longer contribute to scaling backlog.
+#[tokio::test]
+async fn test_scaling_endpoint_excludes_acknowledged_stream_entries()
+-> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, Config, TaskId, create_router};
+
+    let temp_dir = TempDir::new()?;
+    let mut config = Config::new(
+        unique_town_name("townhall-scaling-streams-acked"),
+        temp_dir.path(),
+    );
+    config.use_streams = true;
+    let town = tinytown::Town::init_with_config(config).await?;
+
+    town.channel().docket_ensure_group().await?;
+    let task_id = TaskId::new();
+    town.channel()
+        .docket_push(task_id, "Acked task", "normal", "conductor", "worker")
+        .await?;
+    let (entry_id, _) = town
+        .channel()
+        .docket_read("worker-1", 100)
+        .await?
+        .expect("stream entry should be readable");
+    town.channel().docket_ack(&entry_id).await?;
+
+    let state = Arc::new(AppState {
+        town: town.clone(),
+        auth_config: Arc::new(AuthConfig::default()),
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    let response = test_server.get("/api/scaling").await;
+    response.assert_status_ok();
+    let body: ScalingSignalResponse = response.json();
+
+    assert_eq!(body.pending_tasks, 0);
+    assert_eq!(body.in_flight_tasks, 0);
+    assert_eq!(body.queue_depth, 0);
+    assert_eq!(body.desired_agents, 0);
+
+    Ok(())
+}
+
 /// Test that protected endpoints require authentication.
 #[tokio::test]
 async fn test_protected_endpoints_require_auth() -> Result<(), Box<dyn std::error::Error>> {

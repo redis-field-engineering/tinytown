@@ -1221,6 +1221,36 @@ impl Channel {
         }
     }
 
+    /// Get the unread backlog for the docket consumer group from XINFO GROUPS lag.
+    ///
+    /// Unlike XLEN, lag excludes acknowledged entries that remain in the stream
+    /// for audit/history purposes.
+    pub async fn docket_group_lag(&self) -> Result<usize> {
+        let mut conn = self.conn.clone();
+        let key = self.docket_tasks_key();
+
+        let result: redis::Value = redis::cmd("XINFO")
+            .arg("GROUPS")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await?;
+
+        for group in Self::parse_xinfo_groups(result) {
+            let Some(name) = group.get("name") else {
+                continue;
+            };
+            if name == Self::DOCKET_GROUP
+                && let Some(lag) = group
+                    .get("lag")
+                    .and_then(|value| value.parse::<usize>().ok())
+            {
+                return Ok(lag);
+            }
+        }
+
+        Ok(0)
+    }
+
     /// Log a task lifecycle event to the docket events stream.
     ///
     /// Used for task progress tracking (started, completed, failed, etc.).
@@ -1315,5 +1345,54 @@ impl Channel {
         }
 
         Ok(Some((entry_id, fields)))
+    }
+
+    fn parse_xinfo_groups(value: redis::Value) -> Vec<std::collections::HashMap<String, String>> {
+        use redis::Value;
+
+        fn value_to_string(value: Value) -> Option<String> {
+            match value {
+                Value::BulkString(bytes) => Some(String::from_utf8_lossy(&bytes).to_string()),
+                Value::SimpleString(text) => Some(text),
+                Value::Int(number) => Some(number.to_string()),
+                Value::Nil => None,
+                _ => None,
+            }
+        }
+
+        let groups = match value {
+            Value::Array(groups) => groups,
+            _ => return Vec::new(),
+        };
+
+        groups
+            .into_iter()
+            .filter_map(|group| match group {
+                Value::Array(fields) => {
+                    let mut parsed = std::collections::HashMap::new();
+                    let mut iter = fields.into_iter();
+                    while let (Some(key), Some(value)) = (iter.next(), iter.next()) {
+                        if let (Some(key), Some(value)) =
+                            (value_to_string(key), value_to_string(value))
+                        {
+                            parsed.insert(key, value);
+                        }
+                    }
+                    Some(parsed)
+                }
+                Value::Map(entries) => {
+                    let mut parsed = std::collections::HashMap::new();
+                    for (key, value) in entries {
+                        if let (Some(key), Some(value)) =
+                            (value_to_string(key), value_to_string(value))
+                        {
+                            parsed.insert(key, value);
+                        }
+                    }
+                    Some(parsed)
+                }
+                _ => None,
+            })
+            .collect()
     }
 }
