@@ -28,7 +28,7 @@ request_timeout_ms = 30000
 
 The router is split into public/read/write/management groups:
 
-- Public: `GET /health`, `GET /ready`, `GET /metrics`
+- Public: `GET /health`, `GET /ready`, `GET /metrics`, `GET /api/scaling`
 - Read (`town.read`): `GET /v1/town`, `GET /v1/status`, `GET /v1/agents`, `GET /v1/tasks/pending`, `GET /v1/backlog`, `GET /v1/agents/{agent}/inbox`
 - Write (`town.write`): `POST /v1/tasks/assign`, `POST /v1/backlog`, `POST /v1/backlog/{task_id}/claim`, `POST /v1/backlog/assign-all`, `DELETE /v1/backlog/{task_id}`, `POST /v1/messages/send`
 - Agent management (`agent.manage`): `POST /v1/agents`, `POST /v1/agents/{agent}/kill`, `POST /v1/agents/{agent}/restart`, `POST /v1/agents/prune`, `POST /v1/recover`, `POST /v1/reclaim`
@@ -38,8 +38,81 @@ The public probes have distinct purposes:
 - `/health`: lightweight process liveness with `uptime_secs`
 - `/ready`: verifies townhall can still reach Redis, reporting Redis latency, town name, and dispatcher heartbeat state
 - `/metrics`: Prometheus-style text metrics for agent counts by state, task queue depth, completed tasks, active missions, and Redis latency
+- `/api/scaling`: JSON scaling signal for autoscalers, including queue depth, in-flight work, desired worker count, and a scaling recommendation
 
 Compatibility aliases `/healthz` and `/readyz` remain available for existing deployments.
+
+## Scaling Signal API
+
+`GET /api/scaling` exposes an autoscaler-friendly snapshot:
+
+```json
+{
+  "town": "mytown",
+  "timestamp": "2026-04-04T18:00:00Z",
+  "queue_depth": 3,
+  "pending_tasks": 2,
+  "in_flight_tasks": 1,
+  "active_agents": 1,
+  "cold_agents": 0,
+  "desired_agents": 3,
+  "max_agents": 10,
+  "scaling_recommendation": "scale_up"
+}
+```
+
+`scaling_recommendation` values:
+
+- `scale_up`: pending + in-flight work exceeds current active workers
+- `steady`: current active workers match demand
+- `scale_down`: extra workers are running and there is no queued work
+- `scale_to_zero`: no queued work, no in-flight work, and all active workers have been idle past the configured timeout
+
+The worker idle timeout is configured in `tinytown.toml`:
+
+```toml
+[agent]
+idle_timeout_secs = 300
+```
+
+When the timeout expires, the worker transitions `Idle -> Draining -> Stopped` and exits cleanly with status code `0`. That gives an external autoscaler a stable signal for both scale-down and full scale-to-zero.
+
+When `use_streams = true`, the scaling endpoint uses docket stream depth (`XLEN`) plus pending consumer-group entries (`XPENDING`) so autoscalers can react to Redis Stream-backed work queues.
+
+## Autoscaler Integration
+
+Cloud Run:
+
+- Set `min-instances=0`
+- Poll `/api/scaling`
+- Use `desired_agents` or `queue_depth` to drive instance count
+
+KEDA:
+
+```yaml
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: tinytown-agents
+spec:
+  scaleTargetRef:
+    name: tinytown-agent-worker
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  triggers:
+    - type: metrics-api
+      metadata:
+        url: "http://townhall:8080/api/scaling"
+        valueLocation: "queue_depth"
+        targetValue: "1"
+```
+
+Custom scaler:
+
+- Poll `/api/scaling` on a short interval
+- Start workers when `scaling_recommendation` is `scale_up`
+- Remove workers when `scaling_recommendation` is `scale_down` or `scale_to_zero`
+- Prefer `desired_agents` as the authoritative target replica count
 
 ## Authentication
 

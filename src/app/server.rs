@@ -8,7 +8,7 @@
 //! This module provides the shared server infrastructure for the townhall daemon,
 //! making it accessible for integration testing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, LazyLock};
 use std::time::Instant;
 
@@ -108,6 +108,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/healthz", get(health))
         .route("/ready", get(readiness))
         .route("/readyz", get(readiness))
+        .route("/api/scaling", get(scaling_signal))
         .route("/metrics", get(metrics));
 
     // Read-only routes (town.read scope)
@@ -202,6 +203,25 @@ async fn metrics(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     )
 }
 
+async fn scaling_signal(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match gather_scaling_signal(&state).await {
+        Ok(snapshot) => (
+            StatusCode::OK,
+            Json(ScalingSignalResponse::from_snapshot(&snapshot)),
+        )
+            .into_response(),
+        Err(detail) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ProblemDetails::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Service Unavailable",
+                &detail,
+            )),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct HealthResponse {
     status: &'static str,
@@ -249,6 +269,67 @@ struct ReadinessSnapshot {
     town_name: String,
     redis_latency_secs: f64,
     dispatcher_status: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ScalingRecommendation {
+    ScaleUp,
+    Steady,
+    ScaleDown,
+    ScaleToZero,
+}
+
+#[derive(Debug)]
+struct ScalingSignalSnapshot {
+    town_name: String,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    queue_depth: usize,
+    pending_tasks: usize,
+    in_flight_tasks: usize,
+    active_agents: usize,
+    cold_agents: usize,
+    desired_agents: usize,
+    max_agents: usize,
+    recommendation: ScalingRecommendation,
+}
+
+#[derive(Debug, Serialize)]
+struct ScalingSignalResponse {
+    town: String,
+    timestamp: String,
+    queue_depth: usize,
+    pending_tasks: usize,
+    in_flight_tasks: usize,
+    active_agents: usize,
+    cold_agents: usize,
+    desired_agents: usize,
+    max_agents: usize,
+    scaling_recommendation: ScalingRecommendation,
+}
+
+impl ScalingSignalResponse {
+    fn from_snapshot(snapshot: &ScalingSignalSnapshot) -> Self {
+        Self {
+            town: snapshot.town_name.clone(),
+            timestamp: snapshot.timestamp.to_rfc3339(),
+            queue_depth: snapshot.queue_depth,
+            pending_tasks: snapshot.pending_tasks,
+            in_flight_tasks: snapshot.in_flight_tasks,
+            active_agents: snapshot.active_agents,
+            cold_agents: snapshot.cold_agents,
+            desired_agents: snapshot.desired_agents,
+            max_agents: snapshot.max_agents,
+            scaling_recommendation: snapshot.recommendation,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct QueueDepthSnapshot {
+    queue_depth: usize,
+    pending_tasks: usize,
+    in_flight_tasks: usize,
 }
 
 #[derive(Debug)]
@@ -346,6 +427,145 @@ async fn gather_metrics(state: &AppState) -> std::result::Result<MetricsSnapshot
         urgent_message_count,
         agent_states,
     })
+}
+
+async fn gather_scaling_signal(
+    state: &AppState,
+) -> std::result::Result<ScalingSignalSnapshot, String> {
+    let queue = gather_queue_depth(state).await?;
+    let agents = state.town.list_agents().await;
+    let active_agents = agents
+        .iter()
+        .filter(|agent| agent.state.is_active())
+        .count();
+    let cold_agents = agents
+        .iter()
+        .filter(|agent| agent.state == crate::AgentState::Cold)
+        .count();
+    let max_agents = state.town.config().max_agents;
+    let desired_agents = (queue.pending_tasks + queue.in_flight_tasks).min(max_agents);
+    let recommendation = scaling_recommendation(
+        &agents,
+        &queue,
+        desired_agents,
+        active_agents,
+        state.town.config().agent.idle_timeout_secs,
+    );
+
+    Ok(ScalingSignalSnapshot {
+        town_name: state.town.channel().town_name().to_string(),
+        timestamp: chrono::Utc::now(),
+        queue_depth: queue.queue_depth,
+        pending_tasks: queue.pending_tasks,
+        in_flight_tasks: queue.in_flight_tasks,
+        active_agents,
+        cold_agents,
+        desired_agents,
+        max_agents,
+        recommendation,
+    })
+}
+
+async fn gather_queue_depth(state: &AppState) -> std::result::Result<QueueDepthSnapshot, String> {
+    if state.town.config().use_streams {
+        let stream_len = state
+            .town
+            .channel()
+            .docket_len()
+            .await
+            .map_err(|e| format!("Failed to read docket length: {}", e))?;
+        let pending_entries = match state.town.channel().docket_pending_count().await {
+            Ok(count) => count,
+            Err(e) if e.to_string().contains("NOGROUP") => 0,
+            Err(e) => return Err(format!("Failed to read docket pending count: {}", e)),
+        };
+
+        return Ok(QueueDepthSnapshot {
+            queue_depth: stream_len + pending_entries,
+            pending_tasks: stream_len,
+            in_flight_tasks: pending_entries,
+        });
+    }
+
+    let backlog_count = state
+        .town
+        .channel()
+        .backlog_len()
+        .await
+        .map_err(|e| format!("Failed to read backlog length: {}", e))?;
+    let pending_task_count = TaskService::list_pending(&state.town)
+        .await
+        .map_err(|e| format!("Failed to list pending tasks: {}", e))?
+        .len();
+    let in_flight_tasks = count_in_flight_tasks(&state.town).await?;
+
+    Ok(QueueDepthSnapshot {
+        queue_depth: backlog_count + pending_task_count,
+        pending_tasks: backlog_count + pending_task_count,
+        in_flight_tasks,
+    })
+}
+
+async fn count_in_flight_tasks(town: &Town) -> std::result::Result<usize, String> {
+    let tasks = town
+        .channel()
+        .list_tasks()
+        .await
+        .map_err(|e| format!("Failed to list tasks: {}", e))?;
+    let agents = town.list_agents().await;
+    let mut in_flight = HashSet::new();
+
+    for task in tasks {
+        if task.state == crate::TaskState::Running {
+            in_flight.insert(task.id);
+        }
+    }
+
+    for agent in agents {
+        if agent.state.is_active()
+            && let Some(task_id) = agent.current_task
+        {
+            in_flight.insert(task_id);
+        }
+    }
+
+    Ok(in_flight.len())
+}
+
+fn scaling_recommendation(
+    agents: &[crate::Agent],
+    queue: &QueueDepthSnapshot,
+    desired_agents: usize,
+    active_agents: usize,
+    idle_timeout_secs: u64,
+) -> ScalingRecommendation {
+    let no_pending_work = queue.pending_tasks == 0;
+    let no_in_flight_work = queue.in_flight_tasks == 0;
+    let now = chrono::Utc::now();
+    let all_active_agents_idle = if idle_timeout_secs == 0 {
+        active_agents == 0
+    } else {
+        agents
+            .iter()
+            .filter(|agent| agent.state.is_active())
+            .all(|agent| {
+                agent.state == crate::AgentState::Idle
+                    && now
+                        .signed_duration_since(agent.last_active_at)
+                        .num_seconds()
+                        >= idle_timeout_secs as i64
+            })
+    };
+
+    if desired_agents == 0 && no_pending_work && no_in_flight_work && all_active_agents_idle {
+        ScalingRecommendation::ScaleToZero
+    } else if desired_agents > active_agents {
+        ScalingRecommendation::ScaleUp
+    } else if desired_agents < active_agents && no_pending_work {
+        ScalingRecommendation::ScaleDown
+    } else {
+        ScalingRecommendation::Steady
+    }
 }
 
 fn render_metrics(snapshot: &MetricsSnapshot, scrape_error: Option<&str>) -> String {
