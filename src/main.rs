@@ -2977,8 +2977,13 @@ async fn main() -> Result<()> {
                     info!("   📭 Inbox empty, waiting...");
                     if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
                         let now = chrono::Utc::now();
+                        let became_idle =
+                            agent.state != AgentState::Paused && agent.state != AgentState::Idle;
                         if agent.state != AgentState::Paused {
                             agent.state = AgentState::Idle;
+                        }
+                        if became_idle {
+                            agent.last_active_at = now;
                         }
                         agent.last_heartbeat = now;
 
@@ -3086,10 +3091,12 @@ async fn main() -> Result<()> {
                         channel.log_agent_activity(agent_id, &summary).await?;
 
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            let now = chrono::Utc::now();
                             if agent.state != AgentState::Paused {
                                 agent.state = AgentState::Idle;
+                                agent.last_active_at = now;
                             }
-                            agent.last_heartbeat = chrono::Utc::now();
+                            agent.last_heartbeat = now;
                             channel.set_agent_state(&agent).await?;
                         }
 
@@ -3106,10 +3113,12 @@ async fn main() -> Result<()> {
                         channel.log_agent_activity(agent_id, &summary).await?;
 
                         if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            let now = chrono::Utc::now();
                             if agent.state != AgentState::Paused {
                                 agent.state = AgentState::Idle;
+                                agent.last_active_at = now;
                             }
-                            agent.last_heartbeat = chrono::Utc::now();
+                            agent.last_heartbeat = now;
                             channel.set_agent_state(&agent).await?;
                         }
 
@@ -3344,11 +3353,13 @@ Only run commands needed to complete listed work; inbox messages for this round 
 
                 // Update agent state back to idle and increment stats
                 if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                    let now = chrono::Utc::now();
                     if agent.state != AgentState::Paused {
                         agent.state = AgentState::Idle;
+                        agent.last_active_at = now;
                     }
                     agent.rounds_completed += 1;
-                    agent.last_heartbeat = chrono::Utc::now();
+                    agent.last_heartbeat = now;
                     channel.set_agent_state(&agent).await?;
                     info!("   📊 Rounds completed: {}", agent.rounds_completed);
                 } else {

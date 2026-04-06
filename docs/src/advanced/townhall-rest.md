@@ -77,7 +77,7 @@ idle_timeout_secs = 300
 
 When the timeout expires, the worker transitions `Idle -> Draining -> Stopped` and exits cleanly with status code `0`. That gives an external autoscaler a stable signal for both scale-down and full scale-to-zero.
 
-When `use_streams = true`, the scaling endpoint uses docket stream depth (`XLEN`) plus pending consumer-group entries (`XPENDING`) so autoscalers can react to Redis Stream-backed work queues.
+When `use_streams = true`, the scaling endpoint reports `queue_depth` from docket stream depth (`XLEN`), with `pending_tasks` excluding entries already claimed by consumers (`XPENDING`) and `in_flight_tasks` reporting the claimed subset.
 
 ## Autoscaler Integration
 

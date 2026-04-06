@@ -747,10 +747,10 @@ async fn test_scaling_endpoint_uses_docket_stream_depth() -> Result<(), Box<dyn 
     response.assert_status_ok();
     let body: ScalingSignalResponse = response.json();
 
-    assert_eq!(body.pending_tasks, 2);
+    assert_eq!(body.pending_tasks, 1);
     assert_eq!(body.in_flight_tasks, 1);
-    assert_eq!(body.queue_depth, 3);
-    assert_eq!(body.desired_agents, 3);
+    assert_eq!(body.queue_depth, 2);
+    assert_eq!(body.desired_agents, 2);
     assert_eq!(body.scaling_recommendation, "scale_up");
 
     Ok(())

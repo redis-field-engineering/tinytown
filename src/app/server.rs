@@ -479,10 +479,11 @@ async fn gather_queue_depth(state: &AppState) -> std::result::Result<QueueDepthS
             Err(e) if e.to_string().contains("NOGROUP") => 0,
             Err(e) => return Err(format!("Failed to read docket pending count: {}", e)),
         };
+        let pending_tasks = stream_len.saturating_sub(pending_entries);
 
         return Ok(QueueDepthSnapshot {
-            queue_depth: stream_len + pending_entries,
-            pending_tasks: stream_len,
+            queue_depth: stream_len,
+            pending_tasks,
             in_flight_tasks: pending_entries,
         });
     }
@@ -500,7 +501,7 @@ async fn gather_queue_depth(state: &AppState) -> std::result::Result<QueueDepthS
     let in_flight_tasks = count_in_flight_tasks(&state.town).await?;
 
     Ok(QueueDepthSnapshot {
-        queue_depth: backlog_count + pending_task_count,
+        queue_depth: backlog_count + pending_task_count + in_flight_tasks,
         pending_tasks: backlog_count + pending_task_count,
         in_flight_tasks,
     })
