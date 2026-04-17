@@ -39,10 +39,13 @@ Use this for:
 
 | Option | Description |
 |--------|-------------|
+| `--from <AGENT>` | Attribute the message to a specific sender (agent name or UUID). When omitted, defaults to the current agent context (`TINYTOWN_AGENT_ID` / `TINYTOWN_AGENT_NAME` env vars set by `tt agent-loop`) or the supervisor sentinel. |
 | `--query` | Mark message as a query (`query` semantic type) |
 | `--info` | Mark message as informational (`info` semantic type) |
 | `--ack` | Mark message as confirmation (`ack` semantic type) |
 | `--urgent` | Send as urgent (processed first at start of next round) |
+
+When an agent's CLI subprocess runs `tt send` without `--from`, the sender is automatically resolved from the `TINYTOWN_AGENT_ID` environment variable that `tt agent-loop` injects, so agent-to-agent messages carry the real sender UUID instead of the supervisor sentinel.
 
 ## Examples
 
