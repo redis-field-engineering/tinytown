@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0](https://github.com/redis-field-engineering/tinytown/compare/v0.9.0...v0.10.0) (2026-04-18)
+
+
+### Features
+
+* add history command and compact status labels ([4cd6402](https://github.com/redis-field-engineering/tinytown/commit/4cd6402ae09605e894b18d18d1f0c68f596310a3))
+* add scale-to-zero worker signals ([#82](https://github.com/redis-field-engineering/tinytown/issues/82)) ([c50b5c8](https://github.com/redis-field-engineering/tinytown/commit/c50b5c858305156e83cbfb46b0f09ec11702bf45))
+* preserve sender identity in messages ([#84](https://github.com/redis-field-engineering/tinytown/issues/84)) ([ba92d14](https://github.com/redis-field-engineering/tinytown/commit/ba92d141ec9750a83080c68fb97e0c6076b2508f))
+
+
+### Bug Fixes
+
+* **dispatcher:** back off repeated mission-help prompts ([#85](https://github.com/redis-field-engineering/tinytown/issues/85)) ([9efb5aa](https://github.com/redis-field-engineering/tinytown/commit/9efb5aa22f35b865e31491c53419d5357d90e985))
+
 ## [0.9.0](https://github.com/redis-field-engineering/tinytown/compare/v0.8.1...v0.9.0) (2026-03-27)
 
 
