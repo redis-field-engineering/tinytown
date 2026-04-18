@@ -108,10 +108,7 @@ async fn resolve_agent_id_for_current_task(
 /// 2. `TINYTOWN_AGENT_ID` env var (set by `tt agent-loop` when spawning a CLI).
 /// 3. `TINYTOWN_AGENT_NAME` env var.
 /// 4. `AgentId::supervisor()` (default for user-driven `tt send`).
-async fn resolve_sender_id(
-    town: &Town,
-    explicit: Option<&str>,
-) -> Result<tinytown::AgentId> {
+async fn resolve_sender_id(town: &Town, explicit: Option<&str>) -> Result<tinytown::AgentId> {
     if let Some(raw) = explicit {
         if let Ok(id) = raw.parse::<tinytown::AgentId>() {
             return Ok(id);

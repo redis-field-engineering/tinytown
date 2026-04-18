@@ -418,7 +418,10 @@ async fn test_services_send_as_preserves_sender() -> Result<(), Box<dyn std::err
     assert_eq!(peeked.len(), 3);
 
     let froms: Vec<_> = peeked.iter().map(|m| m.from).collect();
-    assert!(froms.contains(&sender.id()), "agent-name send should map to sender id");
+    assert!(
+        froms.contains(&sender.id()),
+        "agent-name send should map to sender id"
+    );
     assert!(
         froms.iter().filter(|&&id| id == sender.id()).count() >= 2,
         "uuid send should also map to sender id"
@@ -462,10 +465,7 @@ async fn test_townhall_send_endpoint_accepts_from() -> Result<(), Box<dyn std::e
         .assert_status(axum::http::StatusCode::CREATED);
 
     let receiver_handle = server.town.agent("receiver").await?;
-    let peeked = server
-        .channel()
-        .peek_inbox(receiver_handle.id(), 5)
-        .await?;
+    let peeked = server.channel().peek_inbox(receiver_handle.id(), 5).await?;
     assert_eq!(peeked.len(), 1);
     assert_eq!(peeked[0].from, sender.id());
 
