@@ -369,6 +369,109 @@ async fn test_services_send_message() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+/// Verify `MessageService::send_as` records the specified sender (agent name or UUID)
+/// instead of always attributing the message to the supervisor sentinel.
+#[tokio::test]
+async fn test_services_send_as_preserves_sender() -> Result<(), Box<dyn std::error::Error>> {
+    let server = TownhallTestServer::new("townhall-send-as-test").await?;
+    let sender = server.spawn_test_agent("sender").await?;
+    let _receiver = server.spawn_test_agent("receiver").await?;
+
+    // Send by agent name.
+    tinytown::MessageService::send_as(
+        &server.town,
+        Some("sender"),
+        "receiver",
+        "hi from sender",
+        tinytown::app::services::messages::MessageKind::Info,
+        false,
+    )
+    .await?;
+
+    // Send by UUID.
+    tinytown::MessageService::send_as(
+        &server.town,
+        Some(&sender.id().to_string()),
+        "receiver",
+        "hi again",
+        tinytown::app::services::messages::MessageKind::Info,
+        false,
+    )
+    .await?;
+
+    // Default path (no from) still uses supervisor.
+    tinytown::MessageService::send_as(
+        &server.town,
+        None,
+        "receiver",
+        "system fyi",
+        tinytown::app::services::messages::MessageKind::Info,
+        false,
+    )
+    .await?;
+
+    let receiver_handle = server.town.agent("receiver").await?;
+    let peeked = server
+        .channel()
+        .peek_inbox(receiver_handle.id(), 10)
+        .await?;
+    assert_eq!(peeked.len(), 3);
+
+    let froms: Vec<_> = peeked.iter().map(|m| m.from).collect();
+    assert!(
+        froms.contains(&sender.id()),
+        "agent-name send should map to sender id"
+    );
+    assert!(
+        froms.iter().filter(|&&id| id == sender.id()).count() >= 2,
+        "uuid send should also map to sender id"
+    );
+    assert!(
+        froms.contains(&tinytown::AgentId::supervisor()),
+        "default path should still produce a supervisor-attributed message"
+    );
+
+    Ok(())
+}
+
+/// Verify that `POST /v1/messages` honors an optional `from` field when provided.
+#[tokio::test]
+async fn test_townhall_send_endpoint_accepts_from() -> Result<(), Box<dyn std::error::Error>> {
+    use axum_test::TestServer;
+    use std::sync::Arc;
+    use tinytown::{AppState, AuthConfig, create_router};
+
+    let server = TownhallTestServer::new("townhall-send-from-test").await?;
+    let sender = server.spawn_test_agent("sender").await?;
+    let _receiver = server.spawn_test_agent("receiver").await?;
+
+    let auth_config = Arc::new(AuthConfig::default());
+    let state = Arc::new(AppState {
+        town: server.town.clone(),
+        auth_config,
+    });
+    let app = create_router(state);
+    let test_server = TestServer::new(app);
+
+    test_server
+        .post("/v1/messages/send")
+        .json(&serde_json::json!({
+            "to": "receiver",
+            "from": "sender",
+            "message": "hello",
+            "kind": "info"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let receiver_handle = server.town.agent("receiver").await?;
+    let peeked = server.channel().peek_inbox(receiver_handle.id(), 5).await?;
+    assert_eq!(peeked.len(), 1);
+    assert_eq!(peeked[0].from, sender.id());
+
+    Ok(())
+}
+
 /// Test that the inbox endpoint supports GET for read semantics while keeping POST compatibility.
 #[tokio::test]
 async fn test_townhall_inbox_endpoint_supports_get_and_post()

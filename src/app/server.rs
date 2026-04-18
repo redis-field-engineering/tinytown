@@ -735,6 +735,9 @@ struct SendReq {
     to: String,
     message: String,
     kind: Option<String>,
+    /// Optional sender. Agent name or UUID; defaults to the supervisor sentinel.
+    #[serde(default)]
+    from: Option<String>,
     #[serde(default)]
     urgent: bool,
 }
@@ -749,9 +752,16 @@ async fn send_message(
         Some("ack") => MessageKind::Ack,
         _ => MessageKind::Task,
     };
-    let r = MessageService::send(&state.town, &req.to, &req.message, kind, req.urgent)
-        .await
-        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let r = MessageService::send_as(
+        &state.town,
+        req.from.as_deref(),
+        &req.to,
+        &req.message,
+        kind,
+        req.urgent,
+    )
+    .await
+    .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
     Ok((
         StatusCode::CREATED,
         Json(

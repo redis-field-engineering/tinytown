@@ -101,6 +101,36 @@ async fn resolve_agent_id_for_current_task(
     ))
 }
 
+/// Resolve the sender identity for outbound messages.
+///
+/// Resolution order:
+/// 1. Explicit `--from` value (UUID, agent name, or "supervisor"/"conductor").
+/// 2. `TINYTOWN_AGENT_ID` env var (set by `tt agent-loop` when spawning a CLI).
+/// 3. `TINYTOWN_AGENT_NAME` env var.
+/// 4. `AgentId::supervisor()` (default for user-driven `tt send`).
+async fn resolve_sender_id(town: &Town, explicit: Option<&str>) -> Result<tinytown::AgentId> {
+    if let Some(raw) = explicit {
+        if let Ok(id) = raw.parse::<tinytown::AgentId>() {
+            return Ok(id);
+        }
+        return Ok(town.agent(raw).await?.id());
+    }
+
+    if let Ok(agent_id) = std::env::var(TT_AGENT_ID_ENV)
+        && let Ok(parsed_id) = agent_id.parse::<tinytown::AgentId>()
+    {
+        return Ok(parsed_id);
+    }
+
+    if let Ok(agent_name) = std::env::var(TT_AGENT_NAME_ENV)
+        && let Ok(handle) = town.agent(&agent_name).await
+    {
+        return Ok(handle.id());
+    }
+
+    Ok(tinytown::AgentId::supervisor())
+}
+
 fn is_supervisor_alias(name: &str) -> bool {
     matches!(name.to_lowercase().as_str(), "supervisor" | "conductor")
 }
@@ -451,6 +481,11 @@ enum Commands {
 
         /// Message content
         message: String,
+
+        /// Sender agent name or UUID. Defaults to the current agent context
+        /// (TINYTOWN_AGENT_ID / TINYTOWN_AGENT_NAME when set) or "supervisor".
+        #[arg(long)]
+        from: Option<String>,
 
         /// Mark message as a query requiring a response
         #[arg(long, conflicts_with_all = ["info", "ack"])]
@@ -2828,6 +2863,7 @@ async fn main() -> Result<()> {
         Commands::Send {
             to,
             message,
+            from,
             query,
             info: informational,
             ack,
@@ -2838,6 +2874,8 @@ async fn main() -> Result<()> {
             let town = Town::connect(&cli.town).await?;
             let to_handle = town.agent(&to).await?;
             let to_id = to_handle.id();
+
+            let from_id = resolve_sender_id(&town, from.as_deref()).await?;
 
             let (msg_type, label) = if query {
                 (MessageType::Query { question: message }, "query")
@@ -2862,14 +2900,19 @@ async fn main() -> Result<()> {
                 )
             };
 
-            let msg = Message::new(AgentId::supervisor(), to_id, msg_type);
+            let msg = Message::new(from_id, to_id, msg_type);
+            let from_note = if from_id == AgentId::supervisor() {
+                String::new()
+            } else {
+                format!(" (from {})", from_id)
+            };
 
             if urgent {
                 town.channel().send_urgent(&msg).await?;
-                info!("🚨 Sent URGENT {} message to '{}'", label, to);
+                info!("🚨 Sent URGENT {} message to '{}'{}", label, to, from_note);
             } else {
                 town.channel().send(&msg).await?;
-                info!("📤 Sent {} message to '{}'", label, to);
+                info!("📤 Sent {} message to '{}'{}", label, to, from_note);
             }
         }
 
