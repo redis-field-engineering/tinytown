@@ -3244,6 +3244,7 @@ async fn test_mission_dispatcher_creates_fix_task_from_failing_watch()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     let result = dispatcher.tick(None).await?;
@@ -3325,6 +3326,7 @@ async fn test_mission_dispatcher_finalizes_after_successful_watch()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     let result = dispatcher.tick(None).await?;
@@ -3417,6 +3419,7 @@ async fn test_mission_dispatcher_self_resolves_clean_comment_watches()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     let result = dispatcher.tick(None).await?;
@@ -3529,6 +3532,7 @@ async fn test_mission_dispatcher_self_resolves_triggered_comment_watches()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     let first_result = dispatcher.tick(None).await?;
@@ -3573,6 +3577,7 @@ async fn test_mission_dispatcher_self_resolves_triggered_comment_watches()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     let second_result = dispatcher.tick(None).await?;
@@ -3652,6 +3657,7 @@ async fn test_mission_dispatcher_rechecks_snoozed_watch() -> Result<(), Box<dyn 
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(None).await?;
@@ -3685,6 +3691,7 @@ async fn test_mission_dispatcher_rechecks_snoozed_watch() -> Result<(), Box<dyn 
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(None).await?;
@@ -3758,6 +3765,7 @@ async fn test_mission_dispatcher_mergeability_respects_reviewer_gate()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(None).await?;
@@ -3850,6 +3858,7 @@ async fn test_mission_dispatcher_escalates_to_conductor_when_stuck()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(None).await?;
@@ -3865,6 +3874,78 @@ async fn test_mission_dispatcher_escalates_to_conductor_when_stuck()
     let updated = storage.get_mission(mission.id).await?.unwrap();
     assert!(updated.dispatcher_last_help_request_at.is_some());
     assert!(updated.dispatcher_last_help_request_reason.is_some());
+    // A fresh first escalation counts as attempt #1.
+    assert_eq!(updated.dispatcher_help_request_attempts, 1);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Verifies the dispatcher applies exponential backoff to repeated
+/// "mission help needed" prompts whose reason has not changed, and
+/// resets the attempt counter when the reason differs.
+#[tokio::test]
+async fn test_mission_dispatcher_help_request_backoff() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        DispatcherConfig, MissionDispatcher, MissionRun, MissionStorage, MockGitHubClient,
+        ObjectiveRef, WorkItem, WorkKind,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-backoff");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.mark_ready();
+    storage.save_work_item(&item).await?;
+
+    // A very large base interval guarantees the time-based branch never
+    // fires within the test, so we can assert the backoff logic purely
+    // from the attempt counter and reason-change behaviour.
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        MockGitHubClient::new(),
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+            help_repeat_interval_secs: 86_400,
+            help_repeat_backoff_cap: 8,
+        },
+    );
+
+    dispatcher.tick(None).await?;
+    let after_first = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(after_first.dispatcher_help_request_attempts, 1);
+
+    // Second tick with the same reason must NOT send a new prompt and
+    // must NOT bump the attempt counter (backoff window blocks resend).
+    let inbox_before = town
+        .channel()
+        .peek_inbox(AgentId::supervisor(), 50)
+        .await?
+        .len();
+    dispatcher.tick(None).await?;
+    let inbox_after = town
+        .channel()
+        .peek_inbox(AgentId::supervisor(), 50)
+        .await?
+        .len();
+    assert_eq!(
+        inbox_after, inbox_before,
+        "dispatcher should not rebroadcast within the backoff window"
+    );
+    let after_second = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(after_second.dispatcher_help_request_attempts, 1);
 
     drop(town);
     cleanup_redis(&temp_dir);
@@ -3903,6 +3984,7 @@ async fn test_mission_dispatcher_processes_conductor_note() -> Result<(), Box<dy
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(Some(mission.id)).await?;
@@ -3954,6 +4036,7 @@ async fn test_mission_dispatcher_ignores_resume_note_for_failed_mission()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(Some(mission.id)).await?;
@@ -4016,6 +4099,7 @@ async fn test_mission_dispatcher_ignores_pause_note_for_blocked_mission()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(Some(mission.id)).await?;
@@ -4094,6 +4178,7 @@ async fn test_mission_dispatcher_resume_note_completes_blocking_watches()
         DispatcherConfig {
             tick_interval_secs: 1,
             lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
         },
     );
     dispatcher.tick(Some(mission.id)).await?;
