@@ -366,6 +366,12 @@ pub struct MissionRun {
     pub dispatcher_last_help_request_at: Option<DateTime<Utc>>,
     /// Most recent help-request reason sent to the conductor
     pub dispatcher_last_help_request_reason: Option<String>,
+    /// Number of consecutive repeats of the same help-request reason.
+    /// Reset to 0 when the reason changes or the dispatcher observes
+    /// mission progress. Used by the dispatcher to back off repeated
+    /// prompts to the conductor.
+    #[serde(default)]
+    pub dispatcher_help_request_attempts: u32,
 }
 
 impl MissionRun {
@@ -386,6 +392,7 @@ impl MissionRun {
             dispatcher_last_progress_at: None,
             dispatcher_last_help_request_at: None,
             dispatcher_last_help_request_reason: None,
+            dispatcher_help_request_attempts: 0,
         }
     }
 
@@ -428,14 +435,27 @@ impl MissionRun {
         let now = Utc::now();
         self.dispatcher_last_tick_at = Some(now);
         self.dispatcher_last_progress_at = Some(now);
+        // Progress means any future help request starts from a clean
+        // backoff window instead of extending the previous one.
+        self.dispatcher_help_request_attempts = 0;
         self.updated_at = now;
     }
 
     /// Record that the dispatcher escalated to the conductor.
-    pub fn record_help_request(&mut self, reason: impl Into<String>) {
+    ///
+    /// `reason_changed` indicates whether the supplied `reason` differs
+    /// from the last one sent. A fresh reason resets the backoff attempt
+    /// counter; a repeated reason increments it so the dispatcher can
+    /// apply exponential backoff between rebroadcasts.
+    pub fn record_help_request(&mut self, reason: impl Into<String>, reason_changed: bool) {
         let now = Utc::now();
         self.dispatcher_last_help_request_at = Some(now);
         self.dispatcher_last_help_request_reason = Some(reason.into());
+        self.dispatcher_help_request_attempts = if reason_changed {
+            1
+        } else {
+            self.dispatcher_help_request_attempts.saturating_add(1)
+        };
         self.updated_at = now;
     }
 

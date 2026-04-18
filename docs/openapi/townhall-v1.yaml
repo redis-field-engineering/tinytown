@@ -1127,6 +1127,12 @@ components:
           type: string
         message:
           type: string
+        from:
+          type: string
+          description: >
+            Optional sender. Accepts an agent name, agent UUID, or the
+            "supervisor"/"conductor" alias. When omitted the message is
+            attributed to the supervisor sentinel.
         kind:
           type: string
           enum: [task, query, info, ack]

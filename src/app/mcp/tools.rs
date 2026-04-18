@@ -87,6 +87,9 @@ pub struct SendMessageInput {
     pub to: String,
     /// Message content
     pub message: String,
+    /// Optional sender agent name or UUID. Defaults to the supervisor sentinel.
+    #[serde(default)]
+    pub from: Option<String>,
     /// Message kind: "task", "query", "info", or "ack"
     #[serde(default = "default_kind")]
     pub kind: String,
@@ -1118,8 +1121,9 @@ pub fn message_send_tool(state: Arc<McpState>) -> Tool {
                     "ack" => MessageKind::Ack,
                     _ => MessageKind::Task,
                 };
-                match MessageService::send(
+                match MessageService::send_as(
                     &state.town,
+                    input.from.as_deref(),
                     &input.to,
                     &input.message,
                     kind,

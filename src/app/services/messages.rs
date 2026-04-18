@@ -58,7 +58,10 @@ pub struct MessageInfo {
 pub struct MessageService;
 
 impl MessageService {
-    /// Send a message to an agent.
+    /// Send a message to an agent with `from = AgentId::supervisor()`.
+    ///
+    /// This is a thin wrapper over [`Self::send_as`] preserved for existing callers
+    /// that don't need to attribute the message to a specific sender.
     pub async fn send(
         town: &Town,
         to: &str,
@@ -66,6 +69,26 @@ impl MessageService {
         kind: MessageKind,
         urgent: bool,
     ) -> Result<SendResult> {
+        Self::send_as(town, None, to, content, kind, urgent).await
+    }
+
+    /// Send a message to an agent, optionally attributing it to a specific sender.
+    ///
+    /// `from` may be an agent name, UUID string, or the alias "supervisor"/"conductor".
+    /// When `None`, the sender defaults to [`AgentId::supervisor`].
+    pub async fn send_as(
+        town: &Town,
+        from: Option<&str>,
+        to: &str,
+        content: &str,
+        kind: MessageKind,
+        urgent: bool,
+    ) -> Result<SendResult> {
+        let from_id = match from {
+            None => AgentId::supervisor(),
+            Some(raw) => Self::resolve_agent_id(town, raw).await?,
+        };
+
         let to_handle = town.agent(to).await?;
         let to_id = to_handle.id();
         let channel = town.channel();
@@ -85,7 +108,7 @@ impl MessageService {
             },
         };
 
-        let msg = Message::new(AgentId::supervisor(), to_id, msg_type);
+        let msg = Message::new(from_id, to_id, msg_type);
         let message_id = msg.id;
 
         if urgent {
@@ -100,6 +123,18 @@ impl MessageService {
             urgent,
             kind,
         })
+    }
+
+    /// Resolve a user-supplied sender reference to an [`AgentId`].
+    ///
+    /// Accepts (in order): a full UUID, a registered agent name, or the
+    /// "supervisor"/"conductor" aliases via [`Town::agent`].
+    async fn resolve_agent_id(town: &Town, raw: &str) -> Result<AgentId> {
+        if let Ok(id) = raw.parse::<AgentId>() {
+            return Ok(id);
+        }
+        let handle = town.agent(raw).await?;
+        Ok(handle.id())
     }
 
     /// Get inbox summary for an agent.
