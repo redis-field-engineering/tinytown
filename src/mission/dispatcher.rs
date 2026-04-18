@@ -30,6 +30,16 @@ pub struct DispatcherConfig {
     pub tick_interval_secs: u64,
     /// Redis lease TTL for per-mission dispatcher ownership.
     pub lock_ttl_secs: u64,
+    /// Base interval between repeated "mission help needed" prompts to the
+    /// conductor when the underlying reason has not changed. The effective
+    /// interval grows exponentially with consecutive repeats (see
+    /// [`help_repeat_backoff_cap`]) so a long-stalled mission does not spam
+    /// the chat every few minutes.
+    pub help_repeat_interval_secs: u64,
+    /// Maximum multiplier applied to [`help_repeat_interval_secs`] via
+    /// exponential backoff. `attempt = 0` uses 1x, `attempt = 1` uses 2x,
+    /// and so on, capped at this value.
+    pub help_repeat_backoff_cap: u32,
 }
 
 impl Default for DispatcherConfig {
@@ -37,6 +47,11 @@ impl Default for DispatcherConfig {
         Self {
             tick_interval_secs: 30,
             lock_ttl_secs: 90,
+            // 30 minutes base interval, doubling up to 8x (≈ 4 hours) so a
+            // mission that has been blocked for a while is re-raised on a
+            // human-scale cadence instead of every few ticks.
+            help_repeat_interval_secs: 1800,
+            help_repeat_backoff_cap: 8,
         }
     }
 }
@@ -156,20 +171,30 @@ impl<G: GitHubClient> MissionDispatcher<G> {
                 }
 
                 if let Some(reason) = self.assess_help_needed(&mission).await? {
-                    let should_send = mission
-                        .dispatcher_last_help_request_at
-                        .map(|sent_at| {
-                            mission.dispatcher_last_help_request_reason.as_deref()
-                                != Some(reason.as_str())
-                                || Utc::now() - sent_at
-                                    >= Duration::seconds(
-                                        (self.config.tick_interval_secs * 6) as i64,
-                                    )
-                        })
-                        .unwrap_or(true);
+                    let reason_changed = mission.dispatcher_last_help_request_reason.as_deref()
+                        != Some(reason.as_str());
+                    let should_send = match mission.dispatcher_last_help_request_at {
+                        None => true,
+                        Some(_) if reason_changed => true,
+                        Some(sent_at) => {
+                            // Exponential backoff on repeats of the same reason so
+                            // we don't spam the conductor every few ticks for a
+                            // mission that has been blocked for hours.
+                            let attempts = mission.dispatcher_help_request_attempts;
+                            let shift = attempts.min(30);
+                            let raw_multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+                            let multiplier = raw_multiplier
+                                .min(self.config.help_repeat_backoff_cap.max(1) as u64);
+                            let interval_secs = self
+                                .config
+                                .help_repeat_interval_secs
+                                .saturating_mul(multiplier);
+                            Utc::now() - sent_at >= Duration::seconds(interval_secs as i64)
+                        }
+                    };
                     if should_send {
                         self.send_help_request(*mission_id, &reason).await?;
-                        mission.record_help_request(reason);
+                        mission.record_help_request(reason, reason_changed);
                     }
                 }
 

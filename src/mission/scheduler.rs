@@ -533,7 +533,7 @@ impl MissionScheduler {
             .collect();
 
         // Sort by total score descending
-        scored.sort_by(|a, b| b.1.total().cmp(&a.1.total()));
+        scored.sort_by_key(|entry| std::cmp::Reverse(entry.1.total()));
 
         // Return best match if score is positive
         scored
