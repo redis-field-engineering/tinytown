@@ -474,7 +474,16 @@ async fn gather_queue_depth(state: &AppState) -> std::result::Result<QueueDepthS
             Err(e) => return Err(format!("Failed to read docket pending count: {}", e)),
         };
         let unread_entries = match state.town.channel().docket_group_lag().await {
-            Ok(count) => count,
+            Ok(Some(count)) => count,
+            // No workers group yet, or Redis did not report a numeric lag field
+            // (e.g. stream trimmed, or group predates Redis 7.0). Fall back to
+            // XLEN so the scaler never silently treats unknown lag as zero.
+            Ok(None) => state
+                .town
+                .channel()
+                .docket_len()
+                .await
+                .map_err(|err| format!("Failed to read docket length: {}", err))?,
             Err(e)
                 if e.to_string().contains("NOGROUP") || e.to_string().contains("no such key") =>
             {

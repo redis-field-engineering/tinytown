@@ -1225,7 +1225,13 @@ impl Channel {
     ///
     /// Unlike XLEN, lag excludes acknowledged entries that remain in the stream
     /// for audit/history purposes.
-    pub async fn docket_group_lag(&self) -> Result<usize> {
+    ///
+    /// Returns `Ok(None)` when lag is unknowable: either the workers group is
+    /// not present on the stream, or Redis reports the group without a numeric
+    /// `lag` field (possible on streams trimmed with MAXLEN/MINID, or on groups
+    /// created before Redis 7.0). Callers should fall back to XLEN in that case
+    /// rather than treating a missing lag as zero unread entries.
+    pub async fn docket_group_lag(&self) -> Result<Option<usize>> {
         let mut conn = self.conn.clone();
         let key = self.docket_tasks_key();
 
@@ -1239,16 +1245,14 @@ impl Channel {
             let Some(name) = group.get("name") else {
                 continue;
             };
-            if name == Self::DOCKET_GROUP
-                && let Some(lag) = group
+            if name == Self::DOCKET_GROUP {
+                return Ok(group
                     .get("lag")
-                    .and_then(|value| value.parse::<usize>().ok())
-            {
-                return Ok(lag);
+                    .and_then(|value| value.parse::<usize>().ok()));
             }
         }
 
-        Ok(0)
+        Ok(None)
     }
 
     /// Log a task lifecycle event to the docket events stream.
