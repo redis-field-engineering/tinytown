@@ -39,6 +39,10 @@ pub struct Config {
     #[serde(default)]
     pub townhall: TownhallConfig,
 
+    /// Agent worker runtime configuration
+    #[serde(default)]
+    pub agent: AgentConfig,
+
     /// Available agent CLIs (e.g., claude, auggie, codex)
     #[serde(default)]
     pub agent_clis: HashMap<String, AgentCli>,
@@ -97,6 +101,14 @@ pub struct TownhallConfig {
     /// Mutual TLS configuration for client certificate auth
     #[serde(default)]
     pub mtls: MtlsConfig,
+}
+
+/// Agent worker runtime configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Seconds an idle worker should wait before draining and exiting.
+    #[serde(default = "default_agent_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
 }
 
 /// Authentication mode for townhall.
@@ -303,6 +315,10 @@ fn default_timeout_ms() -> u64 {
     30000
 }
 
+fn default_agent_idle_timeout_secs() -> u64 {
+    300
+}
+
 impl Default for TownhallConfig {
     fn default() -> Self {
         Self {
@@ -312,6 +328,14 @@ impl Default for TownhallConfig {
             auth: AuthConfig::default(),
             tls: TlsConfig::default(),
             mtls: MtlsConfig::default(),
+        }
+    }
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            idle_timeout_secs: default_agent_idle_timeout_secs(),
         }
     }
 }
@@ -596,6 +620,7 @@ impl Config {
             use_central_redis,
             use_streams: false,
             townhall: TownhallConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 

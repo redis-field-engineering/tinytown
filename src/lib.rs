@@ -70,7 +70,9 @@ pub use app::services::{
     AgentService, BacklogService, MessageService, RecoveryService, TaskService,
 };
 pub use channel::Channel;
-pub use config::{AuthConfig, AuthMode, Config, MtlsConfig, Scope, TlsConfig, TownhallConfig};
+pub use config::{
+    AgentConfig, AuthConfig, AuthMode, Config, MtlsConfig, Scope, TlsConfig, TownhallConfig,
+};
 pub use error::{Error, Result};
 pub use events::{EventStream, EventType, TownEvent};
 pub use global_config::GlobalConfig;

@@ -142,6 +142,74 @@ paths:
               schema:
                 type: string
 
+  /api/scaling:
+    get:
+      tags: [Health]
+      summary: Autoscaler scaling signal
+      operationId: scalingSignal
+      responses:
+        '200':
+          description: JSON scaling snapshot for external autoscalers
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - town
+                  - timestamp
+                  - queue_depth
+                  - pending_tasks
+                  - in_flight_tasks
+                  - active_agents
+                  - cold_agents
+                  - desired_agents
+                  - max_agents
+                  - scaling_recommendation
+                properties:
+                  town:
+                    type: string
+                    example: mytown
+                  timestamp:
+                    type: string
+                    format: date-time
+                  queue_depth:
+                    type: integer
+                    minimum: 0
+                    example: 3
+                  pending_tasks:
+                    type: integer
+                    minimum: 0
+                    example: 2
+                  in_flight_tasks:
+                    type: integer
+                    minimum: 0
+                    example: 1
+                  active_agents:
+                    type: integer
+                    minimum: 0
+                    example: 1
+                  cold_agents:
+                    type: integer
+                    minimum: 0
+                    example: 0
+                  desired_agents:
+                    type: integer
+                    minimum: 0
+                    example: 3
+                  max_agents:
+                    type: integer
+                    minimum: 1
+                    example: 10
+                  scaling_recommendation:
+                    type: string
+                    enum: [scale_up, steady, scale_down, scale_to_zero]
+        '503':
+          description: Scaling signal unavailable because backing services are unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /v1/town:
     get:
       tags: [Town]
