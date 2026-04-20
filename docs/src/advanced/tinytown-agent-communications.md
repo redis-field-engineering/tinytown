@@ -23,6 +23,12 @@ It also includes message templates for:
 - concrete fix feedback
 - Slack-style chat history examples
 
+It also includes conductor shorthand directives for:
+
+- `$tt.finish`
+- `$tt.next <id>`
+- `$tt.c` / `$tt.continue`
+
 Use it when you want Tinytown examples to look like:
 
 ```text

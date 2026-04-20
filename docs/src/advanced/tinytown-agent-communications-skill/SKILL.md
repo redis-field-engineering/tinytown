@@ -37,6 +37,34 @@ Keep messages short and actionable:
 - name the file or behavior to inspect
 - say what to do next
 
+## Conductor Shorthand Directives
+
+Use these shorthand references when the user wants repeatable Tinytown conductor flows without restating the full instruction block.
+
+### `$tt.finish`
+
+Expand this to:
+
+```text
+Ok, we just merged this PR to main. Switch to main and pull, then look at the gh issues and recommend the next one to work on.
+```
+
+### `$tt.next <id>`
+
+Expand this to:
+
+```text
+If <id> is empty then reference the ID that was suggested above. Open a tinytown mission for <id> and start it. Clean up and delete the mess of agents in this town first. Then examine this task carefully (<id>) and come up with the best combination of agents and roles to encourage agent to agent communication, task parallelism, and feedback, brainstorming, and teamwork between the agents. Then act as the conductor and monitor everything and conduct it to completion and pr submission.
+```
+
+### `$tt.c` / `$tt.continue`
+
+Expand this to:
+
+```text
+You are the conductor of this tinytown. Continue to check the status and ensure it is conducted to completion and submission of a clean PR with all bugbot comments addressed and responded to, let me know the status of the tinytown and if applicable mission, then continue conducting.
+```
+
 ## Recommended Templates
 
 ### Assignment
