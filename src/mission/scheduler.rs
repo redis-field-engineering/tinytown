@@ -121,6 +121,18 @@ pub struct AgentMatchScore {
     pub load_penalty: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentLane {
+    Backend,
+    Frontend,
+    Tester,
+    Reviewer,
+    Devops,
+    Runner,
+    Researcher,
+    Generalist,
+}
+
 impl AgentMatchScore {
     /// Create a new match score.
     #[must_use]
@@ -673,29 +685,17 @@ impl MissionScheduler {
         item: &WorkItem,
         current_assignments: &[(WorkItemId, AgentId)],
     ) -> AgentMatchScore {
+        let lane = self.agent_lane(agent);
         // Base score: role matching
         let base_score = if let Some(ref owner_role) = item.owner_role {
             let role_lower = owner_role.to_lowercase();
             if self.agent_matches_role(agent, &role_lower) {
                 100 // Exact role match
-            } else if self.is_reviewer_agent(agent) {
-                // Reviewer can do review work at full score, other work at penalty
-                if item.kind == WorkKind::Review {
-                    100
-                } else {
-                    25
-                }
             } else {
-                50 // Generic worker
+                self.mismatch_fallback_score(item, &role_lower, lane)
             }
         } else {
-            // No role specified - any worker is fine
-            if self.is_reviewer_agent(agent) {
-                // Prefer non-reviewers for unspecified work
-                40
-            } else {
-                60
-            }
+            self.kind_fallback_score(item, lane)
         };
 
         // Load penalty: reduce score for agents already assigned this tick
@@ -706,6 +706,96 @@ impl MissionScheduler {
         let load_penalty = concurrent_count * 30;
 
         AgentMatchScore::new(base_score, load_penalty)
+    }
+
+    fn kind_fallback_score(&self, item: &WorkItem, lane: AgentLane) -> u32 {
+        match item.kind {
+            WorkKind::Implement => match lane {
+                AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Generalist => 60,
+                AgentLane::Researcher | AgentLane::Runner => 35,
+                AgentLane::Tester => 5,
+                AgentLane::Reviewer => 0,
+            },
+            WorkKind::Test => match lane {
+                AgentLane::Tester => 85,
+                AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Generalist => 45,
+                AgentLane::Runner | AgentLane::Researcher => 30,
+                AgentLane::Reviewer => 10,
+            },
+            WorkKind::Review => match lane {
+                AgentLane::Reviewer => 100,
+                AgentLane::Researcher => 35,
+                AgentLane::Generalist => 20,
+                _ => 5,
+            },
+            WorkKind::Design => match lane {
+                AgentLane::Researcher => 75,
+                AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Generalist => 55,
+                AgentLane::Reviewer => 30,
+                AgentLane::Runner => 20,
+                AgentLane::Tester => 10,
+            },
+            WorkKind::MergeGate => match lane {
+                AgentLane::Runner => 80,
+                AgentLane::Reviewer => 50,
+                AgentLane::Generalist
+                | AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops => 35,
+                AgentLane::Researcher => 20,
+                AgentLane::Tester => 10,
+            },
+            WorkKind::Followup => match lane {
+                AgentLane::Generalist
+                | AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Researcher => 50,
+                AgentLane::Runner => 35,
+                AgentLane::Tester => 20,
+                AgentLane::Reviewer => 10,
+            },
+        }
+    }
+
+    fn mismatch_fallback_score(&self, item: &WorkItem, owner_role: &str, lane: AgentLane) -> u32 {
+        match owner_role {
+            "backend" | "frontend" | "devops" => match lane {
+                AgentLane::Generalist => 55,
+                AgentLane::Backend | AgentLane::Frontend | AgentLane::Devops => 35,
+                AgentLane::Researcher | AgentLane::Runner => 20,
+                AgentLane::Tester => {
+                    if matches!(item.kind, WorkKind::Implement) {
+                        5
+                    } else {
+                        15
+                    }
+                }
+                AgentLane::Reviewer => 0,
+            },
+            "tester" | "test" => match lane {
+                AgentLane::Generalist => 45,
+                AgentLane::Backend | AgentLane::Frontend | AgentLane::Devops => 30,
+                AgentLane::Runner | AgentLane::Researcher => 20,
+                AgentLane::Reviewer => 5,
+                AgentLane::Tester => 100,
+            },
+            "reviewer" | "review" => match lane {
+                AgentLane::Researcher => 20,
+                AgentLane::Generalist => 10,
+                _ => 0,
+            },
+            _ => self.kind_fallback_score(item, lane),
+        }
     }
 
     /// Check if an agent matches a role.
@@ -756,6 +846,53 @@ impl MissionScheduler {
         // Fallback: name-based substring matching
         let agent_name = agent.name.to_lowercase();
         agent_name.contains("review") || agent_name.contains("audit")
+    }
+
+    fn agent_lane(&self, agent: &Agent) -> AgentLane {
+        if let Some(ref role_id) = agent.role_id {
+            match role_id.to_lowercase().as_str() {
+                "backend" => return AgentLane::Backend,
+                "frontend" => return AgentLane::Frontend,
+                "tester" | "test" => return AgentLane::Tester,
+                "reviewer" | "review" | "audit" => return AgentLane::Reviewer,
+                "devops" | "infra" => return AgentLane::Devops,
+                crate::agent::roles::RUNNER => return AgentLane::Runner,
+                crate::agent::roles::RESEARCHER => return AgentLane::Researcher,
+                crate::agent::roles::DEFAULT | crate::agent::roles::WORKER => {
+                    return AgentLane::Generalist;
+                }
+                _ => {}
+            }
+        }
+
+        let agent_name = agent.name.to_lowercase();
+        if agent_name.contains("review") || agent_name.contains("audit") {
+            AgentLane::Reviewer
+        } else if agent_name.contains("test") || agent_name.contains("qa") {
+            AgentLane::Tester
+        } else if agent_name.contains("backend")
+            || agent_name.contains("api")
+            || agent_name.contains("server")
+        {
+            AgentLane::Backend
+        } else if agent_name.contains("frontend")
+            || agent_name.contains("ui")
+            || agent_name.contains("web")
+            || agent_name.contains("client")
+        {
+            AgentLane::Frontend
+        } else if agent_name.contains("devops")
+            || agent_name.contains("infra")
+            || agent_name.contains("deploy")
+        {
+            AgentLane::Devops
+        } else if agent_name.contains("runner") || agent_name.contains("ci") {
+            AgentLane::Runner
+        } else if agent_name.contains("research") || agent_name.contains("explore") {
+            AgentLane::Researcher
+        } else {
+            AgentLane::Generalist
+        }
     }
 
     // ==================== Reviewer Gate ====================

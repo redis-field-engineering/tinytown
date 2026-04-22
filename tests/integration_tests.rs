@@ -2872,6 +2872,58 @@ async fn test_mission_scheduler_assigns_persisted_tasks() -> Result<(), Box<dyn 
     Ok(())
 }
 
+/// Test that implement work prefers backend/generalist lanes over tester lanes.
+#[tokio::test]
+async fn test_mission_scheduler_avoids_assigning_implement_work_to_tester()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionStorage, ObjectiveRef, WorkItem, WorkKind,
+    };
+
+    let town = create_test_town("mission-scheduler-avoid-tester").await?;
+    let backend_handle = town.spawn_agent("backend-worker", "claude").await?;
+    let tester_handle = town.spawn_agent("tester", "claude").await?;
+
+    let mut backend = Agent::new("backend-worker", "claude", AgentType::Worker);
+    backend.id = backend_handle.id();
+    backend.state = AgentState::Idle;
+    town.channel().set_agent_state(&backend).await?;
+
+    let mut tester = Agent::new("tester", "claude", AgentType::Worker);
+    tester.id = tester_handle.id();
+    tester.state = AgentState::Idle;
+    town.channel().set_agent_state(&tester).await?;
+
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
+        owner: "owner".into(),
+        repo: "repo".into(),
+        number: 42,
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut work_item = WorkItem::new(mission.id, "Implement auth flow", WorkKind::Implement);
+    work_item.mark_ready();
+    let work_item_id = work_item.id;
+    storage.save_work_item(&work_item).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    let result = scheduler.tick().await?;
+    assert_eq!(result.total_assigned, 1);
+
+    let updated = storage
+        .get_work_item(mission.id, work_item_id)
+        .await?
+        .expect("work item should exist");
+    assert_eq!(updated.assigned_to, Some(backend_handle.id()));
+
+    Ok(())
+}
+
 /// Test MissionStorage WatchItem operations.
 #[tokio::test]
 async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Error>> {
