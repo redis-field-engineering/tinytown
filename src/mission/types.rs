@@ -465,6 +465,14 @@ impl MissionRun {
         self.updated_at = now;
     }
 
+    /// Clear any remembered dispatcher help-request state after operator action.
+    pub fn clear_help_request_state(&mut self) {
+        self.dispatcher_last_help_request_at = None;
+        self.dispatcher_last_help_request_reason = None;
+        self.dispatcher_help_request_attempts = 0;
+        self.updated_at = Utc::now();
+    }
+
     /// Transition to completed state.
     pub fn complete(&mut self) {
         self.state = MissionState::Completed;

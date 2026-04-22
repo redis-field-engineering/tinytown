@@ -533,6 +533,49 @@ impl Channel {
         Ok(agents.into_iter().find(|a| a.name == name))
     }
 
+    /// Resolve a user-supplied agent reference.
+    ///
+    /// Accepts a full UUID, short UUID, canonical name, nickname/display name,
+    /// or full display label. Returns `Ok(None)` when there is no match.
+    pub async fn resolve_agent_ref(&self, raw: &str) -> Result<Option<crate::agent::Agent>> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Ok(None);
+        }
+
+        if let Ok(agent_id) = raw.parse::<AgentId>() {
+            return self.get_agent_state(agent_id).await;
+        }
+
+        let raw_lower = raw.to_ascii_lowercase();
+        let agents = self.list_agents().await?;
+        let matches: Vec<_> = agents
+            .into_iter()
+            .filter(|agent| {
+                agent.name.eq_ignore_ascii_case(raw)
+                    || agent.display_name().eq_ignore_ascii_case(raw)
+                    || agent.display_label().eq_ignore_ascii_case(raw)
+                    || agent.id.short_id().eq_ignore_ascii_case(&raw_lower)
+            })
+            .collect();
+
+        match matches.as_slice() {
+            [] => Ok(None),
+            [agent] => Ok(Some(agent.clone())),
+            _ => {
+                let labels = matches
+                    .iter()
+                    .map(|agent| format!("{} ({})", agent.display_label(), agent.id.short_id()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(crate::Error::Config(format!(
+                    "Agent reference '{}' is ambiguous: {}",
+                    raw, labels
+                )))
+            }
+        }
+    }
+
     /// Delete an agent from Redis.
     pub async fn delete_agent(&self, agent_id: AgentId) -> Result<()> {
         let mut conn = self.conn.clone();
@@ -946,6 +989,43 @@ impl Channel {
             agent_id
         );
         Ok(messages)
+    }
+
+    /// Remove inbox messages matching a predicate while preserving order.
+    pub async fn remove_inbox_messages_matching<F>(
+        &self,
+        agent_id: AgentId,
+        mut predicate: F,
+    ) -> Result<usize>
+    where
+        F: FnMut(&Message) -> bool,
+    {
+        let mut conn = self.conn.clone();
+        let inbox_key = self.inbox_key(agent_id);
+        let items: Vec<String> = conn.lrange(&inbox_key, 0, -1).await?;
+        if items.is_empty() {
+            return Ok(0);
+        }
+
+        let mut kept = Vec::with_capacity(items.len());
+        let mut removed = 0usize;
+        for item in items {
+            match serde_json::from_str::<Message>(&item) {
+                Ok(message) if predicate(&message) => removed += 1,
+                _ => kept.push(item),
+            }
+        }
+
+        if removed == 0 {
+            return Ok(0);
+        }
+
+        let _: () = conn.del(&inbox_key).await?;
+        if !kept.is_empty() {
+            let _: () = conn.rpush(&inbox_key, kept).await?;
+        }
+
+        Ok(removed)
     }
 
     /// Move a message to another agent's inbox.

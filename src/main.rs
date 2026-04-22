@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use tinytown::{GlobalConfig, Result, Task, Town, plan};
+use tinytown::{AgentState, GlobalConfig, Result, Task, Town, plan};
 
 const TT_AGENT_ID_ENV: &str = "TINYTOWN_AGENT_ID";
 const TT_AGENT_NAME_ENV: &str = "TINYTOWN_AGENT_NAME";
@@ -1900,6 +1900,10 @@ async fn main() -> Result<()> {
             if agents.is_empty() {
                 info!("No agents. Run 'tt spawn <name>' to create one.");
             } else {
+                let prunable = agents
+                    .iter()
+                    .filter(|agent| matches!(agent.state, AgentState::Stopped | AgentState::Error))
+                    .count();
                 info!("Agents:");
                 for agent in agents {
                     info!(
@@ -1907,6 +1911,12 @@ async fn main() -> Result<()> {
                         agent.display_label(),
                         agent.id.short_id(),
                         agent.state
+                    );
+                }
+                if prunable > 0 {
+                    info!(
+                        "  Note: {} terminal agent(s) are still listed. Run 'tt prune' to remove them from Redis.",
+                        prunable
                     );
                 }
             }
@@ -1932,6 +1942,10 @@ async fn main() -> Result<()> {
 
             let agents = town.list_agents().await;
             info!("🤖 Agents: {}", agents.len());
+            let prunable_agents = agents
+                .iter()
+                .filter(|agent| matches!(agent.state, AgentState::Stopped | AgentState::Error))
+                .count();
 
             // Fetch tasks once before the agent loop to avoid N+1 Redis calls
             let all_tasks = town.channel().list_tasks().await.unwrap_or_default();
@@ -2091,6 +2105,13 @@ async fn main() -> Result<()> {
                         info!("      └─ Working: {}", desc);
                     }
                 }
+            }
+
+            if prunable_agents > 0 {
+                info!(
+                    "   Note: {} terminal agent(s) are still listed. Run 'tt prune' to remove them from Redis.",
+                    prunable_agents
+                );
             }
 
             // Task summary section (reuse pre-fetched all_tasks)
@@ -4917,10 +4938,22 @@ Now, help the user orchestrate their project!
                     }
 
                     mission.start();
+                    mission.clear_help_request_state();
                     storage.save_mission(&mission).await?;
                     storage.add_active(mission_id).await?;
+                    let retired = tinytown::mission::retire_help_requests_for_mission(
+                        town.channel(),
+                        mission_id,
+                    )
+                    .await?;
                     storage
-                        .log_event(mission_id, "Mission resumed via CLI")
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Mission resumed via CLI (retired {} stale help request(s))",
+                                retired
+                            ),
+                        )
                         .await?;
 
                     info!("▶️  Mission {} resumed", run_id);
@@ -4969,17 +5002,27 @@ Now, help the user orchestrate their project!
                     let mission_id: MissionId = run_id
                         .parse()
                         .map_err(|_| tinytown::Error::Config("Invalid mission ID".into()))?;
-                    let Some(_mission) = storage.get_mission(mission_id).await? else {
+                    let Some(mut mission) = storage.get_mission(mission_id).await? else {
                         info!("❌ Mission {} not found", run_id);
                         return Ok(());
                     };
 
                     let note = MissionControlMessage::new(mission_id, "conductor", message.clone());
+                    mission.clear_help_request_state();
+                    storage.save_mission(&mission).await?;
                     storage.save_control_message(&note).await?;
+                    let retired = tinytown::mission::retire_help_requests_for_mission(
+                        town.channel(),
+                        mission_id,
+                    )
+                    .await?;
                     storage
                         .log_event(
                             mission_id,
-                            &format!("Conductor note queued for dispatcher: {}", message),
+                            &format!(
+                                "Conductor note queued for dispatcher: {} (retired {} stale help request(s))",
+                                message, retired
+                            ),
                         )
                         .await?;
                     info!("📝 Queued dispatcher note for mission {}", run_id);
@@ -5000,11 +5043,23 @@ Now, help the user orchestrate their project!
                     } else {
                         mission.block("Stopped by user");
                     }
+                    mission.clear_help_request_state();
 
                     storage.save_mission(&mission).await?;
                     storage.remove_active(mission_id).await?;
+                    let retired = tinytown::mission::retire_help_requests_for_mission(
+                        town.channel(),
+                        mission_id,
+                    )
+                    .await?;
                     storage
-                        .log_event(mission_id, &format!("Mission stopped (force={})", force))
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Mission stopped (force={}) and retired {} stale help request(s)",
+                                force, retired
+                            ),
+                        )
                         .await?;
 
                     info!("⏹️  Mission {} stopped", run_id);

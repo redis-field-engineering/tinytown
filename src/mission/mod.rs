@@ -63,6 +63,11 @@ pub mod storage;
 pub mod types;
 pub mod watch;
 
+use crate::agent::AgentId;
+use crate::channel::Channel;
+use crate::error::Result;
+use crate::message::{Message, MessageType};
+
 // Re-export commonly used types
 pub use bootstrap::{build_mission_work_items, parse_issue_ref};
 pub use compiler::{MissionManifest, ParsedIssue, WorkGraph, WorkGraphCompiler};
@@ -82,3 +87,25 @@ pub use watch::{
     PrCheckResult, ReviewComment, ReviewState, WatchEngine, WatchEngineConfig,
     WatchEngineTickResult, WatchTickResult,
 };
+
+/// Returns true when a conductor inbox message is a dispatcher help request for `mission_id`.
+#[must_use]
+pub fn is_help_request_message_for_mission(message: &Message, mission_id: MissionId) -> bool {
+    matches!(
+        &message.msg_type,
+        MessageType::Query { question }
+            if question.contains(&format!("[Mission Help Needed] Mission {}", mission_id))
+    )
+}
+
+/// Remove stale dispatcher help-request prompts for a mission from the conductor mailbox.
+pub async fn retire_help_requests_for_mission(
+    channel: &Channel,
+    mission_id: MissionId,
+) -> Result<usize> {
+    channel
+        .remove_inbox_messages_matching(AgentId::supervisor(), |message| {
+            is_help_request_message_for_mission(message, mission_id)
+        })
+        .await
+}

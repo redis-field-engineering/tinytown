@@ -513,24 +513,11 @@ impl<G: GitHubClient> MissionDispatcher<G> {
     }
 
     async fn resolve_agent_ref(&self, raw: &str) -> Result<Option<AgentId>> {
-        if let Ok(id) = raw.parse::<AgentId>() {
-            return Ok(Some(id));
-        }
-
-        let raw_lower = raw.to_ascii_lowercase();
-        let agents = self.channel.list_agents().await?;
-        let mut matches = agents.into_iter().filter(|agent| {
-            agent.name.eq_ignore_ascii_case(raw)
-                || agent.display_label().eq_ignore_ascii_case(raw)
-                || agent.id.short_id().eq_ignore_ascii_case(&raw_lower)
-        });
-
-        let first = matches.next().map(|agent| agent.id);
-        if matches.next().is_some() {
-            Ok(None)
-        } else {
-            Ok(first)
-        }
+        Ok(self
+            .channel
+            .resolve_agent_ref(raw)
+            .await?
+            .map(|agent| agent.id))
     }
 
     async fn resolve_work_item_ref(

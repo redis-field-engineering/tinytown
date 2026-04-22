@@ -553,18 +553,17 @@ impl Town {
 
     /// Get a handle to an existing agent.
     pub async fn agent(&self, name: &str) -> Result<AgentHandle> {
-        // Look up agent in Redis (persisted across process restarts)
-        if let Some(agent) = self.channel.get_agent_by_name(name).await? {
-            return Ok(AgentHandle {
-                id: agent.id,
-                channel: self.channel.clone(),
-            });
-        }
-
         let normalized = name.trim().to_lowercase();
         if normalized == "supervisor" || normalized == "conductor" {
             return Ok(AgentHandle {
                 id: AgentId::supervisor(),
+                channel: self.channel.clone(),
+            });
+        }
+
+        if let Some(agent) = self.channel.resolve_agent_ref(name).await? {
+            return Ok(AgentHandle {
+                id: agent.id,
                 channel: self.channel.clone(),
             });
         }

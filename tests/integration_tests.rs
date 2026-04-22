@@ -154,6 +154,25 @@ async fn test_supervisor_aliases_resolve_without_spawned_agent()
     Ok(())
 }
 
+#[tokio::test]
+async fn test_agent_lookup_accepts_short_id_nickname_and_display_label()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("agent-ref-resolution-test").await?;
+    let handle = town.spawn_agent("worker141", "claude").await?;
+
+    let mut agent = town.channel().get_agent_state(handle.id()).await?.unwrap();
+    agent.nickname = Some("Piper".into());
+    agent.role_id = Some("worker".into());
+    agent.state = AgentState::Stopped;
+    town.channel().set_agent_state(&agent).await?;
+
+    assert_eq!(town.agent("Piper").await?.id(), handle.id());
+    assert_eq!(town.agent(&handle.id().short_id()).await?.id(), handle.id());
+    assert_eq!(town.agent("Piper [worker]").await?.id(), handle.id());
+
+    Ok(())
+}
+
 /// Test that reserved supervisor/conductor mailbox names cannot be spawned as agents.
 #[tokio::test]
 async fn test_reserved_supervisor_names_cannot_be_spawned() -> Result<(), Box<dyn std::error::Error>>
@@ -4176,6 +4195,67 @@ async fn test_mission_dispatcher_help_request_backoff() -> Result<(), Box<dyn st
 
     drop(town);
     cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_retire_help_requests_for_mission_removes_only_matching_queries()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("mission-help-retire").await?;
+    let mission_a = tinytown::mission::MissionId::new();
+    let mission_b = tinytown::mission::MissionId::new();
+
+    let message_a = Message::new(
+        AgentId::supervisor(),
+        AgentId::supervisor(),
+        MessageType::Query {
+            question: format!(
+                "[Mission Help Needed] Mission {}\n\nMission A blocked",
+                mission_a
+            ),
+        },
+    );
+    let message_b = Message::new(
+        AgentId::supervisor(),
+        AgentId::supervisor(),
+        MessageType::Query {
+            question: format!(
+                "[Mission Help Needed] Mission {}\n\nMission B blocked",
+                mission_b
+            ),
+        },
+    );
+    let other = Message::new(
+        AgentId::supervisor(),
+        AgentId::supervisor(),
+        MessageType::Query {
+            question: "ordinary operator question".into(),
+        },
+    );
+
+    town.channel().send(&message_a).await?;
+    town.channel().send(&message_b).await?;
+    town.channel().send(&other).await?;
+
+    let removed =
+        tinytown::mission::retire_help_requests_for_mission(town.channel(), mission_a).await?;
+    assert_eq!(removed, 1);
+
+    let inbox = town.channel().peek_inbox(AgentId::supervisor(), 10).await?;
+    assert_eq!(inbox.len(), 2);
+    assert!(!inbox.iter().any(|message| {
+        tinytown::mission::is_help_request_message_for_mission(message, mission_a)
+    }));
+    assert!(inbox.iter().any(|message| {
+        tinytown::mission::is_help_request_message_for_mission(message, mission_b)
+    }));
+    assert!(inbox.iter().any(|message| {
+        matches!(
+            &message.msg_type,
+            MessageType::Query { question } if question == "ordinary operator question"
+        )
+    }));
+
     Ok(())
 }
 
