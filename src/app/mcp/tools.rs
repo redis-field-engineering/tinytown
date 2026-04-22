@@ -1493,7 +1493,12 @@ pub fn mission_reject_tool(state: Arc<McpState>) -> Tool {
                 };
                 let storage = mission_storage(&state);
                 match storage.get_mission(mission_id).await {
-                    Ok(Some(_)) => {}
+                    Ok(Some(mut mission)) => {
+                        mission.clear_help_request_state();
+                        if let Err(e) = storage.save_mission(&mission).await {
+                            return Ok(error_response(e.to_string()));
+                        }
+                    }
                     Ok(None) => {
                         return Ok(error_response(format!(
                             "Mission {} not found",
@@ -1551,7 +1556,7 @@ pub fn mission_pause_tool(state: Arc<McpState>) -> Tool {
                     Err(msg) => return Ok(error_response(msg)),
                 };
                 let storage = mission_storage(&state);
-                let Some(mission) = (match storage.get_mission(mission_id).await {
+                let Some(mut mission) = (match storage.get_mission(mission_id).await {
                     Ok(mission) => mission,
                     Err(e) => return Ok(error_response(e.to_string())),
                 }) else {
@@ -1578,7 +1583,19 @@ pub fn mission_pause_tool(state: Arc<McpState>) -> Tool {
                     "mcp",
                     "pause requested via mission.pause",
                 );
+                mission.clear_help_request_state();
+                if let Err(e) = storage.save_mission(&mission).await {
+                    return Ok(error_response(e.to_string()));
+                }
                 if let Err(e) = storage.save_control_message(&note).await {
+                    return Ok(error_response(e.to_string()));
+                }
+                if let Err(e) = crate::mission::retire_help_requests_for_mission(
+                    state.town.channel(),
+                    mission_id,
+                )
+                .await
+                {
                     return Ok(error_response(e.to_string()));
                 }
                 let dispatcher = crate::mission::MissionDispatcher::new(
@@ -1614,7 +1631,7 @@ pub fn mission_resume_tool(state: Arc<McpState>) -> Tool {
                     Err(msg) => return Ok(error_response(msg)),
                 };
                 let storage = mission_storage(&state);
-                let Some(mission) = (match storage.get_mission(mission_id).await {
+                let Some(mut mission) = (match storage.get_mission(mission_id).await {
                     Ok(mission) => mission,
                     Err(e) => return Ok(error_response(e.to_string())),
                 }) else {
@@ -1654,7 +1671,19 @@ pub fn mission_resume_tool(state: Arc<McpState>) -> Tool {
                     "mcp",
                     "resume requested via mission.resume",
                 );
+                mission.clear_help_request_state();
+                if let Err(e) = storage.save_mission(&mission).await {
+                    return Ok(error_response(e.to_string()));
+                }
                 if let Err(e) = storage.save_control_message(&note).await {
+                    return Ok(error_response(e.to_string()));
+                }
+                if let Err(e) = crate::mission::retire_help_requests_for_mission(
+                    state.town.channel(),
+                    mission_id,
+                )
+                .await
+                {
                     return Ok(error_response(e.to_string()));
                 }
                 let dispatcher = crate::mission::MissionDispatcher::new(
@@ -1798,10 +1827,22 @@ pub fn mission_note_tool(state: Arc<McpState>) -> Tool {
                 if let Err(e) = storage.save_control_message(&note).await {
                     return Ok(error_response(e.to_string()));
                 }
+                let retired = match crate::mission::retire_help_requests_for_mission(
+                    state.town.channel(),
+                    mission_id,
+                )
+                .await
+                {
+                    Ok(retired) => retired,
+                    Err(e) => return Ok(error_response(e.to_string())),
+                };
                 if let Err(e) = storage
                     .log_event(
                         mission_id,
-                        &format!("Operator note queued via MCP: {}", input.message),
+                        &format!(
+                            "Operator note queued via MCP: {} (retired {} stale help request(s))",
+                            input.message, retired
+                        ),
                     )
                     .await
                 {
@@ -1954,6 +1995,7 @@ pub fn mission_stop_tool(state: Arc<McpState>) -> Tool {
                 } else {
                     mission.block("Stopped by user");
                 }
+                mission.clear_help_request_state();
 
                 if let Err(e) = storage.save_mission(&mission).await {
                     return Ok(error_response(e.to_string()));
@@ -1961,10 +2003,22 @@ pub fn mission_stop_tool(state: Arc<McpState>) -> Tool {
                 if let Err(e) = storage.remove_active(mission_id).await {
                     return Ok(error_response(e.to_string()));
                 }
+                let retired = match crate::mission::retire_help_requests_for_mission(
+                    state.town.channel(),
+                    mission_id,
+                )
+                .await
+                {
+                    Ok(retired) => retired,
+                    Err(e) => return Ok(error_response(e.to_string())),
+                };
                 if let Err(e) = storage
                     .log_event(
                         mission_id,
-                        &format!("Mission stopped via MCP (force={})", input.force),
+                        &format!(
+                            "Mission stopped via MCP (force={}) and retired {} stale help request(s)",
+                            input.force, retired
+                        ),
                     )
                     .await
                 {

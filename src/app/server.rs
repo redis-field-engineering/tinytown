@@ -1181,6 +1181,7 @@ async fn stop_mission(
     } else {
         mission.block("Stopped by user");
     }
+    mission.clear_help_request_state();
 
     storage
         .save_mission(&mission)
@@ -1190,10 +1191,16 @@ async fn stop_mission(
         .remove_active(id)
         .await
         .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let retired = crate::mission::retire_help_requests_for_mission(state.town.channel(), id)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
     let _ = storage
         .log_event(
             id,
-            &format!("Mission stopped via API (force={})", req.force),
+            &format!(
+                "Mission stopped via API (force={}) and retired {} stale help request(s)",
+                req.force, retired
+            ),
         )
         .await;
 
@@ -1226,6 +1233,7 @@ async fn resume_mission(
     }
 
     mission.start();
+    mission.clear_help_request_state();
     storage
         .save_mission(&mission)
         .await
@@ -1234,7 +1242,18 @@ async fn resume_mission(
         .add_active(id)
         .await
         .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
-    let _ = storage.log_event(id, "Mission resumed via API").await;
+    let retired = crate::mission::retire_help_requests_for_mission(state.town.channel(), id)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let _ = storage
+        .log_event(
+            id,
+            &format!(
+                "Mission resumed via API (retired {} stale help request(s))",
+                retired
+            ),
+        )
+        .await;
 
     Ok(Json(serde_json::json!({
         "id": id.to_string(),
