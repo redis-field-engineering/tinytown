@@ -614,6 +614,20 @@ enum Commands {
         /// Reclaim only from a specific dead agent
         #[arg(long, value_name = "AGENT")]
         from: Option<String>,
+
+        /// Scan the task table for tasks whose assigned agent is missing or
+        /// terminal (instead of draining dead-agent inboxes). Pairs with
+        /// --to-backlog, --cancel, or --delete; default is list-only.
+        #[arg(long)]
+        orphan_tasks: bool,
+
+        /// When used with --orphan-tasks, mark each orphan as cancelled.
+        #[arg(long, conflicts_with_all = ["to_backlog", "to", "delete"])]
+        cancel: bool,
+
+        /// When used with --orphan-tasks, delete each orphan task entirely.
+        #[arg(long, conflicts_with_all = ["to_backlog", "to", "cancel"])]
+        delete: bool,
     },
 
     /// Restart a stopped agent with fresh rounds
@@ -4275,8 +4289,64 @@ Now, help the user orchestrate their project!
             to_backlog,
             to,
             from,
+            orphan_tasks,
+            cancel,
+            delete,
         } => {
             let town = Town::connect(&cli.town).await?;
+
+            if orphan_tasks {
+                use tinytown::app::services::recovery::{
+                    OrphanAction, OrphanReason, RecoveryService,
+                };
+
+                let action = if to_backlog {
+                    OrphanAction::ToBacklog
+                } else if cancel {
+                    OrphanAction::Cancel
+                } else if delete {
+                    OrphanAction::Delete
+                } else {
+                    OrphanAction::List
+                };
+
+                let result = RecoveryService::reclaim_orphan_tasks(&town, action).await?;
+
+                if result.orphans.is_empty() {
+                    info!("✨ No orphan tasks found");
+                    return Ok(());
+                }
+
+                info!("🔎 Found {} orphan task(s):", result.orphans.len());
+                for info in &result.orphans {
+                    let reason = match info.reason {
+                        OrphanReason::AgentMissing => "assignee missing",
+                        OrphanReason::AgentTerminal => "assignee terminal",
+                    };
+                    info!(
+                        "   task {} (state={:?}) → {} [{}]",
+                        info.task_id, info.state, info.assigned_to, reason
+                    );
+                }
+
+                match action {
+                    OrphanAction::List => {
+                        info!("");
+                        info!("   Use --to-backlog, --cancel, or --delete to act on them");
+                    }
+                    OrphanAction::ToBacklog => {
+                        info!("✅ Requeued {} task(s) to backlog", result.orphans.len());
+                    }
+                    OrphanAction::Cancel => {
+                        info!("✅ Cancelled {} task(s)", result.orphans.len());
+                    }
+                    OrphanAction::Delete => {
+                        info!("✅ Deleted {} task(s)", result.orphans.len());
+                    }
+                }
+                return Ok(());
+            }
+
             let agents = town.list_agents().await;
 
             // Find dead agents (stopped or error state)

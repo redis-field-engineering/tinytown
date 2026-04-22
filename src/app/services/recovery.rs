@@ -39,6 +39,44 @@ pub enum ReclaimDestination {
     Listed,
 }
 
+/// Action to take on each orphan task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrphanAction {
+    /// Just return the list without mutating anything.
+    List,
+    /// Reset to pending, clear assigned_to, push onto backlog.
+    ToBacklog,
+    /// Mark as cancelled with a reason.
+    Cancel,
+    /// Delete the task hash entirely.
+    Delete,
+}
+
+/// Result of an orphan-task reclaim.
+#[derive(Debug, Clone)]
+pub struct OrphanReclaimResult {
+    pub action: OrphanAction,
+    pub orphans: Vec<OrphanTaskInfo>,
+}
+
+/// Minimal snapshot of an orphan task for reporting.
+#[derive(Debug, Clone)]
+pub struct OrphanTaskInfo {
+    pub task_id: TaskId,
+    pub assigned_to: AgentId,
+    pub state: crate::task::TaskState,
+    pub reason: OrphanReason,
+}
+
+/// Why a task was flagged as orphaned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrphanReason {
+    /// Assigned agent is not present in the agent registry at all.
+    AgentMissing,
+    /// Assigned agent exists but is in a terminal state (stopped/error).
+    AgentTerminal,
+}
+
 /// Service for recovery operations.
 pub struct RecoveryService;
 
@@ -205,5 +243,81 @@ impl RecoveryService {
         } else {
             Ok(1)
         }
+    }
+
+    /// Reclaim tasks stranded on agents that no longer exist in the registry
+    /// (fully pruned) or whose registered state is terminal. Unlike
+    /// [`Self::reclaim`], which drains dead agents' inboxes, this scans the
+    /// task table directly so it catches tasks that were already picked up
+    /// out of the inbox before the agent died.
+    pub async fn reclaim_orphan_tasks(
+        town: &Town,
+        action: OrphanAction,
+    ) -> Result<OrphanReclaimResult> {
+        let channel = town.channel();
+        let agents = town.list_agents().await;
+
+        let mut agents_by_id: std::collections::HashMap<AgentId, &Agent> =
+            std::collections::HashMap::with_capacity(agents.len());
+        for a in &agents {
+            agents_by_id.insert(a.id, a);
+        }
+
+        let tasks = channel.list_tasks().await?;
+        let mut orphans = Vec::new();
+
+        for t in tasks {
+            if t.state.is_terminal() {
+                continue;
+            }
+            let Some(assignee_id) = t.assigned_to else {
+                continue;
+            };
+
+            let reason = match agents_by_id.get(&assignee_id) {
+                None => Some(OrphanReason::AgentMissing),
+                Some(a) if a.state.is_terminal() => Some(OrphanReason::AgentTerminal),
+                Some(_) => None,
+            };
+
+            let Some(reason) = reason else { continue };
+
+            orphans.push(OrphanTaskInfo {
+                task_id: t.id,
+                assigned_to: assignee_id,
+                state: t.state,
+                reason,
+            });
+        }
+
+        for info in &orphans {
+            match action {
+                OrphanAction::List => {}
+                OrphanAction::ToBacklog => {
+                    if let Some(mut task) = channel.get_task(info.task_id).await? {
+                        task.requeue();
+                        channel.set_task(&task).await?;
+                        channel.backlog_push(task.id).await?;
+                    }
+                }
+                OrphanAction::Cancel => {
+                    if let Some(mut task) = channel.get_task(info.task_id).await? {
+                        let reason = match info.reason {
+                            OrphanReason::AgentMissing => "Cancelled: assignee no longer exists",
+                            OrphanReason::AgentTerminal => {
+                                "Cancelled: assignee is in a terminal state"
+                            }
+                        };
+                        task.cancel(reason);
+                        channel.set_task(&task).await?;
+                    }
+                }
+                OrphanAction::Delete => {
+                    channel.delete_task(info.task_id).await?;
+                }
+            }
+        }
+
+        Ok(OrphanReclaimResult { action, orphans })
     }
 }

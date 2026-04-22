@@ -26,6 +26,7 @@ use crate::app::audit::audit_middleware;
 use crate::app::auth::{AuthState, auth_middleware, require_scope, route_scopes};
 use crate::app::services::messages::MessageKind;
 use crate::config::AuthConfig;
+use crate::mission::types::MissionId;
 use crate::mission::{MissionState, MissionStorage};
 use crate::{AgentService, BacklogService, MessageService, RecoveryService, TaskService, Town};
 
@@ -143,6 +144,12 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/v1/agents/prune", post(prune_agents))
         .route("/v1/recover", post(recover))
         .route("/v1/reclaim", post(reclaim))
+        .route("/v1/reclaim/orphan-tasks", post(reclaim_orphan_tasks))
+        .route("/v1/missions/{id}/stop", post(stop_mission))
+        .route("/v1/missions/{id}/resume", post(resume_mission))
+        .route("/v1/missions/{id}/complete", post(complete_mission))
+        .route("/v1/missions/{id}/fail", post(fail_mission))
+        .route("/v1/missions/{id}", delete(delete_mission_route))
         .route_layer(middleware::from_fn(move |req, next| {
             require_scope(route_scopes::AGENT_MGMT, req, next)
         }));
@@ -1052,4 +1059,283 @@ async fn reclaim(
     Ok(Json(
         serde_json::json!({ "reclaimed": r.tasks_reclaimed, "destination": format!("{:?}", r.destination) }),
     ))
+}
+
+#[derive(Deserialize, Default)]
+struct OrphanReclaimReq {
+    /// One of: "list" (default), "to_backlog", "cancel", "delete".
+    #[serde(default)]
+    action: Option<String>,
+}
+
+async fn reclaim_orphan_tasks(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<OrphanReclaimReq>>,
+) -> ApiResult<impl IntoResponse> {
+    use crate::app::services::recovery::{OrphanAction, OrphanReason};
+
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let action = match req.action.as_deref().unwrap_or("list") {
+        "list" | "" => OrphanAction::List,
+        "to_backlog" | "backlog" => OrphanAction::ToBacklog,
+        "cancel" => OrphanAction::Cancel,
+        "delete" => OrphanAction::Delete,
+        other => {
+            return Err(ProblemDetails::bad_request(&format!(
+                "unknown action '{}': expected one of list|to_backlog|cancel|delete",
+                other
+            )));
+        }
+    };
+
+    let r = RecoveryService::reclaim_orphan_tasks(&state.town, action)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+
+    let orphans: Vec<_> = r
+        .orphans
+        .iter()
+        .map(|o| {
+            serde_json::json!({
+                "task_id": o.task_id.to_string(),
+                "assigned_to": o.assigned_to.to_string(),
+                "state": format!("{:?}", o.state).to_lowercase(),
+                "reason": match o.reason {
+                    OrphanReason::AgentMissing => "agent_missing",
+                    OrphanReason::AgentTerminal => "agent_terminal",
+                },
+            })
+        })
+        .collect();
+
+    let action_str = match r.action {
+        OrphanAction::List => "list",
+        OrphanAction::ToBacklog => "to_backlog",
+        OrphanAction::Cancel => "cancel",
+        OrphanAction::Delete => "delete",
+    };
+
+    Ok(Json(serde_json::json!({
+        "action": action_str,
+        "count": r.orphans.len(),
+        "orphans": orphans,
+    })))
+}
+
+fn mission_storage(state: &AppState) -> MissionStorage {
+    MissionStorage::new(
+        state.town.channel().conn().clone(),
+        state.town.channel().town_name(),
+    )
+}
+
+fn parse_mission_id(
+    raw: &str,
+) -> std::result::Result<MissionId, (StatusCode, Json<ProblemDetails>)> {
+    raw.parse::<MissionId>()
+        .map_err(|_| ProblemDetails::bad_request(&format!("invalid mission id '{}'", raw)))
+}
+
+async fn load_mission(
+    storage: &MissionStorage,
+    id: MissionId,
+) -> ApiResult<crate::mission::types::MissionRun> {
+    match storage.get_mission(id).await {
+        Ok(Some(m)) => Ok(m),
+        Ok(None) => Err(ProblemDetails::not_found(&format!(
+            "mission {} not found",
+            id
+        ))),
+        Err(e) => Err(ProblemDetails::internal_error(&e.to_string())),
+    }
+}
+
+fn mission_state_str(s: MissionState) -> &'static str {
+    match s {
+        MissionState::Planning => "planning",
+        MissionState::Running => "running",
+        MissionState::Blocked => "blocked",
+        MissionState::Completed => "completed",
+        MissionState::Failed => "failed",
+    }
+}
+
+#[derive(Deserialize, Default)]
+struct StopMissionReq {
+    #[serde(default)]
+    force: bool,
+}
+
+async fn stop_mission(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+    body: Option<Json<StopMissionReq>>,
+) -> ApiResult<impl IntoResponse> {
+    let id = parse_mission_id(&id_str)?;
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let storage = mission_storage(&state);
+
+    let mut mission = load_mission(&storage, id).await?;
+    if req.force {
+        mission.fail("Stopped by user (forced)");
+    } else {
+        mission.block("Stopped by user");
+    }
+
+    storage
+        .save_mission(&mission)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    storage
+        .remove_active(id)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let _ = storage
+        .log_event(
+            id,
+            &format!("Mission stopped via API (force={})", req.force),
+        )
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "id": id.to_string(),
+        "state": mission_state_str(mission.state),
+    })))
+}
+
+async fn resume_mission(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id = parse_mission_id(&id_str)?;
+    let storage = mission_storage(&state);
+    let mut mission = load_mission(&storage, id).await?;
+
+    if mission.state == MissionState::Running {
+        return Ok(Json(serde_json::json!({
+            "id": id.to_string(),
+            "state": mission_state_str(mission.state),
+            "note": "already running",
+        })));
+    }
+    if mission.state.is_terminal() {
+        return Err(ProblemDetails::bad_request(&format!(
+            "mission is {} and cannot be resumed",
+            mission_state_str(mission.state)
+        )));
+    }
+
+    mission.start();
+    storage
+        .save_mission(&mission)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    storage
+        .add_active(id)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let _ = storage.log_event(id, "Mission resumed via API").await;
+
+    Ok(Json(serde_json::json!({
+        "id": id.to_string(),
+        "state": mission_state_str(mission.state),
+    })))
+}
+
+async fn complete_mission(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id = parse_mission_id(&id_str)?;
+    let storage = mission_storage(&state);
+    let mut mission = load_mission(&storage, id).await?;
+
+    if mission.state == MissionState::Completed {
+        return Ok(Json(serde_json::json!({
+            "id": id.to_string(),
+            "state": "completed",
+            "note": "already completed",
+        })));
+    }
+
+    mission.complete();
+    storage
+        .save_mission(&mission)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    storage
+        .remove_active(id)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let _ = storage.log_event(id, "Mission completed via API").await;
+
+    Ok(Json(serde_json::json!({
+        "id": id.to_string(),
+        "state": "completed",
+    })))
+}
+
+#[derive(Deserialize, Default)]
+struct FailMissionReq {
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn fail_mission(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+    body: Option<Json<FailMissionReq>>,
+) -> ApiResult<impl IntoResponse> {
+    let id = parse_mission_id(&id_str)?;
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let storage = mission_storage(&state);
+    let mut mission = load_mission(&storage, id).await?;
+
+    let reason = req
+        .reason
+        .unwrap_or_else(|| "Marked failed via API".to_string());
+
+    mission.fail(reason.clone());
+    storage
+        .save_mission(&mission)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    storage
+        .remove_active(id)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+    let _ = storage
+        .log_event(id, &format!("Mission failed via API: {}", reason))
+        .await;
+
+    Ok(Json(serde_json::json!({
+        "id": id.to_string(),
+        "state": "failed",
+        "reason": reason,
+    })))
+}
+
+async fn delete_mission_route(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id_str): axum::extract::Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let id = parse_mission_id(&id_str)?;
+    let storage = mission_storage(&state);
+
+    let deleted = storage
+        .delete_mission(id)
+        .await
+        .map_err(|e| ProblemDetails::internal_error(&e.to_string()))?;
+
+    if !deleted {
+        return Err(ProblemDetails::not_found(&format!(
+            "mission {} not found",
+            id
+        )));
+    }
+
+    Ok(Json(serde_json::json!({
+        "id": id.to_string(),
+        "deleted": true,
+    })))
 }

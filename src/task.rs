@@ -182,4 +182,72 @@ impl Task {
         self.completed_at = Some(Utc::now());
         self.updated_at = Utc::now();
     }
+
+    /// Mark task as cancelled with an optional reason.
+    pub fn cancel(&mut self, reason: impl Into<String>) {
+        self.state = TaskState::Cancelled;
+        self.result = Some(reason.into());
+        self.completed_at = Some(Utc::now());
+        self.updated_at = Utc::now();
+    }
+
+    /// Reset an assigned/running task back to pending so it can be requeued.
+    pub fn requeue(&mut self) {
+        self.state = TaskState::Pending;
+        self.assigned_to = None;
+        self.started_at = None;
+        self.updated_at = Utc::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::AgentId;
+
+    #[test]
+    fn cancel_sets_terminal_state_and_records_reason() {
+        let mut task = Task::new("ship it");
+        task.assign(AgentId::new());
+        task.start();
+        let before = task.updated_at;
+
+        task.cancel("assignee gone");
+
+        assert_eq!(task.state, TaskState::Cancelled);
+        assert!(task.state.is_terminal());
+        assert_eq!(task.result.as_deref(), Some("assignee gone"));
+        assert!(task.completed_at.is_some());
+        assert!(task.updated_at >= before);
+    }
+
+    #[test]
+    fn requeue_clears_assignment_and_returns_to_pending() {
+        let mut task = Task::new("ship it");
+        let agent = AgentId::new();
+        task.assign(agent);
+        task.start();
+        assert_eq!(task.state, TaskState::Running);
+        assert_eq!(task.assigned_to, Some(agent));
+        assert!(task.started_at.is_some());
+
+        task.requeue();
+
+        assert_eq!(task.state, TaskState::Pending);
+        assert!(task.assigned_to.is_none());
+        assert!(task.started_at.is_none());
+        assert!(!task.state.is_terminal());
+    }
+
+    #[test]
+    fn requeue_from_assigned_also_clears_assignee() {
+        let mut task = Task::new("ship it");
+        task.assign(AgentId::new());
+        assert_eq!(task.state, TaskState::Assigned);
+
+        task.requeue();
+
+        assert_eq!(task.state, TaskState::Pending);
+        assert!(task.assigned_to.is_none());
+    }
 }
