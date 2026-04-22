@@ -219,16 +219,16 @@ impl WorkGraphCompiler {
 
     /// Infer owner role from issue labels or content.
     #[must_use]
-    pub fn infer_owner_role(&self, title: &str, body: &str) -> Option<String> {
+    pub fn infer_owner_role(&self, title: &str, body: &str, kind: WorkKind) -> Option<String> {
         let text = format!("{} {}", title, body).to_lowercase();
 
         if text.contains("backend") || text.contains("api") || text.contains("server") {
             Some("backend".to_string())
         } else if text.contains("frontend") || text.contains("ui") || text.contains("web") {
             Some("frontend".to_string())
-        } else if text.contains("test") || text.contains("qa") {
+        } else if matches!(kind, WorkKind::Test) || text.contains("qa owner") {
             Some("tester".to_string())
-        } else if text.contains("review") {
+        } else if matches!(kind, WorkKind::Review) {
             Some("reviewer".to_string())
         } else if text.contains("devops")
             || text.contains("infrastructure")
@@ -252,7 +252,7 @@ impl WorkGraphCompiler {
     ) -> ParsedIssue {
         let depends_on = self.parse_dependencies(&body);
         let kind = self.infer_work_kind(&title, &body);
-        let owner_role = self.infer_owner_role(&title, &body);
+        let owner_role = self.infer_owner_role(&title, &body, kind);
 
         ParsedIssue {
             number,
@@ -513,6 +513,36 @@ mod tests {
         assert_eq!(
             compiler.infer_work_kind("Implement feature", ""),
             WorkKind::Implement
+        );
+    }
+
+    #[test]
+    fn test_infer_owner_role_is_kind_aware_for_implement_work() {
+        let compiler = WorkGraphCompiler::new();
+
+        assert_eq!(
+            compiler.infer_owner_role(
+                "Implement auth flow",
+                "Also add integration tests for login and signup",
+                WorkKind::Implement
+            ),
+            None
+        );
+        assert_eq!(
+            compiler
+                .infer_owner_role(
+                    "Implement auth API",
+                    "Add integration tests for login and signup",
+                    WorkKind::Implement
+                )
+                .as_deref(),
+            Some("backend")
+        );
+        assert_eq!(
+            compiler
+                .infer_owner_role("Add integration tests", "", WorkKind::Test)
+                .as_deref(),
+            Some("tester")
         );
     }
 

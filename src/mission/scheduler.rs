@@ -30,7 +30,7 @@ use crate::mission::types::{
     MissionId, MissionRun, MissionState, TriggerAction, WatchItem, WatchKind, WatchStatus,
     WorkItem, WorkItemId, WorkKind, WorkStatus,
 };
-use crate::task::Task;
+use crate::task::{Task, TaskState};
 
 // ==================== Configuration ====================
 
@@ -62,6 +62,8 @@ impl Default for SchedulerConfig {
 pub struct MissionTickResult {
     /// Mission ID
     pub mission_id: MissionId,
+    /// Work items whose ownership/status was reconciled against live mission tasks.
+    pub reconciled: Vec<WorkItemId>,
     /// Work items promoted to ready
     pub promoted: Vec<WorkItemId>,
     /// Work items assigned to agents
@@ -117,6 +119,27 @@ pub struct AgentMatchScore {
     pub score: u32,
     /// Penalty for concurrent items (lower is worse)
     pub load_penalty: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentLane {
+    Backend,
+    Frontend,
+    Tester,
+    Reviewer,
+    Devops,
+    Runner,
+    Researcher,
+    Generalist,
+}
+
+fn normalize_role_alias(role: &str) -> &str {
+    match role {
+        "test" => "tester",
+        "review" | "audit" => "reviewer",
+        "infra" => "devops",
+        other => other,
+    }
 }
 
 impl AgentMatchScore {
@@ -238,6 +261,12 @@ impl MissionScheduler {
         let mut work_items = self.storage.list_work_items(mission_id).await?;
         let watches = self.storage.list_watch_items(mission_id).await?;
 
+        // Step -1: reconcile stale assignees against the current mission-task set.
+        let reconciled = self
+            .reconcile_work_item_assignments(&mut work_items, &mission, agents)
+            .await?;
+        result.reconciled = reconciled;
+
         // Step 0: finalize previously submitted work once review/watch gates are clear.
         let completed = self.complete_waiting_items(&mut work_items, &mission, &watches);
         for id in &completed {
@@ -332,6 +361,119 @@ impl MissionScheduler {
         }
 
         Ok(result)
+    }
+
+    async fn reconcile_work_item_assignments(
+        &self,
+        work_items: &mut [WorkItem],
+        mission: &MissionRun,
+        agents: &[Agent],
+    ) -> Result<Vec<WorkItemId>> {
+        let tasks = self.channel.list_tasks().await?;
+        let agents_by_id: HashMap<AgentId, &Agent> =
+            agents.iter().map(|agent| (agent.id, agent)).collect();
+        let mut tasks_by_work_item: HashMap<WorkItemId, Vec<&Task>> = HashMap::new();
+
+        for task in tasks.iter().filter(|task| !task.state.is_terminal()) {
+            let Some((task_mission_id, work_item_id, _)) = mission_task_binding(&task.tags) else {
+                continue;
+            };
+            if task_mission_id != mission.id {
+                continue;
+            }
+            tasks_by_work_item
+                .entry(work_item_id)
+                .or_default()
+                .push(task);
+        }
+
+        let mut reconciled = Vec::new();
+
+        for item in work_items.iter_mut() {
+            if item.status == WorkStatus::Done {
+                continue;
+            }
+
+            let mut changed = false;
+            if let Some(tasks) = tasks_by_work_item.get(&item.id)
+                && let Some(task) = select_authoritative_mission_task(tasks)
+            {
+                if let Some(agent_id) = task.task.assigned_to
+                    && item.assigned_to != Some(agent_id)
+                {
+                    item.assigned_to = Some(agent_id);
+                    item.updated_at = Utc::now();
+                    self.storage
+                        .log_event(
+                            mission.id,
+                            &format!(
+                                "Rebound work item '{}' to live mission task owner {}",
+                                item.title, agent_id
+                            ),
+                        )
+                        .await?;
+                    changed = true;
+                }
+
+                if matches!(task.kind, MissionTaskKind::Work | MissionTaskKind::Fix) {
+                    let desired = task_work_status(task.task.state);
+                    if item.status != desired && task_can_drive_execution_state(task.task.state) {
+                        item.status = desired;
+                        item.updated_at = Utc::now();
+                        self.storage
+                            .log_event(
+                                mission.id,
+                                &format!(
+                                    "Updated work item '{}' to {:?} from live mission task",
+                                    item.title, desired
+                                ),
+                            )
+                            .await?;
+                        changed = true;
+                    }
+                }
+            } else if let Some(agent_id) = item.assigned_to {
+                let stale_assignee = agents_by_id
+                    .get(&agent_id)
+                    .is_none_or(|agent| agent.state.is_terminal());
+                if stale_assignee {
+                    if matches!(item.status, WorkStatus::Assigned | WorkStatus::Running) {
+                        item.assigned_to = None;
+                        item.mark_ready();
+                        self.storage
+                            .log_event(
+                                mission.id,
+                                &format!(
+                                    "Released stale assignee {} from work item '{}'",
+                                    agent_id, item.title
+                                ),
+                            )
+                            .await?;
+                        changed = true;
+                    } else if item.status == WorkStatus::Blocked {
+                        item.assigned_to = None;
+                        item.updated_at = Utc::now();
+                        self.storage
+                            .log_event(
+                                mission.id,
+                                &format!(
+                                    "Cleared stale blocked assignee {} from work item '{}'",
+                                    agent_id, item.title
+                                ),
+                            )
+                            .await?;
+                        changed = true;
+                    }
+                }
+            }
+
+            if changed {
+                self.storage.save_work_item(item).await?;
+                reconciled.push(item.id);
+            }
+        }
+
+        Ok(reconciled)
     }
 
     // ==================== Ready Queue Promotion ====================
@@ -552,30 +694,21 @@ impl MissionScheduler {
         item: &WorkItem,
         current_assignments: &[(WorkItemId, AgentId)],
     ) -> AgentMatchScore {
+        let lane = self.agent_lane(agent);
         // Base score: role matching
-        let base_score = if let Some(ref owner_role) = item.owner_role {
-            let role_lower = owner_role.to_lowercase();
-            if self.agent_matches_role(agent, &role_lower) {
-                100 // Exact role match
-            } else if self.is_reviewer_agent(agent) {
-                // Reviewer can do review work at full score, other work at penalty
-                if item.kind == WorkKind::Review {
-                    100
+        let base_score =
+            if matches!(item.kind, WorkKind::Review) && matches!(lane, AgentLane::Reviewer) {
+                120
+            } else if let Some(ref owner_role) = item.owner_role {
+                let role_lower = owner_role.to_lowercase();
+                if self.agent_matches_role(agent, &role_lower) {
+                    100 // Exact role match
                 } else {
-                    25
+                    self.mismatch_fallback_score(item, &role_lower, lane)
                 }
             } else {
-                50 // Generic worker
-            }
-        } else {
-            // No role specified - any worker is fine
-            if self.is_reviewer_agent(agent) {
-                // Prefer non-reviewers for unspecified work
-                40
-            } else {
-                60
-            }
-        };
+                self.kind_fallback_score(item, lane)
+            };
 
         // Load penalty: reduce score for agents already assigned this tick
         let concurrent_count = current_assignments
@@ -587,6 +720,97 @@ impl MissionScheduler {
         AgentMatchScore::new(base_score, load_penalty)
     }
 
+    fn kind_fallback_score(&self, item: &WorkItem, lane: AgentLane) -> u32 {
+        match item.kind {
+            WorkKind::Implement => match lane {
+                AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Generalist => 60,
+                AgentLane::Researcher | AgentLane::Runner => 35,
+                AgentLane::Tester => 5,
+                AgentLane::Reviewer => 0,
+            },
+            WorkKind::Test => match lane {
+                AgentLane::Tester => 85,
+                AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Generalist => 45,
+                AgentLane::Runner | AgentLane::Researcher => 30,
+                AgentLane::Reviewer => 10,
+            },
+            WorkKind::Review => match lane {
+                AgentLane::Reviewer => 100,
+                AgentLane::Researcher => 35,
+                AgentLane::Generalist => 20,
+                _ => 5,
+            },
+            WorkKind::Design => match lane {
+                AgentLane::Researcher => 75,
+                AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Generalist => 55,
+                AgentLane::Reviewer => 30,
+                AgentLane::Runner => 20,
+                AgentLane::Tester => 10,
+            },
+            WorkKind::MergeGate => match lane {
+                AgentLane::Runner => 80,
+                AgentLane::Reviewer => 50,
+                AgentLane::Generalist
+                | AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops => 35,
+                AgentLane::Researcher => 20,
+                AgentLane::Tester => 10,
+            },
+            WorkKind::Followup => match lane {
+                AgentLane::Generalist
+                | AgentLane::Backend
+                | AgentLane::Frontend
+                | AgentLane::Devops
+                | AgentLane::Researcher => 50,
+                AgentLane::Runner => 35,
+                AgentLane::Tester => 20,
+                AgentLane::Reviewer => 10,
+            },
+        }
+    }
+
+    fn mismatch_fallback_score(&self, item: &WorkItem, owner_role: &str, lane: AgentLane) -> u32 {
+        match normalize_role_alias(owner_role) {
+            "backend" | "frontend" | "devops" => match lane {
+                AgentLane::Generalist => 55,
+                AgentLane::Backend | AgentLane::Frontend | AgentLane::Devops => 35,
+                AgentLane::Researcher | AgentLane::Runner => 20,
+                AgentLane::Tester => {
+                    if matches!(item.kind, WorkKind::Implement) {
+                        5
+                    } else {
+                        15
+                    }
+                }
+                AgentLane::Reviewer => 0,
+            },
+            "tester" => match lane {
+                AgentLane::Generalist => 45,
+                AgentLane::Backend | AgentLane::Frontend | AgentLane::Devops => 30,
+                AgentLane::Runner | AgentLane::Researcher => 20,
+                AgentLane::Reviewer => 5,
+                AgentLane::Tester => 100,
+            },
+            "reviewer" => match lane {
+                AgentLane::Reviewer => 100,
+                AgentLane::Researcher => 20,
+                AgentLane::Generalist => 10,
+                _ => 0,
+            },
+            _ => self.kind_fallback_score(item, lane),
+        }
+    }
+
     /// Check if an agent matches a role.
     ///
     /// Uses `agent.role_id` when available for an exact match. Falls back to
@@ -594,12 +818,12 @@ impl MissionScheduler {
     fn agent_matches_role(&self, agent: &Agent, role: &str) -> bool {
         // Prefer explicit role_id when set
         if let Some(ref role_id) = agent.role_id {
-            return role_id.to_lowercase() == role;
+            return normalize_role_alias(&role_id.to_lowercase()) == normalize_role_alias(role);
         }
 
         // Fallback: name-based substring matching
         let agent_name = agent.name.to_lowercase();
-        match role {
+        match normalize_role_alias(role) {
             "backend" => {
                 agent_name.contains("backend")
                     || agent_name.contains("api")
@@ -635,6 +859,53 @@ impl MissionScheduler {
         // Fallback: name-based substring matching
         let agent_name = agent.name.to_lowercase();
         agent_name.contains("review") || agent_name.contains("audit")
+    }
+
+    fn agent_lane(&self, agent: &Agent) -> AgentLane {
+        if let Some(ref role_id) = agent.role_id {
+            match role_id.to_lowercase().as_str() {
+                "backend" => return AgentLane::Backend,
+                "frontend" => return AgentLane::Frontend,
+                "tester" | "test" => return AgentLane::Tester,
+                "reviewer" | "review" | "audit" => return AgentLane::Reviewer,
+                "devops" | "infra" => return AgentLane::Devops,
+                crate::agent::roles::RUNNER => return AgentLane::Runner,
+                crate::agent::roles::RESEARCHER => return AgentLane::Researcher,
+                crate::agent::roles::DEFAULT | crate::agent::roles::WORKER => {
+                    return AgentLane::Generalist;
+                }
+                _ => {}
+            }
+        }
+
+        let agent_name = agent.name.to_lowercase();
+        if agent_name.contains("review") || agent_name.contains("audit") {
+            AgentLane::Reviewer
+        } else if agent_name.contains("test") || agent_name.contains("qa") {
+            AgentLane::Tester
+        } else if agent_name.contains("backend")
+            || agent_name.contains("api")
+            || agent_name.contains("server")
+        {
+            AgentLane::Backend
+        } else if agent_name.contains("frontend")
+            || agent_name.contains("ui")
+            || agent_name.contains("web")
+            || agent_name.contains("client")
+        {
+            AgentLane::Frontend
+        } else if agent_name.contains("devops")
+            || agent_name.contains("infra")
+            || agent_name.contains("deploy")
+        {
+            AgentLane::Devops
+        } else if agent_name.contains("runner") || agent_name.contains("ci") {
+            AgentLane::Runner
+        } else if agent_name.contains("research") || agent_name.contains("explore") {
+            AgentLane::Researcher
+        } else {
+            AgentLane::Generalist
+        }
     }
 
     // ==================== Reviewer Gate ====================
@@ -859,6 +1130,98 @@ impl MissionScheduler {
             )
             .await?;
         Ok(WorkItemCompletion::Completed)
+    }
+
+    /// Redirect a work item to a specific agent after an operator correction.
+    pub async fn redirect_work_item(
+        &self,
+        mission_id: MissionId,
+        work_item_id: WorkItemId,
+        agent_id: AgentId,
+        reason: Option<&str>,
+    ) -> Result<bool> {
+        let Some(mission) = self.storage.get_mission(mission_id).await? else {
+            return Ok(false);
+        };
+        let Some(mut item) = self.storage.get_work_item(mission_id, work_item_id).await? else {
+            return Ok(false);
+        };
+
+        let agents = self.channel.list_agents().await?;
+        let Some(agent) = agents.iter().find(|candidate| candidate.id == agent_id) else {
+            return Ok(false);
+        };
+
+        let tasks = self.channel.list_tasks().await?;
+        let mut cancelled = 0usize;
+        let mut target_task_exists = false;
+        for mut task in tasks {
+            let Some((task_mission_id, task_work_item_id, _)) = mission_task_binding(&task.tags)
+            else {
+                continue;
+            };
+            if task_mission_id != mission_id
+                || task_work_item_id != work_item_id
+                || task.state.is_terminal()
+            {
+                continue;
+            }
+
+            if task.assigned_to == Some(agent_id) {
+                target_task_exists = true;
+                continue;
+            }
+
+            task.cancel(format!(
+                "Superseded by dispatcher redirect to {}{}",
+                agent.name,
+                reason
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| format!(" ({})", value.trim()))
+                    .unwrap_or_default()
+            ));
+            self.channel.set_task(&task).await?;
+            cancelled += 1;
+        }
+
+        if !target_task_exists {
+            let mut task = redirected_task(&mission, &item, agent_id, reason);
+            let task_id = task.id;
+            task.assign(agent_id);
+            self.channel.set_task(&task).await?;
+            self.channel
+                .send(&Message::new(
+                    AgentId::supervisor(),
+                    agent_id,
+                    MessageType::TaskAssign {
+                        task_id: task_id.to_string(),
+                    },
+                ))
+                .await?;
+        }
+
+        item.assign(agent_id);
+        self.storage.save_work_item(&item).await?;
+        self.storage
+            .log_event(
+                mission_id,
+                &format!(
+                    "Redirected work item '{}' to '{}'{}{}",
+                    item.title,
+                    agent.name,
+                    if cancelled > 0 {
+                        format!("; cancelled {} superseded mission task(s)", cancelled)
+                    } else {
+                        String::new()
+                    },
+                    reason
+                        .filter(|value| !value.trim().is_empty())
+                        .map(|value| format!(" ({})", value.trim()))
+                        .unwrap_or_default()
+                ),
+            )
+            .await?;
+        Ok(true)
     }
 
     /// Mark a work item as blocked.
@@ -1105,6 +1468,116 @@ impl MissionScheduler {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum MissionTaskKind {
+    Review,
+    Fix,
+    Work,
+}
+
+fn mission_task_binding(tags: &[String]) -> Option<(MissionId, WorkItemId, MissionTaskKind)> {
+    let mission_id = tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("mission:"))
+        .and_then(|value| value.parse().ok())?;
+    let work_item_id = tags
+        .iter()
+        .find_map(|tag| tag.strip_prefix("work-item:"))
+        .and_then(|value| value.parse().ok())?;
+    let kind = if tags.iter().any(|tag| tag == "mission-review-task") {
+        MissionTaskKind::Review
+    } else if tags.iter().any(|tag| tag == "mission-fix-task") {
+        MissionTaskKind::Fix
+    } else if tags.iter().any(|tag| tag == "mission-work-item") {
+        MissionTaskKind::Work
+    } else {
+        return None;
+    };
+    Some((mission_id, work_item_id, kind))
+}
+
+fn select_authoritative_mission_task<'a>(tasks: &[&'a Task]) -> Option<MissionTrackedTask<'a>> {
+    tasks
+        .iter()
+        .filter_map(|task| {
+            let (_, _, kind) = mission_task_binding(&task.tags)?;
+            Some(MissionTrackedTask { task, kind })
+        })
+        .max_by_key(|tracked| {
+            (
+                match tracked.kind {
+                    MissionTaskKind::Work => 3u8,
+                    MissionTaskKind::Fix => 2u8,
+                    MissionTaskKind::Review => 1u8,
+                },
+                match tracked.task.state {
+                    TaskState::Running => 2u8,
+                    TaskState::Assigned => 1u8,
+                    _ => 0u8,
+                },
+                tracked.task.updated_at,
+            )
+        })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MissionTrackedTask<'a> {
+    task: &'a Task,
+    kind: MissionTaskKind,
+}
+
+fn task_can_drive_execution_state(state: TaskState) -> bool {
+    matches!(state, TaskState::Assigned | TaskState::Running)
+}
+
+fn task_work_status(state: TaskState) -> WorkStatus {
+    match state {
+        TaskState::Running => WorkStatus::Running,
+        _ => WorkStatus::Assigned,
+    }
+}
+
+fn redirected_task(
+    mission: &MissionRun,
+    item: &WorkItem,
+    agent_id: AgentId,
+    reason: Option<&str>,
+) -> Task {
+    let intro = if item.artifact_refs.is_empty() {
+        "[Mission Redirect]"
+    } else {
+        "[Mission Fix Redirect]"
+    };
+    let artifact_hint = if item.artifact_refs.is_empty() {
+        "No artifact refs recorded yet.".to_string()
+    } else {
+        format!(
+            "Latest artifacts/refs:\n- {}",
+            item.artifact_refs.join("\n- ")
+        )
+    };
+    let reason_hint = reason
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| format!("Operator correction: {}\n\n", value.trim()))
+        .unwrap_or_default();
+    let task_kind = if item.artifact_refs.is_empty() {
+        ("mission-work-item", "mission-task:work")
+    } else {
+        ("mission-fix-task", "mission-task:fix")
+    };
+
+    Task::new(format!(
+        "{} {}\n\nMission: {}\nWork item: {}\nAssigned by dispatcher redirect to {}\n\n{}{}",
+        intro, item.title, mission.id, item.id, agent_id, reason_hint, artifact_hint
+    ))
+    .with_tags([
+        task_kind.0.to_string(),
+        task_kind.1.to_string(),
+        format!("mission:{}", mission.id),
+        format!("work-item:{}", item.id),
+    ])
+}
+
 fn extract_pr_refs(artifacts: &[String]) -> Vec<String> {
     let mut refs = Vec::new();
     let pr_url =
@@ -1258,5 +1731,14 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn test_normalize_role_alias() {
+        assert_eq!(normalize_role_alias("test"), "tester");
+        assert_eq!(normalize_role_alias("review"), "reviewer");
+        assert_eq!(normalize_role_alias("audit"), "reviewer");
+        assert_eq!(normalize_role_alias("infra"), "devops");
+        assert_eq!(normalize_role_alias("backend"), "backend");
     }
 }
