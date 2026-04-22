@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0](https://github.com/redis-field-engineering/tinytown/compare/v0.10.0...v0.11.0) (2026-04-22)
+
+
+### Features
+
+* **recovery:** add orphan task reclaim and mission lifecycle controls ([e3ee603](https://github.com/redis-field-engineering/tinytown/commit/e3ee603fd13e5189db3f5a0144c9c33932b25357))
+
+
+### Bug Fixes
+
+* resolve agent refs and retire stale mission help ([10ae7f5](https://github.com/redis-field-engineering/tinytown/commit/10ae7f5b127c474c039dd314ba893d41ea29ba04))
+
 ## [0.10.0](https://github.com/redis-field-engineering/tinytown/compare/v0.9.0...v0.10.0) (2026-04-18)
 
 
