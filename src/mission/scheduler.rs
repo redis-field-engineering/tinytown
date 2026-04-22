@@ -133,6 +133,15 @@ enum AgentLane {
     Generalist,
 }
 
+fn normalize_role_alias(role: &str) -> &str {
+    match role {
+        "test" => "tester",
+        "review" | "audit" => "reviewer",
+        "infra" => "devops",
+        other => other,
+    }
+}
+
 impl AgentMatchScore {
     /// Create a new match score.
     #[must_use]
@@ -768,7 +777,7 @@ impl MissionScheduler {
     }
 
     fn mismatch_fallback_score(&self, item: &WorkItem, owner_role: &str, lane: AgentLane) -> u32 {
-        match owner_role {
+        match normalize_role_alias(owner_role) {
             "backend" | "frontend" | "devops" => match lane {
                 AgentLane::Generalist => 55,
                 AgentLane::Backend | AgentLane::Frontend | AgentLane::Devops => 35,
@@ -790,6 +799,7 @@ impl MissionScheduler {
                 AgentLane::Tester => 100,
             },
             "reviewer" | "review" => match lane {
+                AgentLane::Reviewer => 100,
                 AgentLane::Researcher => 20,
                 AgentLane::Generalist => 10,
                 _ => 0,
@@ -805,12 +815,12 @@ impl MissionScheduler {
     fn agent_matches_role(&self, agent: &Agent, role: &str) -> bool {
         // Prefer explicit role_id when set
         if let Some(ref role_id) = agent.role_id {
-            return role_id.to_lowercase() == role;
+            return normalize_role_alias(&role_id.to_lowercase()) == normalize_role_alias(role);
         }
 
         // Fallback: name-based substring matching
         let agent_name = agent.name.to_lowercase();
-        match role {
+        match normalize_role_alias(role) {
             "backend" => {
                 agent_name.contains("backend")
                     || agent_name.contains("api")
@@ -1718,5 +1728,14 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn test_normalize_role_alias() {
+        assert_eq!(normalize_role_alias("test"), "tester");
+        assert_eq!(normalize_role_alias("review"), "reviewer");
+        assert_eq!(normalize_role_alias("audit"), "reviewer");
+        assert_eq!(normalize_role_alias("infra"), "devops");
+        assert_eq!(normalize_role_alias("backend"), "backend");
     }
 }

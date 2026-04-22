@@ -545,7 +545,7 @@ impl<G: GitHubClient> MissionDispatcher<G> {
             .collect();
 
         let Some(raw) = raw else {
-            return Ok((active_items.len() == 1).then_some(active_items[0].id));
+            return Ok((active_items.len() == 1).then(|| active_items[0].id));
         };
 
         if let Ok(id) = raw.parse::<WorkItemId>() {
