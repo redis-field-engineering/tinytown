@@ -3264,7 +3264,8 @@ async fn test_mission_dispatcher_creates_fix_task_from_failing_watch()
     assert_ne!(updated_watch.status, tinytown::mission::WatchStatus::Active);
 
     let updated_item = storage.get_work_item(mission.id, item.id).await?.unwrap();
-    assert_eq!(updated_item.status, WorkStatus::Blocked);
+    assert_eq!(updated_item.status, WorkStatus::Assigned);
+    assert_eq!(updated_item.assigned_to, Some(worker.id()));
 
     drop(town);
     cleanup_redis(&temp_dir);
@@ -3785,6 +3786,71 @@ async fn test_mission_dispatcher_mergeability_respects_reviewer_gate()
     Ok(())
 }
 
+/// Test that the scheduler follows a live redirected mission task instead of a stale assignee.
+#[tokio::test]
+async fn test_mission_scheduler_rebinds_blocked_item_to_live_task()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionStorage, ObjectiveRef, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-scheduler-rebind-live-task");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let tester = town.spawn_agent("tester", "claude").await?;
+    let worker = town.spawn_agent("backend-worker", "claude").await?;
+
+    let mut tester_state = Agent::new("tester", "claude", AgentType::Worker);
+    tester_state.id = tester.id();
+    tester_state.state = AgentState::Idle;
+    town.channel().set_agent_state(&tester_state).await?;
+
+    let mut worker_state = Agent::new("backend-worker", "claude", AgentType::Worker);
+    worker_state.id = worker.id();
+    worker_state.state = AgentState::Working;
+    town.channel().set_agent_state(&worker_state).await?;
+
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.assign(tester.id());
+    item.block();
+    item.record_artifacts(["task:stale-review"]);
+    storage.save_work_item(&item).await?;
+
+    let mut redirected_task = Task::new("[Mission Fix Redirect] Implement auth").with_tags([
+        "mission-fix-task".to_string(),
+        "mission-task:fix".to_string(),
+        format!("mission:{}", mission.id),
+        format!("work-item:{}", item.id),
+    ]);
+    redirected_task.assign(worker.id());
+    redirected_task.start();
+    town.channel().set_task(&redirected_task).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    let tick = scheduler.tick().await?;
+    assert!(
+        tick.missions
+            .iter()
+            .any(|mission_tick| mission_tick.reconciled.contains(&item.id))
+    );
+
+    let updated = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated.assigned_to, Some(worker.id()));
+    assert_eq!(updated.status, WorkStatus::Running);
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
 /// Test that scheduler completion only applies to blocked waiting items.
 #[tokio::test]
 async fn test_mission_scheduler_does_not_finalize_running_items_with_artifacts()
@@ -3999,6 +4065,115 @@ async fn test_mission_dispatcher_processes_conductor_note() -> Result<(), Box<dy
         .find(|message| message.id == note_id)
         .expect("control note should exist");
     assert!(processed.processed_at.is_some());
+
+    drop(town);
+    cleanup_redis(&temp_dir);
+    Ok(())
+}
+
+/// Test that a redirect note supersedes stale mission ownership and creates a tracked replacement task.
+#[tokio::test]
+async fn test_mission_dispatcher_redirect_note_rebinds_work_item()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        DispatcherConfig, MissionControlMessage, MissionDispatcher, MissionRun, MissionState,
+        MissionStorage, MockGitHubClient, ObjectiveRef, WorkItem, WorkKind, WorkStatus,
+    };
+
+    let temp_dir = TempDir::new()?;
+    let town_name = unique_town_name("mission-dispatch-redirect");
+    let town = Town::init(temp_dir.path(), &town_name).await?;
+    let tester = town.spawn_agent("tester", "claude").await?;
+    let worker = town.spawn_agent("backend-worker", "claude").await?;
+
+    let mut tester_state = Agent::new("tester", "claude", AgentType::Worker);
+    tester_state.id = tester.id();
+    tester_state.state = AgentState::Idle;
+    town.channel().set_agent_state(&tester_state).await?;
+
+    let mut worker_state = Agent::new("backend-worker", "claude", AgentType::Worker);
+    worker_state.id = worker.id();
+    worker_state.state = AgentState::Idle;
+    town.channel().set_agent_state(&worker_state).await?;
+
+    let storage = MissionStorage::new(town.channel().conn().clone(), &town_name);
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Doc {
+        path: "test.md".into(),
+    }]);
+    mission.start();
+    mission.blocked_reason = Some("Waiting on stale reviewer assignment".into());
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut item = WorkItem::new(mission.id, "Implement auth", WorkKind::Implement);
+    item.assign(tester.id());
+    item.block();
+    item.record_artifacts(["task:stale-review"]);
+    storage.save_work_item(&item).await?;
+
+    let mut stale_task = Task::new("[Mission Work Item] stale owner").with_tags([
+        "mission-work-item".to_string(),
+        "mission-task:work".to_string(),
+        format!("mission:{}", mission.id),
+        format!("work-item:{}", item.id),
+    ]);
+    stale_task.assign(tester.id());
+    let stale_task_id = stale_task.id;
+    town.channel().set_task(&stale_task).await?;
+
+    let note = MissionControlMessage::new(
+        mission.id,
+        "conductor",
+        format!(
+            "redirect {} to backend-worker tester was the wrong lane",
+            item.id
+        ),
+    );
+    storage.save_control_message(&note).await?;
+
+    let dispatcher = MissionDispatcher::new(
+        storage.clone(),
+        town.channel().clone(),
+        MockGitHubClient::new(),
+        DispatcherConfig {
+            tick_interval_secs: 1,
+            lock_ttl_secs: 30,
+            ..DispatcherConfig::default()
+        },
+    );
+    dispatcher.tick(Some(mission.id)).await?;
+
+    let updated = storage.get_work_item(mission.id, item.id).await?.unwrap();
+    assert_eq!(updated.assigned_to, Some(worker.id()));
+    assert_eq!(updated.status, WorkStatus::Assigned);
+
+    let updated_mission = storage.get_mission(mission.id).await?.unwrap();
+    assert_eq!(updated_mission.state, MissionState::Running);
+    assert!(updated_mission.blocked_reason.is_none());
+
+    let stale_task = town.channel().get_task(stale_task_id).await?.unwrap();
+    assert_eq!(stale_task.state, TaskState::Cancelled);
+
+    let replacement_tasks: Vec<_> = town
+        .channel()
+        .list_tasks()
+        .await?
+        .into_iter()
+        .filter(|task| {
+            task.id != stale_task_id
+                && !task.state.is_terminal()
+                && task.assigned_to == Some(worker.id())
+                && task
+                    .tags
+                    .iter()
+                    .any(|tag| tag == &format!("mission:{}", mission.id))
+                && task
+                    .tags
+                    .iter()
+                    .any(|tag| tag == &format!("work-item:{}", item.id))
+        })
+        .collect();
+    assert_eq!(replacement_tasks.len(), 1);
 
     drop(town);
     cleanup_redis(&temp_dir);

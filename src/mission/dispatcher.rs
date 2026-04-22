@@ -20,7 +20,7 @@ use crate::error::Result;
 use crate::message::{Message, MessageType};
 use crate::mission::scheduler::{MissionScheduler, SchedulerTickResult};
 use crate::mission::storage::MissionStorage;
-use crate::mission::types::{MissionId, MissionState, WatchStatus};
+use crate::mission::types::{MissionId, MissionState, WatchStatus, WorkItemId};
 use crate::mission::watch::{GitHubClient, WatchEngine, WatchEngineTickResult};
 
 /// Dispatcher configuration.
@@ -154,6 +154,7 @@ impl<G: GitHubClient> MissionDispatcher<G> {
                     .find(|result| result.mission_id == *mission_id)
                     .is_some_and(|result| {
                         result.state_changed
+                            || !result.reconciled.is_empty()
                             || !result.promoted.is_empty()
                             || !result.assigned.is_empty()
                             || !result.completed.is_empty()
@@ -274,6 +275,80 @@ impl<G: GitHubClient> MissionDispatcher<G> {
                             &format!(
                                 "Dispatcher ignored resume directive from {} while mission was {:?}: {}",
                                 message.sender, mission.state, body
+                            ),
+                        )
+                        .await?;
+                }
+            } else if let Some(directive) = parse_redirect_directive(body) {
+                let work_item_id = match self
+                    .resolve_work_item_ref(mission_id, directive.work_item_ref.as_deref())
+                    .await?
+                {
+                    Some(id) => id,
+                    None => {
+                        self.storage
+                            .log_event(
+                                mission_id,
+                                &format!(
+                                    "Dispatcher ignored redirect directive from {}: could not resolve work item in '{}'",
+                                    message.sender, body
+                                ),
+                            )
+                            .await?;
+                        message.mark_processed();
+                        self.storage.save_control_message(&message).await?;
+                        continue;
+                    }
+                };
+                let agent_id = match self.resolve_agent_ref(&directive.agent_ref).await? {
+                    Some(id) => id,
+                    None => {
+                        self.storage
+                            .log_event(
+                                mission_id,
+                                &format!(
+                                    "Dispatcher ignored redirect directive from {}: unknown agent '{}' in '{}'",
+                                    message.sender, directive.agent_ref, body
+                                ),
+                            )
+                            .await?;
+                        message.mark_processed();
+                        self.storage.save_control_message(&message).await?;
+                        continue;
+                    }
+                };
+
+                if self
+                    .scheduler
+                    .redirect_work_item(
+                        mission_id,
+                        work_item_id,
+                        agent_id,
+                        directive.reason.as_deref(),
+                    )
+                    .await?
+                {
+                    if mission.state.can_resume() {
+                        mission.start();
+                        mission.set_next_wake_at(None);
+                    }
+                    progressed = true;
+                    self.storage
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Dispatcher redirected work item {} to {} from {}",
+                                work_item_id, directive.agent_ref, message.sender
+                            ),
+                        )
+                        .await?;
+                } else {
+                    self.storage
+                        .log_event(
+                            mission_id,
+                            &format!(
+                                "Dispatcher ignored redirect directive from {}: failed to redirect '{}'",
+                                message.sender, body
                             ),
                         )
                         .await?;
@@ -436,4 +511,98 @@ impl<G: GitHubClient> MissionDispatcher<G> {
             .await?;
         Ok(())
     }
+
+    async fn resolve_agent_ref(&self, raw: &str) -> Result<Option<AgentId>> {
+        if let Ok(id) = raw.parse::<AgentId>() {
+            return Ok(Some(id));
+        }
+
+        let raw_lower = raw.to_ascii_lowercase();
+        let agents = self.channel.list_agents().await?;
+        let mut matches = agents.into_iter().filter(|agent| {
+            agent.name.eq_ignore_ascii_case(raw)
+                || agent.display_label().eq_ignore_ascii_case(raw)
+                || agent.id.short_id().eq_ignore_ascii_case(&raw_lower)
+        });
+
+        let first = matches.next().map(|agent| agent.id);
+        if matches.next().is_some() {
+            Ok(None)
+        } else {
+            Ok(first)
+        }
+    }
+
+    async fn resolve_work_item_ref(
+        &self,
+        mission_id: MissionId,
+        raw: Option<&str>,
+    ) -> Result<Option<WorkItemId>> {
+        let work_items = self.storage.list_work_items(mission_id).await?;
+        let active_items: Vec<_> = work_items
+            .iter()
+            .filter(|item| item.status != crate::mission::WorkStatus::Done)
+            .collect();
+
+        let Some(raw) = raw else {
+            return Ok((active_items.len() == 1).then_some(active_items[0].id));
+        };
+
+        if let Ok(id) = raw.parse::<WorkItemId>() {
+            return Ok(Some(id));
+        }
+
+        let matches: Vec<_> = active_items
+            .iter()
+            .filter(|item| item.id.short_id().eq_ignore_ascii_case(raw))
+            .map(|item| item.id)
+            .collect();
+
+        if matches.len() == 1 {
+            Ok(Some(matches[0]))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RedirectDirective {
+    work_item_ref: Option<String>,
+    agent_ref: String,
+    reason: Option<String>,
+}
+
+fn parse_redirect_directive(body: &str) -> Option<RedirectDirective> {
+    let parts: Vec<_> = body.split_whitespace().collect();
+    let verb = parts.first()?.to_ascii_lowercase();
+    if !matches!(
+        verb.as_str(),
+        "redirect" | "reassign" | "reroute" | "rebind"
+    ) {
+        return None;
+    }
+
+    let (work_item_ref, to_idx) = if parts.get(1)?.eq_ignore_ascii_case("to") {
+        (None, 1usize)
+    } else {
+        (Some(parts.get(1)?.to_string()), 2usize)
+    };
+
+    if !parts.get(to_idx)?.eq_ignore_ascii_case("to") {
+        return None;
+    }
+
+    let agent_ref = parts.get(to_idx + 1)?.to_string();
+    let reason = if parts.len() > to_idx + 2 {
+        Some(parts[to_idx + 2..].join(" "))
+    } else {
+        None
+    };
+
+    Some(RedirectDirective {
+        work_item_ref,
+        agent_ref,
+        reason,
+    })
 }
