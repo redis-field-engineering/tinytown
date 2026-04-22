@@ -2978,6 +2978,61 @@ async fn test_mission_scheduler_assigns_review_work_to_review_role_alias()
     Ok(())
 }
 
+/// Test that review work with backend-oriented wording still prefers a reviewer lane.
+#[tokio::test]
+async fn test_mission_scheduler_assigns_backend_review_work_to_reviewer()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::mission::{
+        MissionRun, MissionScheduler, MissionStorage, ObjectiveRef, WorkItem, WorkKind,
+    };
+
+    let town = create_test_town("mission-scheduler-backend-review").await?;
+    let reviewer_handle = town.spawn_agent("auditor", "claude").await?;
+    let backend_handle = town.spawn_agent("backend-worker", "claude").await?;
+
+    let mut reviewer = Agent::new("auditor", "claude", AgentType::Worker);
+    reviewer.id = reviewer_handle.id();
+    reviewer.role_id = Some("audit".into());
+    reviewer.state = AgentState::Idle;
+    town.channel().set_agent_state(&reviewer).await?;
+
+    let mut backend = Agent::new("backend-worker", "claude", AgentType::Worker);
+    backend.id = backend_handle.id();
+    backend.role_id = Some("backend".into());
+    backend.state = AgentState::Idle;
+    town.channel().set_agent_state(&backend).await?;
+
+    let storage = MissionStorage::new(town.channel().conn().clone(), town.channel().town_name());
+
+    let mut mission = MissionRun::new(vec![ObjectiveRef::Issue {
+        owner: "owner".into(),
+        repo: "repo".into(),
+        number: 44,
+    }]);
+    mission.policy.reviewer_required = false;
+    mission.start();
+    storage.save_mission(&mission).await?;
+    storage.add_active(mission.id).await?;
+
+    let mut work_item = WorkItem::new(mission.id, "Review backend API", WorkKind::Review)
+        .with_owner_role("backend");
+    work_item.mark_ready();
+    let work_item_id = work_item.id;
+    storage.save_work_item(&work_item).await?;
+
+    let scheduler = MissionScheduler::with_defaults(storage.clone(), town.channel().clone());
+    let result = scheduler.tick().await?;
+    assert_eq!(result.total_assigned, 1);
+
+    let updated = storage
+        .get_work_item(mission.id, work_item_id)
+        .await?
+        .expect("work item should exist");
+    assert_eq!(updated.assigned_to, Some(reviewer_handle.id()));
+
+    Ok(())
+}
+
 /// Test MissionStorage WatchItem operations.
 #[tokio::test]
 async fn test_mission_storage_watch_items() -> Result<(), Box<dyn std::error::Error>> {

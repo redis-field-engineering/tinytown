@@ -777,6 +777,10 @@ impl MissionScheduler {
     }
 
     fn mismatch_fallback_score(&self, item: &WorkItem, owner_role: &str, lane: AgentLane) -> u32 {
+        if matches!(item.kind, WorkKind::Review) && matches!(lane, AgentLane::Reviewer) {
+            return 100;
+        }
+
         match normalize_role_alias(owner_role) {
             "backend" | "frontend" | "devops" => match lane {
                 AgentLane::Generalist => 55,
@@ -791,14 +795,14 @@ impl MissionScheduler {
                 }
                 AgentLane::Reviewer => 0,
             },
-            "tester" | "test" => match lane {
+            "tester" => match lane {
                 AgentLane::Generalist => 45,
                 AgentLane::Backend | AgentLane::Frontend | AgentLane::Devops => 30,
                 AgentLane::Runner | AgentLane::Researcher => 20,
                 AgentLane::Reviewer => 5,
                 AgentLane::Tester => 100,
             },
-            "reviewer" | "review" => match lane {
+            "reviewer" => match lane {
                 AgentLane::Reviewer => 100,
                 AgentLane::Researcher => 20,
                 AgentLane::Generalist => 10,
