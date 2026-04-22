@@ -696,16 +696,19 @@ impl MissionScheduler {
     ) -> AgentMatchScore {
         let lane = self.agent_lane(agent);
         // Base score: role matching
-        let base_score = if let Some(ref owner_role) = item.owner_role {
-            let role_lower = owner_role.to_lowercase();
-            if self.agent_matches_role(agent, &role_lower) {
-                100 // Exact role match
+        let base_score =
+            if matches!(item.kind, WorkKind::Review) && matches!(lane, AgentLane::Reviewer) {
+                120
+            } else if let Some(ref owner_role) = item.owner_role {
+                let role_lower = owner_role.to_lowercase();
+                if self.agent_matches_role(agent, &role_lower) {
+                    100 // Exact role match
+                } else {
+                    self.mismatch_fallback_score(item, &role_lower, lane)
+                }
             } else {
-                self.mismatch_fallback_score(item, &role_lower, lane)
-            }
-        } else {
-            self.kind_fallback_score(item, lane)
-        };
+                self.kind_fallback_score(item, lane)
+            };
 
         // Load penalty: reduce score for agents already assigned this tick
         let concurrent_count = current_assignments
@@ -777,10 +780,6 @@ impl MissionScheduler {
     }
 
     fn mismatch_fallback_score(&self, item: &WorkItem, owner_role: &str, lane: AgentLane) -> u32 {
-        if matches!(item.kind, WorkKind::Review) && matches!(lane, AgentLane::Reviewer) {
-            return 100;
-        }
-
         match normalize_role_alias(owner_role) {
             "backend" | "frontend" | "devops" => match lane {
                 AgentLane::Generalist => 55,
