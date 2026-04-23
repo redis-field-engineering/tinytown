@@ -5,30 +5,21 @@
 
 //! Tinytown CLI - Simple multi-agent orchestration.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-use tinytown::{AgentState, GlobalConfig, Result, Task, Town, plan};
+use tinytown::{
+    AgentEvent, AgentInput, AgentRuntime, AgentState, AgentTurn, GlobalConfig, OneShotAgent,
+    OneShotAgentConfig, Result, ShutdownMode, StreamingAgent, StreamingAgentConfig, Task, Town,
+    build_cli_command, plan,
+};
 
 const TT_AGENT_ID_ENV: &str = "TINYTOWN_AGENT_ID";
 const TT_AGENT_NAME_ENV: &str = "TINYTOWN_AGENT_NAME";
-
-/// Build a shell command to run an agent CLI with a prompt/instruction file.
-/// Different CLIs have different ways to accept input:
-/// - auggie: uses --instruction-file flag
-/// - claude, codex, etc.: accept input via stdin (pipe or redirect)
-fn build_cli_command(cli_name: &str, cli_cmd: &str, prompt_file: &std::path::Path) -> String {
-    if cli_name == "auggie" {
-        // Auggie uses --instruction-file flag
-        format!("{} --instruction-file '{}'", cli_cmd, prompt_file.display())
-    } else {
-        // Other CLIs accept input via stdin
-        format!("cat '{}' | {}", prompt_file.display(), cli_cmd)
-    }
-}
 
 fn idle_timeout_elapsed(
     agent: &tinytown::Agent,
@@ -338,6 +329,667 @@ async fn format_actionable_section(
     }
 
     section
+}
+
+#[derive(Clone)]
+struct PendingTurn {
+    display_round: u32,
+    actionable_messages: Vec<(tinytown::Message, bool)>,
+}
+
+fn runtime_env(agent_id: tinytown::AgentId, name: &str) -> Vec<(String, String)> {
+    vec![
+        (TT_AGENT_ID_ENV.to_string(), agent_id.to_string()),
+        (TT_AGENT_NAME_ENV.to_string(), name.to_string()),
+    ]
+}
+
+async fn persist_runtime_session_id(
+    channel: &tinytown::Channel,
+    agent_id: tinytown::AgentId,
+    session_id: &str,
+) -> Result<()> {
+    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+        if agent.runtime_session_id.as_deref() != Some(session_id) {
+            agent.runtime_session_id = Some(session_id.to_string());
+            channel.set_agent_state(&agent).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn emit_agent_runtime_event(
+    channel: &tinytown::Channel,
+    agent_id: tinytown::AgentId,
+    event_type: tinytown::EventType,
+    message: impl Into<String>,
+) {
+    channel
+        .emit_event(&tinytown::TownEvent::new(event_type, message).with_agent(agent_id))
+        .await;
+}
+
+async fn requeue_pending_turns(
+    channel: &tinytown::Channel,
+    agent_id: tinytown::AgentId,
+    pending_turns: &mut VecDeque<PendingTurn>,
+) -> Result<()> {
+    let mut requeued = 0usize;
+    while let Some(turn) = pending_turns.pop_front() {
+        for (msg, was_urgent) in &turn.actionable_messages {
+            if *was_urgent {
+                channel.send_urgent(msg).await?;
+            } else {
+                channel.send(msg).await?;
+            }
+            requeued += 1;
+        }
+    }
+
+    if requeued > 0 {
+        info!("   ↩️ Re-queued {} actionable message(s)", requeued);
+    }
+
+    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+        if let Some(task_id) = agent.current_task
+            && let Some(mut task) = channel.get_task(task_id).await?
+            && task.state == tinytown::TaskState::Running
+        {
+            task.assign(agent_id);
+            channel.set_task(&task).await?;
+        }
+        agent.current_task = None;
+        channel.set_agent_state(&agent).await?;
+    }
+
+    Ok(())
+}
+
+async fn build_streaming_runtime(
+    town_path: &Path,
+    cli_name: &str,
+    cli_cmd: &str,
+    agent_id: tinytown::AgentId,
+    name: &str,
+    resume_session_id: Option<String>,
+) -> Result<AgentRuntime> {
+    StreamingAgent::runtime(StreamingAgentConfig {
+        cli_name: cli_name.to_string(),
+        cli_cmd: cli_cmd.to_string(),
+        workdir: town_path.to_path_buf(),
+        env: runtime_env(agent_id, name),
+        resume_session_id,
+    })
+    .await
+}
+
+async fn run_persistent_agent_loop(
+    town_path: &Path,
+    config: &tinytown::Config,
+    channel: &tinytown::Channel,
+    name: &str,
+    agent_id: tinytown::AgentId,
+    max_rounds: u32,
+    cli_name: &str,
+    cli_cmd: &str,
+    idle_timeout_secs: u64,
+) -> Result<()> {
+    use std::time::Duration;
+
+    let resume_session_id = channel
+        .get_agent_state(agent_id)
+        .await?
+        .and_then(|agent| agent.runtime_session_id);
+    let AgentRuntime {
+        agent: mut runtime,
+        mut events,
+    } = build_streaming_runtime(
+        town_path,
+        cli_name,
+        cli_cmd,
+        agent_id,
+        name,
+        resume_session_id,
+    )
+    .await?;
+    let mut runtime_alive = true;
+    let mut round: u32 = 0;
+    let mut pending_turns: VecDeque<PendingTurn> = VecDeque::new();
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        if round >= max_rounds && pending_turns.is_empty() {
+            break;
+        }
+
+        tokio::select! {
+            maybe_event = events.recv() => {
+                let Some(event) = maybe_event else {
+                    runtime_alive = false;
+                    continue;
+                };
+
+                match event {
+                    AgentEvent::SessionReady { session_id } => {
+                        persist_runtime_session_id(channel, agent_id, &session_id).await?;
+                    }
+                    AgentEvent::TurnStarted => {
+                        emit_agent_runtime_event(
+                            channel,
+                            agent_id,
+                            tinytown::EventType::AgentTurnStarted,
+                            "Agent turn started",
+                        )
+                        .await;
+                    }
+                    AgentEvent::AssistantDelta(delta) => {
+                        emit_agent_runtime_event(
+                            channel,
+                            agent_id,
+                            tinytown::EventType::AgentAssistantDelta,
+                            format!("Assistant delta: {}", truncate_summary(&delta, 160)),
+                        )
+                        .await;
+                    }
+                    AgentEvent::ToolCall { name: tool_name, .. } => {
+                        channel
+                            .log_agent_activity(
+                                agent_id,
+                                &format!("🔧 Tool call: {}", tool_name),
+                            )
+                            .await?;
+                        emit_agent_runtime_event(
+                            channel,
+                            agent_id,
+                            tinytown::EventType::AgentToolCall,
+                            format!("Tool call: {}", tool_name),
+                        )
+                        .await;
+                    }
+                    AgentEvent::TurnCompleted { summary } => {
+                        let Some(turn) = pending_turns.pop_front() else {
+                            continue;
+                        };
+                        round += 1;
+                        let summary_text = summary
+                            .as_deref()
+                            .map(|text| truncate_summary(text, 100))
+                            .unwrap_or_else(|| "completed".to_string());
+                        channel
+                            .log_agent_activity(
+                                agent_id,
+                                &format!("Round {}: ✅ {}", turn.display_round, summary_text),
+                            )
+                            .await?;
+                        emit_agent_runtime_event(
+                            channel,
+                            agent_id,
+                            tinytown::EventType::AgentTurnCompleted,
+                            format!("Round {} completed: {}", turn.display_round, summary_text),
+                        )
+                        .await;
+
+                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            clear_terminal_current_task(channel, &mut agent).await?;
+                            let now = chrono::Utc::now();
+                            if agent.state != AgentState::Paused {
+                                agent.state = AgentState::Idle;
+                                agent.last_active_at = now;
+                            }
+                            agent.rounds_completed += 1;
+                            agent.last_heartbeat = now;
+                            agent.runtime_session_id = runtime.session_id();
+                            channel.set_agent_state(&agent).await?;
+                        }
+                    }
+                    AgentEvent::AwaitingInput => {
+                        emit_agent_runtime_event(
+                            channel,
+                            agent_id,
+                            tinytown::EventType::AgentAwaitingInput,
+                            "Agent runtime is awaiting input",
+                        )
+                        .await;
+                    }
+                    AgentEvent::SessionError(err) => {
+                        channel
+                            .log_agent_activity(
+                                agent_id,
+                                &format!("Persistent runtime: {}", truncate_summary(&err, 140)),
+                            )
+                            .await?;
+                        emit_agent_runtime_event(
+                            channel,
+                            agent_id,
+                            tinytown::EventType::AgentRuntimeError,
+                            format!("Persistent runtime error: {}", truncate_summary(&err, 160)),
+                        )
+                        .await;
+                    }
+                    AgentEvent::Exited(status) => {
+                        runtime_alive = false;
+                        if !status.success() && !pending_turns.is_empty() {
+                            channel
+                                .log_agent_activity(
+                                    agent_id,
+                                    &format!(
+                                        "Persistent runtime exited with error {}; re-queueing in-flight work",
+                                        status
+                                    ),
+                                )
+                                .await?;
+                            requeue_pending_turns(channel, agent_id, &mut pending_turns).await?;
+                        }
+                    }
+                }
+            }
+            _ = tick.tick() => {
+                if channel.should_stop(agent_id).await? {
+                    info!("   🛑 Stop requested, shutting down persistent runtime...");
+                    channel
+                        .log_agent_activity(agent_id, "🛑 stopped by request")
+                        .await?;
+                    let _ = runtime.shutdown(ShutdownMode::Immediate).await?;
+                    requeue_pending_turns(channel, agent_id, &mut pending_turns).await?;
+                    channel.clear_stop(agent_id).await?;
+                    break;
+                }
+
+                if let Some(agent_state) = channel.get_agent_state(agent_id).await?
+                    && agent_state.state == AgentState::Paused
+                {
+                    if runtime_alive && !pending_turns.is_empty() {
+                        info!("   ⏸️ Agent interrupted; stopping live session and re-queueing work");
+                        let _ = runtime.shutdown(ShutdownMode::Immediate).await?;
+                        runtime_alive = false;
+                        requeue_pending_turns(channel, agent_id, &mut pending_turns).await?;
+                    }
+                    continue;
+                }
+
+                if !runtime_alive {
+                    let resume_session_id = channel
+                        .get_agent_state(agent_id)
+                        .await?
+                        .and_then(|agent| agent.runtime_session_id);
+                    let AgentRuntime {
+                        agent: new_runtime,
+                        events: new_events,
+                    } = build_streaming_runtime(
+                        town_path,
+                        cli_name,
+                        cli_cmd,
+                        agent_id,
+                        name,
+                        resume_session_id,
+                    )
+                    .await?;
+                    runtime = new_runtime;
+                    events = new_events;
+                    runtime_alive = true;
+                }
+
+                if pending_turns.is_empty() {
+                    let display_round = round + 1;
+                    let urgent_messages = channel.receive_urgent(agent_id).await?;
+                    let regular_messages = channel.drain_inbox(agent_id).await?;
+                    let backlog_snapshot = backlog_snapshot_for_agent(channel, name, 8).await?;
+
+                    if regular_messages.is_empty() && urgent_messages.is_empty() {
+                        if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                            clear_terminal_current_task(channel, &mut agent).await?;
+                            let now = chrono::Utc::now();
+                            let became_idle =
+                                agent.state != AgentState::Paused && agent.state != AgentState::Idle;
+                            if agent.state != AgentState::Paused {
+                                agent.state = AgentState::Idle;
+                            }
+                            if became_idle {
+                                agent.last_active_at = now;
+                            }
+                            agent.last_heartbeat = now;
+
+                            if idle_timeout_elapsed(&agent, idle_timeout_secs, now) {
+                                info!(
+                                    "   🔻 Idle timeout reached after {}s, draining and stopping...",
+                                    idle_timeout_secs
+                                );
+                                agent.state = AgentState::Draining;
+                                channel.set_agent_state(&agent).await?;
+                                channel
+                                    .log_agent_activity(
+                                        agent_id,
+                                        &format!(
+                                            "🔻 Idle timeout reached after {}s; draining and stopping",
+                                            idle_timeout_secs
+                                        ),
+                                    )
+                                    .await?;
+                                let _ = runtime.shutdown(ShutdownMode::Graceful).await?;
+                                break;
+                            }
+
+                            channel.set_agent_state(&agent).await?;
+                        }
+                        continue;
+                    }
+
+                    let mut breakdown = MessageBreakdown::default();
+                    let mut actionable_messages: Vec<(tinytown::Message, bool)> = Vec::new();
+                    let mut informational_summaries: Vec<String> = Vec::new();
+                    let mut confirmation_counts: std::collections::BTreeMap<String, usize> =
+                        std::collections::BTreeMap::new();
+
+                    for msg in urgent_messages {
+                        breakdown.count(&msg.msg_type);
+                        match classify_message(&msg.msg_type) {
+                            MessageCategory::Task
+                            | MessageCategory::Query
+                            | MessageCategory::OtherActionable => {
+                                actionable_messages.push((msg, true));
+                            }
+                            MessageCategory::Informational => {
+                                informational_summaries
+                                    .push(truncate_summary(&summarize_message(&msg.msg_type), 100));
+                            }
+                            MessageCategory::Confirmation => {
+                                let key = truncate_summary(&summarize_message(&msg.msg_type), 60);
+                                *confirmation_counts.entry(key).or_insert(0) += 1;
+                            }
+                        }
+                    }
+
+                    for msg in regular_messages {
+                        breakdown.count(&msg.msg_type);
+                        match classify_message(&msg.msg_type) {
+                            MessageCategory::Task
+                            | MessageCategory::Query
+                            | MessageCategory::OtherActionable => {
+                                actionable_messages.push((msg, false));
+                            }
+                            MessageCategory::Informational => {
+                                informational_summaries
+                                    .push(truncate_summary(&summarize_message(&msg.msg_type), 100));
+                            }
+                            MessageCategory::Confirmation => {
+                                let key = truncate_summary(&summarize_message(&msg.msg_type), 60);
+                                *confirmation_counts.entry(key).or_insert(0) += 1;
+                            }
+                        }
+                    }
+
+                    let urgent_present = actionable_messages.iter().any(|(_, urgent)| *urgent);
+                    let regular_present = actionable_messages.iter().any(|(_, urgent)| !*urgent);
+                    if urgent_present && regular_present {
+                        let mut deferred_urgent = Vec::new();
+                        actionable_messages.retain(|(msg, urgent)| {
+                            if *urgent {
+                                deferred_urgent.push(msg.clone());
+                                false
+                            } else {
+                                true
+                            }
+                        });
+                        for msg in deferred_urgent {
+                            channel.send_urgent(&msg).await?;
+                        }
+                    }
+
+                    if actionable_messages.is_empty() {
+                        if backlog_snapshot.total_matching > 0 {
+                            actionable_messages.push((
+                                tinytown::Message::new(
+                                    tinytown::AgentId::supervisor(),
+                                    agent_id,
+                                    tinytown::MessageType::Query {
+                                        question: format!(
+                                            "No direct assignments right now. Backlog has {} role-matching task(s): review and claim one with `tt backlog claim <task-id> {}`.",
+                                            backlog_snapshot.total_matching, name
+                                        ),
+                                    },
+                                ),
+                                false,
+                            ));
+                        } else if backlog_snapshot.total_backlog > 0 {
+                            channel
+                                .log_agent_activity(
+                                    agent_id,
+                                    &format!(
+                                        "Round {}: ⏭️ no direct work and {} backlog task(s) did not match role hint",
+                                        display_round, backlog_snapshot.total_backlog
+                                    ),
+                                )
+                                .await?;
+                            continue;
+                        } else {
+                            channel
+                                .log_agent_activity(
+                                    agent_id,
+                                    &format!(
+                                        "Round {}: ⏭️ auto-handled {} informational, {} confirmations",
+                                        display_round,
+                                        informational_summaries.len(),
+                                        breakdown.confirmations
+                                    ),
+                                )
+                                .await?;
+                            continue;
+                        }
+                    }
+
+                    let urgent_actionable = actionable_messages
+                        .iter()
+                        .filter(|(_, urgent)| *urgent)
+                        .count();
+                    track_current_task_for_round(channel, agent_id, &actionable_messages).await?;
+                    let actionable_section =
+                        format_actionable_section(channel, &actionable_messages).await;
+
+                    let informational_section = if informational_summaries.is_empty() {
+                        String::new()
+                    } else {
+                        let mut section = String::from("\n## Informational (batched summary)\n\n");
+                        for summary in informational_summaries.iter().take(8) {
+                            section.push_str(&format!("- {}\n", summary));
+                        }
+                        if informational_summaries.len() > 8 {
+                            section.push_str(&format!(
+                                "- ...and {} more informational message(s)\n",
+                                informational_summaries.len() - 8
+                            ));
+                        }
+                        section
+                    };
+
+                    let confirmation_section = if confirmation_counts.is_empty() {
+                        String::new()
+                    } else {
+                        let mut section = String::from("\n## Confirmations (auto-dismissed)\n\n");
+                        for (kind, count) in &confirmation_counts {
+                            section.push_str(&format!("- {} x{}\n", kind, count));
+                        }
+                        section
+                    };
+
+                    let role_hint = backlog_role_hint(name);
+                    let backlog_section = {
+                        let mut section = format!(
+                            "\n## Backlog Snapshot\n\n- Total backlog tasks: {}\n- Role-matching backlog tasks: {}\n- Role match hint: {}\n",
+                            backlog_snapshot.total_backlog, backlog_snapshot.total_matching, role_hint
+                        );
+                        if backlog_snapshot.total_matching > 0 {
+                            section.push_str("\nReview and claim role-matching items:\n");
+                            for (task_id, task) in &backlog_snapshot.tasks {
+                                let tags = if task.tags.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" [{}]", task.tags.join(", "))
+                                };
+                                section.push_str(&format!(
+                                    "- {} - {}{}\n",
+                                    task_id,
+                                    truncate_summary(&task.description, 90),
+                                    tags
+                                ));
+                            }
+                        }
+                        section
+                    };
+
+                    let prompt = format!(
+                        r#"# Agent: {name}
+
+You are agent "{name}" in Tinytown "{town_name}".
+
+{actionable_section}{informational_section}{confirmation_section}
+## Available Commands
+
+```bash
+tt status                              # Check town status and all agents
+tt assign <agent> "task"               # Assign actionable work
+tt backlog list                        # Review unassigned backlog tasks
+tt backlog claim <task_id> {agent_name}   # Claim a backlog task for yourself
+tt send <agent> --query "question"     # Ask for a response
+tt send <agent> --info "update"        # Send FYI update
+tt send <agent> --ack "received"       # Send acknowledgment
+tt send <agent> --urgent --query "..." # Priority message for the live session
+tt task current                        # Show your tracked current assignment
+tt task complete <task_id> --result "summary"  # Mark a task as done
+```
+
+{backlog_section}
+## Current State
+- Round: {display_round}/{max_rounds}
+- Actionable messages: {actionable_count}
+- Urgent actionable: {urgent_actionable}
+- Batched informational: {info_count}
+- Auto-dismissed confirmations: {confirmation_count}
+
+## Your Workflow
+
+1. Handle all actionable messages listed above.
+2. If you have no direct assignment or extra capacity, review backlog and claim one role-matching task.
+3. Claim only work that matches your role hint; do not claim unrelated tasks.
+4. Prefer direct agent-to-agent messages for concrete execution handoffs, review requests, and unblock checks.
+5. Use `supervisor` / `conductor` when you need human guidance, priority changes, broader sequencing, escalation, or town-wide visibility.
+6. If blocked, send a query with specific unblock needs.
+7. Use `tt task current` to confirm the real Tinytown task id before completing work.
+8. When finished with a task, mark it complete: `tt task complete <task_id> --result \"what was done\"`
+9. Send informational updates or confirmations as appropriate, including FYI summaries to supervisor/conductor when the conductor should stay informed.
+"#,
+                        name = name,
+                        agent_name = name,
+                        town_name = config.name,
+                        actionable_section = actionable_section,
+                        informational_section = informational_section,
+                        confirmation_section = confirmation_section,
+                        backlog_section = backlog_section,
+                        display_round = display_round,
+                        max_rounds = max_rounds,
+                        actionable_count = actionable_messages.len(),
+                        urgent_actionable = urgent_actionable,
+                        info_count = informational_summaries.len(),
+                        confirmation_count = breakdown.confirmations,
+                    );
+
+                    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+                        agent.state = AgentState::Working;
+                        agent.last_active_at = chrono::Utc::now();
+                        agent.last_heartbeat = chrono::Utc::now();
+                        agent.runtime_session_id = runtime.session_id();
+                        channel.set_agent_state(&agent).await?;
+                    }
+                    if let Some(mut task) =
+                        tinytown::TaskService::current_for_agent(channel, agent_id).await?
+                        && !task.state.is_terminal()
+                        && task.state != tinytown::TaskState::Running
+                    {
+                        task.start();
+                        channel.set_task(&task).await?;
+                    }
+
+                    let turn = AgentTurn {
+                        prompt,
+                        prompt_file: town_path.join(format!(".tt/agent_{}_prompt.md", name)),
+                        output_file: town_path.join(format!(".tt/logs/{}_round_{}.log", name, display_round)),
+                    };
+                    runtime.send(AgentInput::UserMessage(turn)).await?;
+                    pending_turns.push_back(PendingTurn {
+                        display_round,
+                        actionable_messages,
+                    });
+                } else {
+                    let urgent_messages = channel.receive_urgent(agent_id).await?;
+                    if urgent_messages.is_empty() {
+                        continue;
+                    }
+
+                    let mut actionable_messages = Vec::new();
+                    for msg in urgent_messages {
+                        if matches!(
+                            classify_message(&msg.msg_type),
+                            MessageCategory::Task
+                                | MessageCategory::Query
+                                | MessageCategory::OtherActionable
+                        ) {
+                            actionable_messages.push((msg, true));
+                        }
+                    }
+                    if actionable_messages.is_empty() {
+                        continue;
+                    }
+
+                    let display_round = pending_turns
+                        .front()
+                        .map(|turn| turn.display_round)
+                        .unwrap_or(round + 1);
+                    let actionable_section =
+                        format_actionable_section(channel, &actionable_messages).await;
+                    let prompt = format!(
+                        "# Agent: {name}\n\nYou are in a live Tinytown session. Prioritize this urgent follow-up immediately.\n\n{actionable_section}\n## Current State\n- Round: {display_round}/{max_rounds}\n- This message arrived while you were already working.\n",
+                        name = name,
+                        actionable_section = actionable_section,
+                        display_round = display_round,
+                        max_rounds = max_rounds,
+                    );
+                    let turn = AgentTurn {
+                        prompt,
+                        prompt_file: town_path.join(format!(".tt/agent_{}_prompt.md", name)),
+                        output_file: town_path.join(format!(".tt/logs/{}_round_{}.log", name, display_round)),
+                    };
+                    runtime.send(AgentInput::UrgentMessage(turn)).await?;
+                    if let Some(existing_turn) = pending_turns.back_mut() {
+                        existing_turn
+                            .actionable_messages
+                            .extend(actionable_messages);
+                    } else {
+                        pending_turns.push_back(PendingTurn {
+                            display_round,
+                            actionable_messages,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    let _ = runtime.shutdown(ShutdownMode::Graceful).await?;
+
+    if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
+        agent.state = AgentState::Stopped;
+        agent.last_heartbeat = chrono::Utc::now();
+        agent.runtime_session_id = runtime.session_id();
+        channel.set_agent_state(&agent).await?;
+        info!(
+            "🏁 Agent '{}' finished: {} rounds, {} tasks",
+            name, agent.rounds_completed, agent.tasks_completed
+        );
+    } else {
+        info!("🏁 Agent '{}' finished after {} rounds", name, max_rounds);
+    }
+
+    Ok(())
 }
 
 #[derive(Parser)]
@@ -3029,6 +3681,38 @@ async fn main() -> Result<()> {
             );
             info!("   CLI: {} ({})", cli_name, cli_cmd);
             info!("   Idle timeout: {}s", idle_timeout_secs);
+            if config.agent.persistent && tinytown::supports_persistent_runtime(&cli_name) {
+                info!("   Runtime: persistent Codex app-server session");
+                run_persistent_agent_loop(
+                    &cli.town,
+                    config,
+                    channel,
+                    &name,
+                    agent_id,
+                    max_rounds,
+                    &cli_name,
+                    &cli_cmd,
+                    idle_timeout_secs,
+                )
+                .await?;
+                return Ok(());
+            } else if config.agent.persistent {
+                info!(
+                    "   Runtime: persistent requested but unsupported for {}; falling back to one-shot",
+                    cli_name
+                );
+            }
+            info!("   Runtime: one-shot subprocess per turn");
+
+            let AgentRuntime {
+                agent: mut runtime,
+                events: _events,
+            } = OneShotAgent::runtime(OneShotAgentConfig {
+                cli_name: cli_name.clone(),
+                cli_cmd: cli_cmd.clone(),
+                workdir: cli.town.clone(),
+                env: runtime_env(agent_id, &name),
+            });
 
             // Use manual counter - only increment AFTER CLI execution (fixes round-burning bug)
             let mut round: u32 = 0;
@@ -3353,10 +4037,6 @@ Only run commands needed to complete listed work; inbox messages for this round 
                     confirmation_count = breakdown.confirmations,
                 );
 
-                // Write prompt to temp file (under .tt/)
-                let prompt_file = cli.town.join(format!(".tt/agent_{}_prompt.md", name));
-                std::fs::write(&prompt_file, &prompt)?;
-
                 // Update agent state to working
                 if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
                     agent.state = AgentState::Working;
@@ -3375,25 +4055,14 @@ Only run commands needed to complete listed work; inbox messages for this round 
 
                 // Run the agent CLI
                 info!("   🤖 Running {}...", cli_name);
-                let output_file = cli
-                    .town
-                    .join(format!(".tt/logs/{}_round_{}.log", name, display_round));
-                let output = std::fs::File::create(&output_file)?;
-
-                let shell_cmd = build_cli_command(&cli_name, &cli_cmd, &prompt_file);
-                let status = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(&shell_cmd)
-                    .current_dir(&cli.town)
-                    .env(TT_AGENT_ID_ENV, agent_id.to_string())
-                    .env(TT_AGENT_NAME_ENV, &name)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(output.try_clone()?)
-                    .stderr(output)
-                    .status();
-
-                // Clean up prompt file
-                let _ = std::fs::remove_file(&prompt_file);
+                let turn = AgentTurn {
+                    prompt,
+                    prompt_file: cli.town.join(format!(".tt/agent_{}_prompt.md", name)),
+                    output_file: cli
+                        .town
+                        .join(format!(".tt/logs/{}_round_{}.log", name, display_round)),
+                };
+                let status = runtime.send(AgentInput::UserMessage(turn)).await?.status;
 
                 // Log activity and result
                 let activity_msg = match &status {
@@ -3469,6 +4138,8 @@ Only run commands needed to complete listed work; inbox messages for this round 
                 // Small delay between rounds
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
+
+            let _ = runtime.shutdown(ShutdownMode::Graceful).await?;
 
             // Mark agent as stopped with final stats
             if let Some(mut agent) = channel.get_agent_state(agent_id).await? {
@@ -3993,6 +4664,12 @@ Now, help the user orchestrate their project!
                         tinytown::events::EventType::AgentStopped
                         | tinytown::events::EventType::AgentCompleted => "🏁",
                         tinytown::events::EventType::AgentStateChanged => "🔄",
+                        tinytown::events::EventType::AgentTurnStarted => "▶️",
+                        tinytown::events::EventType::AgentTurnCompleted => "✅",
+                        tinytown::events::EventType::AgentAwaitingInput => "⏸️",
+                        tinytown::events::EventType::AgentToolCall => "🔧",
+                        tinytown::events::EventType::AgentAssistantDelta => "💬",
+                        tinytown::events::EventType::AgentRuntimeError => "⚠️",
                         tinytown::events::EventType::TaskAssigned => "📌",
                         tinytown::events::EventType::TaskCompleted => "✅",
                         tinytown::events::EventType::TaskFailed => "❌",

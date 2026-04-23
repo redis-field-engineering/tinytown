@@ -76,6 +76,15 @@ That's it! Your agents are now coordinating via Redis.
 
 > **Note:** `tt bootstrap` delegates to an AI agent to download Redis from GitHub and compile it for your machine. Alternatively: `brew install redis` (macOS) or `apt install redis-server` (Ubuntu).
 
+## Runtime Model
+
+`tt spawn` still launches a background `tt agent-loop` worker. The worker now supports two execution modes:
+
+- **One-shot**: default. Each turn spawns a fresh coding CLI process.
+- **Persistent streaming**: opt in with `[agent].persistent = true`. Claude-backed workers keep a live `stream-json` subprocess across turns, can accept urgent messages mid-turn, persist a resumable session ID on the agent record, and emit structured per-turn events onto the Redis event stream.
+
+During rollout, unsupported CLIs automatically fall back to the one-shot path even if persistence is enabled.
+
 ## 🎯 Mission Mode
 
 Start an autonomous mission that handles multiple GitHub issues with dependency-aware scheduling:
