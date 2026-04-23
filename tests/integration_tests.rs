@@ -15,8 +15,8 @@ use std::time::Duration;
 use tempfile::TempDir;
 use tinytown::message::MessageType;
 use tinytown::{
-    Agent, AgentId, AgentState, AgentType, Message, Priority, Task, TaskId, TaskService, TaskState,
-    Town,
+    Agent, AgentId, AgentState, AgentType, EventType, Message, Priority, Task, TaskId, TaskService,
+    TaskState, Town,
 };
 use uuid::Uuid;
 
@@ -71,6 +71,105 @@ fn reserve_unused_port() -> Result<u16, Box<dyn std::error::Error>> {
     let port = listener.local_addr()?.port();
     drop(listener);
     Ok(port)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn write_fake_streaming_claude(
+    town_path: &std::path::Path,
+    start_count_path: &std::path::Path,
+    input_log_path: &std::path::Path,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let script_path = town_path.join("fake_claude_stream.py");
+    std::fs::write(
+        &script_path,
+        r#"#!/usr/bin/env python3
+import json
+import os
+import re
+import sys
+import time
+
+resume_id = None
+args = sys.argv[1:]
+for idx, arg in enumerate(args):
+    if arg in ("--resume", "-r") and idx + 1 < len(args):
+        resume_id = args[idx + 1]
+
+session_id = resume_id or "fake-session-1"
+start_count_path = os.environ.get("TINYTOWN_FAKE_START_COUNT")
+if start_count_path:
+    with open(start_count_path, "a", encoding="utf-8") as handle:
+        handle.write("start\n")
+
+print(json.dumps({"type": "system", "subtype": "init", "session_id": session_id}), flush=True)
+
+for raw_line in sys.stdin:
+    raw_line = raw_line.strip()
+    if not raw_line:
+        continue
+    payload = json.loads(raw_line)
+    if payload.get("type") != "user":
+        continue
+    text = payload["message"]["content"][0]["text"]
+    input_log_path = os.environ.get("TINYTOWN_FAKE_INPUT_LOG")
+    if input_log_path:
+        with open(input_log_path, "a", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.write("\n---\n")
+
+    match = re.search(r"SLEEP_MS=(\d+)", text)
+    if match:
+        time.sleep(int(match.group(1)) / 1000.0)
+
+    if "TOOL_CALL=1" in text:
+        print(json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_start",
+                "content_block": {"type": "tool_use", "name": "Read"}
+            },
+            "session_id": session_id
+        }), flush=True)
+        print(json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "input_json_delta", "partial_json": "{\"path\":\"README.md\"}"}
+            },
+            "session_id": session_id
+        }), flush=True)
+        print(json.dumps({
+            "type": "stream_event",
+            "event": {"type": "content_block_stop"},
+            "session_id": session_id
+        }), flush=True)
+
+    summary = "handled urgent turn" if "URGENT" in text else "handled turn"
+    print(json.dumps({
+        "type": "stream_event",
+        "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": summary}
+        },
+        "session_id": session_id
+    }), flush=True)
+    print(json.dumps({
+        "type": "stream_event",
+        "event": {"type": "message_stop"},
+        "session_id": session_id
+    }), flush=True)
+"#,
+    )?;
+
+    Ok(format!(
+        "TINYTOWN_FAKE_START_COUNT={} TINYTOWN_FAKE_INPUT_LOG={} python3 {}",
+        shell_quote(&start_count_path.display().to_string()),
+        shell_quote(&input_log_path.display().to_string()),
+        shell_quote(&script_path.display().to_string()),
+    ))
 }
 
 // ============================================================================
@@ -5021,6 +5120,31 @@ idle_timeout_secs = 42
     Ok(())
 }
 
+/// Test that the persistent agent runtime flag can be parsed from config TOML.
+#[tokio::test]
+async fn test_agent_persistent_config_parse() -> Result<(), Box<dyn std::error::Error>> {
+    use tinytown::Config;
+
+    let temp_dir = TempDir::new()?;
+    let config_path = temp_dir.path().join("tinytown.toml");
+
+    std::fs::write(
+        &config_path,
+        r#"
+name = "agent-persistent-test"
+
+[agent]
+persistent = true
+"#,
+    )?;
+
+    let config = Config::load(temp_dir.path())?;
+    assert!(config.agent.persistent);
+    assert_eq!(config.agent.idle_timeout_secs, 300);
+
+    Ok(())
+}
+
 /// Test that the worker loop exits cleanly after the idle timeout elapses.
 #[tokio::test]
 async fn test_agent_loop_exits_cleanly_after_idle_timeout() -> Result<(), Box<dyn std::error::Error>>
@@ -5048,6 +5172,48 @@ async fn test_agent_loop_exits_cleanly_after_idle_timeout() -> Result<(), Box<dy
     .await??;
 
     assert!(status.success(), "agent-loop should exit cleanly");
+
+    let agent = town
+        .channel()
+        .get_agent_state(agent_id)
+        .await?
+        .expect("idle worker should still be registered");
+    assert_eq!(agent.state, AgentState::Stopped);
+
+    Ok(())
+}
+
+/// Test that the persistent runtime branch still exits cleanly on idle timeout.
+#[tokio::test]
+async fn test_persistent_agent_loop_exits_cleanly_after_idle_timeout()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("persistent-agent-loop-idle-timeout").await?;
+    let town_path = town.config().root.clone();
+
+    let mut config = tinytown::Config::load(&town_path)?;
+    config.agent.idle_timeout_secs = 1;
+    config.agent.persistent = true;
+    config.save()?;
+
+    let handle = town.spawn_agent("idle-worker", "claude").await?;
+    let agent_id = handle.id();
+
+    let status = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tt"))
+            .arg("--town")
+            .arg(&town_path)
+            .arg("agent-loop")
+            .arg("idle-worker")
+            .arg(agent_id.to_string())
+            .arg("100")
+            .status()
+    })
+    .await??;
+
+    assert!(
+        status.success(),
+        "persistent agent-loop should exit cleanly"
+    );
 
     let agent = town
         .channel()
@@ -5107,6 +5273,306 @@ async fn test_agent_loop_ignores_stale_terminal_current_task()
         .expect("idle worker should still be registered");
     assert_eq!(agent.state, AgentState::Stopped);
     assert_eq!(agent.current_task, None);
+
+    Ok(())
+}
+
+/// Test that the persistent runtime reuses a single streaming child across turns.
+#[tokio::test]
+async fn test_agent_loop_persistent_runtime_reuses_single_streaming_process()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("agent-loop-persistent-reuse").await?;
+    let town_path = town.config().root.clone();
+    let start_count_path = town_path.join("fake_claude.starts");
+    let input_log_path = town_path.join("fake_claude.inputs");
+    let fake_command = write_fake_streaming_claude(&town_path, &start_count_path, &input_log_path)?;
+
+    let mut config = tinytown::Config::load(&town_path)?;
+    config.agent.persistent = true;
+    config.default_cli = "claude".to_string();
+    config.agent_clis.insert(
+        "claude".to_string(),
+        tinytown::agent::AgentCli::new("claude", &fake_command),
+    );
+    config.save()?;
+
+    let handle = town.spawn_agent("persistent-worker", "claude").await?;
+    let agent_id = handle.id();
+
+    town.channel()
+        .send(&Message::new(
+            AgentId::supervisor(),
+            agent_id,
+            MessageType::Task {
+                description: "FIRST_TURN TOOL_CALL=1".to_string(),
+            },
+        ))
+        .await?;
+
+    let town_path_for_loop = town_path.clone();
+    let loop_handle = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tt"))
+            .arg("--town")
+            .arg(&town_path_for_loop)
+            .arg("agent-loop")
+            .arg("persistent-worker")
+            .arg(agent_id.to_string())
+            .arg("2")
+            .status()
+    });
+
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    town.channel()
+        .send(&Message::new(
+            AgentId::supervisor(),
+            agent_id,
+            MessageType::Task {
+                description: "SECOND_TURN".to_string(),
+            },
+        ))
+        .await?;
+
+    let status = loop_handle.await??;
+    assert!(
+        status.success(),
+        "persistent agent-loop should exit cleanly"
+    );
+
+    let starts = std::fs::read_to_string(start_count_path)?;
+    assert_eq!(
+        starts.lines().count(),
+        1,
+        "streaming runtime should start once"
+    );
+
+    let inputs = std::fs::read_to_string(input_log_path)?;
+    assert!(inputs.contains("FIRST_TURN"));
+    assert!(inputs.contains("SECOND_TURN"));
+
+    let agent = town
+        .channel()
+        .get_agent_state(agent_id)
+        .await?
+        .expect("persistent worker should still be registered");
+    assert_eq!(agent.state, AgentState::Stopped);
+    assert_eq!(agent.rounds_completed, 2);
+    assert_eq!(agent.runtime_session_id.as_deref(), Some("fake-session-1"));
+
+    Ok(())
+}
+
+/// Test that urgent messages can be injected into a live persistent session.
+#[tokio::test]
+async fn test_agent_loop_persistent_runtime_processes_urgent_message_mid_turn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("agent-loop-persistent-urgent").await?;
+    let town_path = town.config().root.clone();
+    let start_count_path = town_path.join("fake_claude.starts");
+    let input_log_path = town_path.join("fake_claude.inputs");
+    let fake_command = write_fake_streaming_claude(&town_path, &start_count_path, &input_log_path)?;
+
+    let mut config = tinytown::Config::load(&town_path)?;
+    config.agent.persistent = true;
+    config.default_cli = "claude".to_string();
+    config.agent_clis.insert(
+        "claude".to_string(),
+        tinytown::agent::AgentCli::new("claude", &fake_command),
+    );
+    config.save()?;
+
+    let handle = town.spawn_agent("urgent-worker", "claude").await?;
+    let agent_id = handle.id();
+
+    town.channel()
+        .send(&Message::new(
+            AgentId::supervisor(),
+            agent_id,
+            MessageType::Task {
+                description: "FIRST_TURN SLEEP_MS=1500".to_string(),
+            },
+        ))
+        .await?;
+
+    let town_path_for_loop = town_path.clone();
+    let loop_handle = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tt"))
+            .arg("--town")
+            .arg(&town_path_for_loop)
+            .arg("agent-loop")
+            .arg("urgent-worker")
+            .arg(agent_id.to_string())
+            .arg("2")
+            .status()
+    });
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    town.channel()
+        .send_urgent(&Message::new(
+            AgentId::supervisor(),
+            agent_id,
+            MessageType::Query {
+                question: "URGENT_PING".to_string(),
+            },
+        ))
+        .await?;
+
+    let status = loop_handle.await??;
+    assert!(
+        status.success(),
+        "persistent urgent agent-loop should exit cleanly"
+    );
+
+    let starts = std::fs::read_to_string(start_count_path)?;
+    assert_eq!(
+        starts.lines().count(),
+        1,
+        "urgent turn should not restart runtime"
+    );
+
+    let inputs = std::fs::read_to_string(input_log_path)?;
+    assert!(inputs.contains("SLEEP_MS=1500"));
+    assert!(inputs.contains("URGENT_PING"));
+
+    let agent = town
+        .channel()
+        .get_agent_state(agent_id)
+        .await?
+        .expect("urgent worker should still be registered");
+    assert_eq!(agent.state, AgentState::Stopped);
+    assert_eq!(agent.rounds_completed, 2);
+
+    Ok(())
+}
+
+/// Test that stop requests interrupt a live persistent session instead of waiting for the turn to end.
+#[tokio::test]
+async fn test_agent_loop_persistent_runtime_stop_interrupts_live_turn()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("agent-loop-persistent-stop").await?;
+    let town_path = town.config().root.clone();
+    let start_count_path = town_path.join("fake_claude.starts");
+    let input_log_path = town_path.join("fake_claude.inputs");
+    let fake_command = write_fake_streaming_claude(&town_path, &start_count_path, &input_log_path)?;
+
+    let mut config = tinytown::Config::load(&town_path)?;
+    config.agent.persistent = true;
+    config.default_cli = "claude".to_string();
+    config.agent_clis.insert(
+        "claude".to_string(),
+        tinytown::agent::AgentCli::new("claude", &fake_command),
+    );
+    config.save()?;
+
+    let handle = town.spawn_agent("stop-worker", "claude").await?;
+    let agent_id = handle.id();
+
+    town.channel()
+        .send(&Message::new(
+            AgentId::supervisor(),
+            agent_id,
+            MessageType::Task {
+                description: "LONG_TURN SLEEP_MS=5000".to_string(),
+            },
+        ))
+        .await?;
+
+    let town_path_for_loop = town_path.clone();
+    let started = std::time::Instant::now();
+    let loop_handle = tokio::task::spawn_blocking(move || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_tt"))
+            .arg("--town")
+            .arg(&town_path_for_loop)
+            .arg("agent-loop")
+            .arg("stop-worker")
+            .arg(agent_id.to_string())
+            .arg("10")
+            .status()
+    });
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    town.channel().request_stop(agent_id).await?;
+
+    let status = loop_handle.await??;
+    assert!(status.success(), "persistent stop path should exit cleanly");
+    assert!(
+        started.elapsed() < Duration::from_secs(4),
+        "stop request should interrupt the live turn quickly"
+    );
+
+    let agent = town
+        .channel()
+        .get_agent_state(agent_id)
+        .await?
+        .expect("stop worker should still be registered");
+    assert_eq!(agent.state, AgentState::Stopped);
+
+    Ok(())
+}
+
+/// Test that persistent runtime events are emitted onto the per-agent Redis stream.
+#[tokio::test]
+async fn test_agent_loop_persistent_runtime_emits_structured_agent_events()
+-> Result<(), Box<dyn std::error::Error>> {
+    let town = create_test_town("agent-loop-persistent-events").await?;
+    let town_path = town.config().root.clone();
+    let start_count_path = town_path.join("fake_claude.starts");
+    let input_log_path = town_path.join("fake_claude.inputs");
+    let fake_command = write_fake_streaming_claude(&town_path, &start_count_path, &input_log_path)?;
+
+    let mut config = tinytown::Config::load(&town_path)?;
+    config.agent.persistent = true;
+    config.default_cli = "claude".to_string();
+    config.agent_clis.insert(
+        "claude".to_string(),
+        tinytown::agent::AgentCli::new("claude", &fake_command),
+    );
+    config.save()?;
+
+    let handle = town.spawn_agent("event-worker", "claude").await?;
+    let agent_id = handle.id();
+
+    town.channel()
+        .send(&Message::new(
+            AgentId::supervisor(),
+            agent_id,
+            MessageType::Task {
+                description: "EVENT_TURN TOOL_CALL=1".to_string(),
+            },
+        ))
+        .await?;
+
+    let status = tokio::task::spawn_blocking({
+        let town_path = town_path.clone();
+        move || {
+            std::process::Command::new(env!("CARGO_BIN_EXE_tt"))
+                .arg("--town")
+                .arg(&town_path)
+                .arg("agent-loop")
+                .arg("event-worker")
+                .arg(agent_id.to_string())
+                .arg("1")
+                .status()
+        }
+    })
+    .await??;
+    assert!(
+        status.success(),
+        "persistent event worker should exit cleanly"
+    );
+
+    let events = town
+        .event_stream()
+        .read_agent_events(agent_id, "0-0", 50)
+        .await?;
+    let event_types: Vec<EventType> = events
+        .into_iter()
+        .map(|(_, event)| event.event_type)
+        .collect();
+
+    assert!(event_types.contains(&EventType::AgentTurnStarted));
+    assert!(event_types.contains(&EventType::AgentToolCall));
+    assert!(event_types.contains(&EventType::AgentAssistantDelta));
+    assert!(event_types.contains(&EventType::AgentTurnCompleted));
 
     Ok(())
 }

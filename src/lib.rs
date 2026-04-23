@@ -43,6 +43,7 @@
 //! ```
 
 pub mod agent;
+pub mod agent_runtime;
 pub mod app;
 pub mod channel;
 pub mod config;
@@ -60,6 +61,11 @@ pub mod town;
 
 pub use agent::{
     Agent, AgentId, AgentState, AgentType, RoleDefinition, SpawnMode, builtin_roles, roles,
+};
+pub use agent_runtime::{
+    AgentEvent, AgentEventReceiver, AgentInput, AgentRuntime, AgentTurn, AgentTurnResult,
+    CodingAgent, OneShotAgent, OneShotAgentConfig, ShutdownMode, StreamingAgent,
+    StreamingAgentConfig, build_cli_command,
 };
 pub use app::audit::{AuditEvent, AuditResult, audit_middleware};
 pub use app::auth::{AuthError, AuthState, Principal, auth_middleware, generate_api_key};

@@ -758,6 +758,9 @@ pub struct Agent {
     /// Defaults to created_at if never set.
     #[serde(default = "chrono::Utc::now")]
     pub last_active_at: DateTime<Utc>,
+    /// Persistent runtime session identifier for resume-capable CLIs.
+    #[serde(default)]
+    pub runtime_session_id: Option<String>,
 }
 
 impl Agent {
@@ -786,6 +789,7 @@ impl Agent {
             tasks_completed: 0,
             rounds_completed: 0,
             last_active_at: now,
+            runtime_session_id: None,
         }
     }
 
@@ -864,6 +868,7 @@ impl Agent {
             tasks_completed: 0,
             rounds_completed: 0,
             last_active_at: now,
+            runtime_session_id: None,
         }
     }
 }

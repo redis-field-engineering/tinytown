@@ -109,6 +109,10 @@ pub struct AgentConfig {
     /// Seconds an idle worker should wait before draining and exiting.
     #[serde(default = "default_agent_idle_timeout_secs")]
     pub idle_timeout_secs: u64,
+
+    /// Keep agent CLI subprocesses alive across turns when supported.
+    #[serde(default)]
+    pub persistent: bool,
 }
 
 /// Authentication mode for townhall.
@@ -336,6 +340,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             idle_timeout_secs: default_agent_idle_timeout_secs(),
+            persistent: false,
         }
     }
 }

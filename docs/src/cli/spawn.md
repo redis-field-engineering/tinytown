@@ -153,6 +153,8 @@ tt spawn reviewer --role reviewer &
    - Repeats until `--max-rounds` reached
 4. **Agent stops** with state `Stopped`
 
+By default, each turn uses a fresh CLI subprocess. If `[agent].persistent = true` and the selected CLI has a streaming adapter, `tt agent-loop` keeps one long-lived subprocess alive across turns instead. Today that persistent path is available for Claude-style `stream-json` sessions; unsupported CLIs automatically fall back to the one-shot model.
+
 ## Agent Naming
 
 Choose descriptive names. With `--role`, names no longer need to describe the role:

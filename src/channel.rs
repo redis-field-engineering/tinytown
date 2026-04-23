@@ -394,6 +394,12 @@ impl Channel {
             fields_to_delete.push("parent_agent_id");
         }
 
+        if let Some(ref session_id) = agent.runtime_session_id {
+            fields.push(("runtime_session_id".to_string(), session_id.clone()));
+        } else {
+            fields_to_delete.push("runtime_session_id");
+        }
+
         // Use a pipeline to make HDEL + HSET atomic
         let mut pipe = redis::pipe();
         if !fields_to_delete.is_empty() {
@@ -482,6 +488,7 @@ impl Channel {
         let nickname = fields.get("nickname").cloned();
         let role_id = fields.get("role_id").cloned();
         let parent_agent_id = fields.get("parent_agent_id").and_then(|s| s.parse().ok());
+        let runtime_session_id = fields.get("runtime_session_id").cloned();
         let spawn_mode: crate::agent::SpawnMode = fields
             .get("spawn_mode")
             .map(|s| serde_json::from_str(&format!("\"{}\"", s)).unwrap_or_default())
@@ -503,6 +510,7 @@ impl Channel {
             tasks_completed,
             rounds_completed,
             last_active_at,
+            runtime_session_id,
         })
     }
 
