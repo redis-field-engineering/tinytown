@@ -405,7 +405,7 @@ async fn requeue_pending_turns(
     Ok(())
 }
 
-fn build_streaming_runtime(
+async fn build_streaming_runtime(
     town_path: &Path,
     cli_name: &str,
     cli_cmd: &str,
@@ -420,6 +420,7 @@ fn build_streaming_runtime(
         env: runtime_env(agent_id, name),
         resume_session_id,
     })
+    .await
 }
 
 async fn run_persistent_agent_loop(
@@ -449,7 +450,8 @@ async fn run_persistent_agent_loop(
         agent_id,
         name,
         resume_session_id,
-    )?;
+    )
+    .await?;
     let mut runtime_alive = true;
     let mut round: u32 = 0;
     let mut pending_turns: VecDeque<PendingTurn> = VecDeque::new();
@@ -621,7 +623,8 @@ async fn run_persistent_agent_loop(
                         agent_id,
                         name,
                         resume_session_id,
-                    )?;
+                    )
+                    .await?;
                     runtime = new_runtime;
                     events = new_events;
                     runtime_alive = true;
@@ -937,7 +940,10 @@ tt task complete <task_id> --result "summary"  # Mark a task as done
                         continue;
                     }
 
-                    let display_round = round + pending_turns.len() as u32 + 1;
+                    let display_round = pending_turns
+                        .front()
+                        .map(|turn| turn.display_round)
+                        .unwrap_or(round + 1);
                     let actionable_section =
                         format_actionable_section(channel, &actionable_messages).await;
                     let prompt = format!(
@@ -953,10 +959,16 @@ tt task complete <task_id> --result "summary"  # Mark a task as done
                         output_file: town_path.join(format!(".tt/logs/{}_round_{}.log", name, display_round)),
                     };
                     runtime.send(AgentInput::UrgentMessage(turn)).await?;
-                    pending_turns.push_back(PendingTurn {
-                        display_round,
-                        actionable_messages,
-                    });
+                    if let Some(existing_turn) = pending_turns.back_mut() {
+                        existing_turn
+                            .actionable_messages
+                            .extend(actionable_messages);
+                    } else {
+                        pending_turns.push_back(PendingTurn {
+                            display_round,
+                            actionable_messages,
+                        });
+                    }
                 }
             }
         }
@@ -3669,8 +3681,8 @@ async fn main() -> Result<()> {
             );
             info!("   CLI: {} ({})", cli_name, cli_cmd);
             info!("   Idle timeout: {}s", idle_timeout_secs);
-            if config.agent.persistent {
-                info!("   Runtime: persistent session");
+            if config.agent.persistent && tinytown::supports_persistent_runtime(&cli_name) {
+                info!("   Runtime: persistent Codex app-server session");
                 run_persistent_agent_loop(
                     &cli.town,
                     config,
@@ -3684,6 +3696,11 @@ async fn main() -> Result<()> {
                 )
                 .await?;
                 return Ok(());
+            } else if config.agent.persistent {
+                info!(
+                    "   Runtime: persistent requested but unsupported for {}; falling back to one-shot",
+                    cli_name
+                );
             }
             info!("   Runtime: one-shot subprocess per turn");
 

@@ -65,7 +65,7 @@ pub use agent::{
 pub use agent_runtime::{
     AgentEvent, AgentEventReceiver, AgentInput, AgentRuntime, AgentTurn, AgentTurnResult,
     CodingAgent, OneShotAgent, OneShotAgentConfig, ShutdownMode, StreamingAgent,
-    StreamingAgentConfig, build_cli_command,
+    StreamingAgentConfig, build_cli_command, supports_persistent_runtime,
 };
 pub use app::audit::{AuditEvent, AuditResult, audit_middleware};
 pub use app::auth::{AuthError, AuthState, Principal, auth_middleware, generate_api_key};

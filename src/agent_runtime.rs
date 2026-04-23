@@ -5,7 +5,7 @@
 
 //! Agent runtime adapters.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::{Command, ExitStatus, Stdio};
@@ -14,15 +14,18 @@ use std::task::{Context, Poll};
 
 use async_trait::async_trait;
 use futures_core::Stream;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child as TokioChild, ChildStdin, ChildStdout, Command as TokioCommand};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use uuid::Uuid;
 
 use crate::Result;
 
-const TURN_STATUS_MARKER: &str = "__TINYTOWN_TURN_STATUS__";
+#[must_use]
+pub fn supports_persistent_runtime(cli_name: &str) -> bool {
+    matches!(cli_name, "codex" | "codex-mini")
+}
 
 #[must_use]
 pub fn build_cli_command(cli_name: &str, cli_cmd: &str, prompt_file: &Path) -> String {
@@ -42,24 +45,6 @@ fn shell_quote(path: &Path) -> String {
 #[must_use]
 fn shell_quote_str(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-#[must_use]
-fn build_turn_script(
-    cli_name: &str,
-    cli_cmd: &str,
-    prompt_file: &Path,
-    output_file: &Path,
-) -> String {
-    let shell_cmd = build_cli_command(cli_name, cli_cmd, prompt_file);
-    let output_file = shell_quote(output_file);
-    format!("{shell_cmd} > {output_file} 2>&1\nprintf '%s%s\\n' '{TURN_STATUS_MARKER}' \"$?\"\n")
-}
-
-#[must_use]
-fn parse_turn_status(line: &str) -> Option<i32> {
-    line.strip_prefix(TURN_STATUS_MARKER)
-        .and_then(|status| status.trim().parse::<i32>().ok())
 }
 
 #[derive(Debug, Clone)]
@@ -187,398 +172,6 @@ pub struct StreamingAgentConfig {
 }
 
 #[derive(Debug)]
-pub struct PersistentShellAgent {
-    config: OneShotAgentConfig,
-    events: VecDeque<AgentEvent>,
-    last_exit_status: Option<ExitStatus>,
-    session: Option<PersistentShellSession>,
-    session_id: Option<String>,
-}
-
-#[derive(Debug)]
-struct PersistentShellSession {
-    child: TokioChild,
-    stdin: ChildStdin,
-    stdout: Lines<BufReader<ChildStdout>>,
-}
-
-impl PersistentShellSession {
-    async fn start(config: &OneShotAgentConfig) -> Result<Self> {
-        let mut cmd = TokioCommand::new("sh");
-        cmd.current_dir(&config.workdir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        for (key, value) in &config.env {
-            cmd.env(key, value);
-        }
-
-        let mut child = cmd.spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| std::io::Error::other("persistent runtime stdin unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| std::io::Error::other("persistent runtime stdout unavailable"))?;
-
-        Ok(Self {
-            child,
-            stdin,
-            stdout: BufReader::new(stdout).lines(),
-        })
-    }
-}
-
-impl PersistentShellAgent {
-    #[must_use]
-    pub fn new(config: OneShotAgentConfig) -> Self {
-        Self::with_session_id(config, None)
-    }
-
-    #[must_use]
-    pub fn with_session_id(config: OneShotAgentConfig, session_id: Option<String>) -> Self {
-        Self {
-            config,
-            events: VecDeque::new(),
-            last_exit_status: None,
-            session: None,
-            session_id,
-        }
-    }
-
-    async fn session(&mut self) -> Result<&mut PersistentShellSession> {
-        if self.session.is_none() {
-            self.session = Some(PersistentShellSession::start(&self.config).await?);
-        }
-        Ok(self.session.as_mut().expect("session initialized"))
-    }
-
-    async fn run_turn(&mut self, turn: AgentTurn) -> Result<AgentTurnResult> {
-        self.events.push_back(AgentEvent::TurnStarted);
-        std::fs::write(&turn.prompt_file, &turn.prompt)?;
-
-        let script = build_turn_script(
-            &self.config.cli_name,
-            &self.config.cli_cmd,
-            &turn.prompt_file,
-            &turn.output_file,
-        );
-        let send_result = self.send_script(script).await;
-        let _ = std::fs::remove_file(&turn.prompt_file);
-
-        match &send_result {
-            Ok(status) => {
-                self.last_exit_status = Some(status.clone());
-                if status.success() {
-                    self.events
-                        .push_back(AgentEvent::TurnCompleted { summary: None });
-                    self.events.push_back(AgentEvent::AwaitingInput);
-                } else {
-                    self.events.push_back(AgentEvent::SessionError(format!(
-                        "CLI exited with status {}",
-                        describe_exit_status(status)
-                    )));
-                }
-            }
-            Err(err) => {
-                self.events.push_back(AgentEvent::SessionError(format!(
-                    "Persistent runtime failed: {}",
-                    err
-                )));
-            }
-        }
-
-        Ok(AgentTurnResult {
-            status: send_result,
-        })
-    }
-
-    async fn send_script(&mut self, script: String) -> std::io::Result<ExitStatus> {
-        let session = self.session().await.map_err(as_io_error)?;
-        session.stdin.write_all(script.as_bytes()).await?;
-        session.stdin.flush().await?;
-
-        loop {
-            match session.stdout.next_line().await? {
-                Some(line) => {
-                    if let Some(status) = parse_turn_status(&line) {
-                        return Ok(exit_status_from_code(status));
-                    }
-                }
-                None => {
-                    let exit_status = session.child.wait().await?;
-                    self.last_exit_status = Some(exit_status.clone());
-                    self.events
-                        .push_back(AgentEvent::Exited(exit_status.clone()));
-                    self.session = None;
-                    return Err(std::io::Error::other(format!(
-                        "persistent runtime exited unexpectedly ({})",
-                        describe_exit_status(&exit_status)
-                    )));
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug)]
-struct StreamingProcessAgent {
-    child: TokioChild,
-    stdin: Option<ChildStdin>,
-    events: VecDeque<AgentEvent>,
-    session_id: Arc<Mutex<Option<String>>>,
-    output_files: Arc<Mutex<VecDeque<PathBuf>>>,
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
-    reader_task: JoinHandle<()>,
-}
-
-#[derive(Default)]
-struct StreamingReaderState {
-    text_summary: String,
-    tool_name: Option<String>,
-    tool_json: String,
-}
-
-impl StreamingProcessAgent {
-    fn spawn(
-        config: StreamingAgentConfig,
-        event_tx: mpsc::UnboundedSender<AgentEvent>,
-    ) -> Result<Self> {
-        let mut command_line = config.cli_cmd.clone();
-        if let Some(session_id) = config.resume_session_id.as_ref() {
-            command_line.push_str(" --resume ");
-            command_line.push_str(&shell_quote_str(session_id));
-        }
-
-        let mut cmd = TokioCommand::new("sh");
-        cmd.arg("-lc")
-            .arg(command_line)
-            .current_dir(&config.workdir)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        for (key, value) in &config.env {
-            cmd.env(key, value);
-        }
-
-        let mut child = cmd.spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| std::io::Error::other("streaming runtime stdin unavailable"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| std::io::Error::other("streaming runtime stdout unavailable"))?;
-
-        let session_id = Arc::new(Mutex::new(config.resume_session_id));
-        let output_files = Arc::new(Mutex::new(VecDeque::new()));
-        let reader_task = spawn_streaming_reader(
-            stdout,
-            event_tx.clone(),
-            session_id.clone(),
-            output_files.clone(),
-        );
-
-        Ok(Self {
-            child,
-            stdin: Some(stdin),
-            events: VecDeque::new(),
-            session_id,
-            output_files,
-            event_tx,
-            reader_task,
-        })
-    }
-}
-
-fn spawn_streaming_reader(
-    stdout: ChildStdout,
-    event_tx: mpsc::UnboundedSender<AgentEvent>,
-    session_id: Arc<Mutex<Option<String>>>,
-    output_files: Arc<Mutex<VecDeque<PathBuf>>>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        let mut state = StreamingReaderState::default();
-        while let Ok(Some(line)) = lines.next_line().await {
-            handle_streaming_line(&line, &event_tx, &session_id, &output_files, &mut state);
-        }
-    })
-}
-
-fn handle_streaming_line(
-    line: &str,
-    event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    session_id: &Arc<Mutex<Option<String>>>,
-    output_files: &Arc<Mutex<VecDeque<PathBuf>>>,
-    state: &mut StreamingReaderState,
-) {
-    let Ok(payload) = serde_json::from_str::<serde_json::Value>(line) else {
-        let _ = event_tx.send(AgentEvent::SessionError(format!(
-            "Invalid streaming event: {}",
-            line
-        )));
-        return;
-    };
-
-    if let Some(id) = payload
-        .get("session_id")
-        .and_then(serde_json::Value::as_str)
-    {
-        *session_id.lock().expect("session id mutex poisoned") = Some(id.to_string());
-    }
-
-    match payload.get("type").and_then(serde_json::Value::as_str) {
-        Some("system")
-            if payload.get("subtype").and_then(serde_json::Value::as_str) == Some("init") =>
-        {
-            if let Some(id) = payload
-                .get("session_id")
-                .and_then(serde_json::Value::as_str)
-            {
-                let _ = event_tx.send(AgentEvent::SessionReady {
-                    session_id: id.to_string(),
-                });
-            }
-        }
-        Some("stream_event") => {
-            let Some(event) = payload.get("event") else {
-                return;
-            };
-            match event.get("type").and_then(serde_json::Value::as_str) {
-                Some("content_block_start")
-                    if event
-                        .get("content_block")
-                        .and_then(|block| block.get("type"))
-                        .and_then(serde_json::Value::as_str)
-                        == Some("tool_use") =>
-                {
-                    state.tool_name = event
-                        .get("content_block")
-                        .and_then(|block| block.get("name"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string);
-                    state.tool_json.clear();
-                }
-                Some("content_block_delta") => {
-                    if let Some(delta) = event.get("delta") {
-                        match delta.get("type").and_then(serde_json::Value::as_str) {
-                            Some("input_json_delta") => {
-                                if let Some(partial) = delta
-                                    .get("partial_json")
-                                    .and_then(serde_json::Value::as_str)
-                                {
-                                    state.tool_json.push_str(partial);
-                                }
-                            }
-                            Some("text_delta") => {
-                                if let Some(text) =
-                                    delta.get("text").and_then(serde_json::Value::as_str)
-                                {
-                                    state.text_summary.push_str(text);
-                                    append_to_current_output(output_files, text);
-                                    let _ =
-                                        event_tx.send(AgentEvent::AssistantDelta(text.to_string()));
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Some("content_block_stop") => {
-                    if let Some(name) = state.tool_name.take() {
-                        let args = serde_json::from_str(&state.tool_json)
-                            .unwrap_or_else(|_| serde_json::Value::String(state.tool_json.clone()));
-                        state.tool_json.clear();
-                        let _ = event_tx.send(AgentEvent::ToolCall { name, args });
-                    }
-                }
-                Some("message_stop") => {
-                    let summary = if state.text_summary.trim().is_empty() {
-                        None
-                    } else {
-                        Some(state.text_summary.trim().to_string())
-                    };
-                    state.text_summary.clear();
-                    finish_current_output(output_files);
-                    let _ = event_tx.send(AgentEvent::TurnCompleted { summary });
-                    let _ = event_tx.send(AgentEvent::AwaitingInput);
-                }
-                _ => {}
-            }
-        }
-        _ => {}
-    }
-}
-
-fn queue_output_file(
-    output_files: &Arc<Mutex<VecDeque<PathBuf>>>,
-    output_file: PathBuf,
-) -> std::io::Result<()> {
-    let _ = std::fs::File::create(&output_file)?;
-    output_files
-        .lock()
-        .expect("output queue mutex poisoned")
-        .push_back(output_file);
-    Ok(())
-}
-
-fn append_to_current_output(output_files: &Arc<Mutex<VecDeque<PathBuf>>>, text: &str) {
-    let current = output_files
-        .lock()
-        .expect("output queue mutex poisoned")
-        .front()
-        .cloned();
-    if let Some(path) = current
-        && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path)
-    {
-        let _ = std::io::Write::write_all(&mut file, text.as_bytes());
-    }
-}
-
-fn finish_current_output(output_files: &Arc<Mutex<VecDeque<PathBuf>>>) {
-    let _ = output_files
-        .lock()
-        .expect("output queue mutex poisoned")
-        .pop_front();
-}
-
-pub struct StreamingAgent;
-
-impl StreamingAgent {
-    pub fn runtime(config: StreamingAgentConfig) -> Result<AgentRuntime> {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let agent: Box<dyn CodingAgent> = if config.cli_name == "claude" {
-            Box::new(StreamingProcessAgent::spawn(config, tx.clone())?)
-        } else {
-            let session_id = config
-                .resume_session_id
-                .unwrap_or_else(|| Uuid::new_v4().to_string());
-            let _ = tx.send(AgentEvent::SessionReady {
-                session_id: session_id.clone(),
-            });
-            Box::new(PersistentShellAgent::with_session_id(
-                OneShotAgentConfig {
-                    cli_name: config.cli_name,
-                    cli_cmd: config.cli_cmd,
-                    workdir: config.workdir,
-                    env: config.env,
-                },
-                Some(session_id),
-            ))
-        };
-
-        Ok(AgentRuntime {
-            agent: RuntimeAgent::new(agent, tx),
-            events: AgentEventReceiver { rx },
-        })
-    }
-}
-
-#[derive(Debug)]
 pub struct OneShotAgent {
     config: OneShotAgentConfig,
     events: VecDeque<AgentEvent>,
@@ -692,95 +285,600 @@ impl CodingAgent for OneShotAgent {
     }
 }
 
-#[async_trait]
-impl CodingAgent for PersistentShellAgent {
-    async fn send(&mut self, input: AgentInput) -> Result<AgentTurnResult> {
-        match input {
-            AgentInput::UserMessage(turn) | AgentInput::UrgentMessage(turn) => {
-                self.run_turn(turn).await
-            }
-            AgentInput::Cancel => {
-                self.events.push_back(AgentEvent::SessionError(
-                    "Cancel is not supported by the persistent runtime".to_string(),
-                ));
-                Ok(AgentTurnResult {
-                    status: Err(std::io::Error::other(
-                        "Cancel is not supported by the persistent runtime",
-                    )),
-                })
-            }
+#[derive(Debug, Clone)]
+struct CodexAppServerLaunchConfig {
+    launch_cmd: String,
+    workdir: PathBuf,
+    env: Vec<(String, String)>,
+    resume_thread_id: Option<String>,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
+}
+
+impl CodexAppServerLaunchConfig {
+    fn from_streaming(config: StreamingAgentConfig) -> Self {
+        let (model, reasoning_effort) = codex_model_overrides(&config.cli_name);
+        Self {
+            launch_cmd: build_persistent_launch_command(&config.cli_name, &config.cli_cmd),
+            workdir: config.workdir,
+            env: config.env,
+            resume_thread_id: config.resume_session_id,
+            model,
+            reasoning_effort,
         }
-    }
-
-    fn events(&mut self) -> AgentEventStream<'_> {
-        Box::pin(BufferedEventStream {
-            events: &mut self.events,
-        })
-    }
-
-    fn take_events(&mut self) -> Vec<AgentEvent> {
-        self.events.drain(..).collect()
-    }
-
-    async fn shutdown(&mut self, mode: ShutdownMode) -> Result<Option<ExitStatus>> {
-        let Some(session) = self.session.as_mut() else {
-            return Ok(self.last_exit_status.clone());
-        };
-
-        let status = match mode {
-            ShutdownMode::Graceful => {
-                session.stdin.write_all(b"exit\n").await?;
-                session.stdin.flush().await?;
-                session.child.wait().await?
-            }
-            ShutdownMode::Immediate => {
-                session.child.start_kill()?;
-                session.child.wait().await?
-            }
-        };
-
-        self.last_exit_status = Some(status.clone());
-        self.events.push_back(AgentEvent::Exited(status.clone()));
-        self.session = None;
-        Ok(Some(status))
-    }
-
-    fn session_id(&self) -> Option<String> {
-        self.session_id.clone()
     }
 }
 
-#[async_trait]
-impl CodingAgent for StreamingProcessAgent {
-    async fn send(&mut self, input: AgentInput) -> Result<AgentTurnResult> {
-        match input {
-            AgentInput::UserMessage(turn) | AgentInput::UrgentMessage(turn) => {
-                std::fs::write(&turn.prompt_file, &turn.prompt)?;
-                queue_output_file(&self.output_files, turn.output_file)?;
-                let payload = serde_json::json!({
-                    "type": "user",
-                    "message": {
-                        "content": [{ "type": "text", "text": turn.prompt }]
-                    }
-                });
-                let _ = self.event_tx.send(AgentEvent::TurnStarted);
-                let stdin = self
-                    .stdin
-                    .as_mut()
-                    .ok_or_else(|| std::io::Error::other("streaming runtime stdin closed"))?;
-                stdin.write_all(payload.to_string().as_bytes()).await?;
-                stdin.write_all(b"\n").await?;
-                stdin.flush().await?;
+#[derive(Debug, Default)]
+struct PendingRequestState {
+    next_id: u64,
+    pending: HashMap<u64, oneshot::Sender<std::io::Result<Value>>>,
+}
+
+#[derive(Debug)]
+pub struct CodexAppServerAgent {
+    config: CodexAppServerLaunchConfig,
+    child: TokioChild,
+    stdin: Option<ChildStdin>,
+    events: VecDeque<AgentEvent>,
+    last_exit_status: Option<ExitStatus>,
+    thread_id: Arc<Mutex<Option<String>>>,
+    active_turn_id: Arc<Mutex<Option<String>>>,
+    output_files: Arc<Mutex<HashMap<String, PathBuf>>>,
+    request_state: Arc<Mutex<PendingRequestState>>,
+    event_tx: mpsc::UnboundedSender<AgentEvent>,
+    reader_task: JoinHandle<()>,
+}
+
+impl CodexAppServerAgent {
+    async fn spawn(
+        config: CodexAppServerLaunchConfig,
+        event_tx: mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<Self> {
+        let mut cmd = TokioCommand::new("sh");
+        cmd.arg("-lc")
+            .arg(&config.launch_cmd)
+            .current_dir(&config.workdir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit());
+        for (key, value) in &config.env {
+            cmd.env(key, value);
+        }
+
+        let mut child = cmd.spawn()?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("codex app-server stdin unavailable"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| std::io::Error::other("codex app-server stdout unavailable"))?;
+
+        let thread_id = Arc::new(Mutex::new(None));
+        let active_turn_id = Arc::new(Mutex::new(None));
+        let output_files = Arc::new(Mutex::new(HashMap::new()));
+        let request_state = Arc::new(Mutex::new(PendingRequestState::default()));
+        let reader_task = spawn_codex_reader(
+            stdout,
+            event_tx.clone(),
+            thread_id.clone(),
+            active_turn_id.clone(),
+            output_files.clone(),
+            request_state.clone(),
+        );
+
+        let mut agent = Self {
+            config,
+            child,
+            stdin: Some(stdin),
+            events: VecDeque::new(),
+            last_exit_status: None,
+            thread_id,
+            active_turn_id,
+            output_files,
+            request_state,
+            event_tx,
+            reader_task,
+        };
+
+        agent.initialize().await?;
+        let thread_id = agent.start_or_resume_thread().await?;
+        let _ = agent.event_tx.send(AgentEvent::SessionReady {
+            session_id: thread_id,
+        });
+
+        Ok(agent)
+    }
+
+    async fn initialize(&mut self) -> Result<()> {
+        let params = json!({
+            "clientInfo": {
+                "name": "tinytown",
+                "title": "Tinytown",
+                "version": env!("CARGO_PKG_VERSION"),
+            }
+        });
+        let _ = self.send_request("initialize", params).await?;
+        self.send_notification("initialized", json!({})).await?;
+        Ok(())
+    }
+
+    async fn start_or_resume_thread(&mut self) -> Result<String> {
+        let params = json!({
+            "approvalPolicy": "never",
+            "cwd": self.config.workdir,
+            "sandbox": "danger-full-access",
+            "model": self.config.model,
+        });
+
+        let result = if let Some(thread_id) = self.config.resume_thread_id.as_ref() {
+            let mut resume = params;
+            if let Some(object) = resume.as_object_mut() {
+                object.insert("threadId".to_string(), Value::String(thread_id.clone()));
+            }
+            self.send_request("thread/resume", resume).await?
+        } else {
+            self.send_request("thread/start", params).await?
+        };
+
+        let thread_id = result
+            .get("thread")
+            .and_then(|thread| thread.get("id"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| std::io::Error::other("codex app-server thread id missing"))?
+            .to_string();
+        *self.thread_id.lock().expect("thread id mutex poisoned") = Some(thread_id.clone());
+        Ok(thread_id)
+    }
+
+    async fn send_request(&mut self, method: &str, params: Value) -> Result<Value> {
+        let (request_id, rx) = {
+            let mut state = self
+                .request_state
+                .lock()
+                .expect("request state mutex poisoned");
+            state.next_id += 1;
+            let request_id = state.next_id;
+            let (tx, rx) = oneshot::channel();
+            state.pending.insert(request_id, tx);
+            (request_id, rx)
+        };
+
+        self.write_json(&json!({
+            "id": request_id,
+            "method": method,
+            "params": params,
+        }))
+        .await?;
+
+        match rx.await {
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(err)) => Err(err.into()),
+            Err(_) => Err(std::io::Error::other(format!(
+                "codex app-server request dropped before response: {}",
+                method
+            ))
+            .into()),
+        }
+    }
+
+    async fn send_notification(&mut self, method: &str, params: Value) -> Result<()> {
+        self.write_json(&json!({
+            "method": method,
+            "params": params,
+        }))
+        .await
+    }
+
+    async fn write_json(&mut self, payload: &Value) -> Result<()> {
+        let stdin = self
+            .stdin
+            .as_mut()
+            .ok_or_else(|| std::io::Error::other("codex app-server stdin closed"))?;
+        stdin.write_all(payload.to_string().as_bytes()).await?;
+        stdin.write_all(b"\n").await?;
+        stdin.flush().await?;
+        Ok(())
+    }
+
+    async fn start_turn(&mut self, turn: AgentTurn) -> Result<AgentTurnResult> {
+        std::fs::write(&turn.prompt_file, &turn.prompt)?;
+
+        let mut params = json!({
+            "approvalPolicy": "never",
+            "cwd": self.config.workdir,
+            "threadId": self
+                .session_id()
+                .ok_or_else(|| std::io::Error::other("codex thread id missing"))?,
+            "input": [{"type": "text", "text": turn.prompt}],
+        });
+        if let Some(object) = params.as_object_mut() {
+            if let Some(model) = self.config.model.as_ref() {
+                object.insert("model".to_string(), Value::String(model.clone()));
+            }
+            if let Some(effort) = self.config.reasoning_effort.as_ref() {
+                object.insert("effort".to_string(), Value::String(effort.clone()));
+            }
+            object.insert(
+                "sandboxPolicy".to_string(),
+                Value::String("danger-full-access".to_string()),
+            );
+        }
+
+        let result = self.send_request("turn/start", params).await;
+        let _ = std::fs::remove_file(&turn.prompt_file);
+
+        match result {
+            Ok(payload) => {
+                let turn_id = payload
+                    .get("turn")
+                    .and_then(|value| value.get("id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| std::io::Error::other("codex turn id missing"))?
+                    .to_string();
+                *self
+                    .active_turn_id
+                    .lock()
+                    .expect("active turn mutex poisoned") = Some(turn_id.clone());
+                queue_output_file(&self.output_files, &turn_id, turn.output_file)?;
                 Ok(AgentTurnResult {
                     status: Ok(success_exit_status()),
                 })
             }
+            Err(err) => {
+                self.events.push_back(AgentEvent::SessionError(format!(
+                    "Failed to start Codex turn: {}",
+                    err
+                )));
+                Ok(AgentTurnResult {
+                    status: Err(as_io_error(err)),
+                })
+            }
+        }
+    }
+
+    async fn steer_turn(&mut self, turn: AgentTurn, turn_id: String) -> Result<AgentTurnResult> {
+        std::fs::write(&turn.prompt_file, &turn.prompt)?;
+        let result = self
+            .send_request(
+                "turn/steer",
+                json!({
+                    "threadId": self
+                        .session_id()
+                        .ok_or_else(|| std::io::Error::other("codex thread id missing"))?,
+                    "expectedTurnId": turn_id,
+                    "input": [{"type": "text", "text": turn.prompt}],
+                }),
+            )
+            .await;
+        let _ = std::fs::remove_file(&turn.prompt_file);
+
+        match result {
+            Ok(_) => Ok(AgentTurnResult {
+                status: Ok(success_exit_status()),
+            }),
+            Err(err) => {
+                self.events.push_back(AgentEvent::SessionError(format!(
+                    "Failed to steer Codex turn: {}",
+                    err
+                )));
+                Ok(AgentTurnResult {
+                    status: Err(as_io_error(err)),
+                })
+            }
+        }
+    }
+
+    async fn interrupt_active_turn(&mut self) -> Result<()> {
+        let Some(thread_id) = self.session_id() else {
+            return Ok(());
+        };
+        let Some(turn_id) = self
+            .active_turn_id
+            .lock()
+            .expect("active turn mutex poisoned")
+            .clone()
+        else {
+            return Ok(());
+        };
+
+        let _ = self
+            .send_request(
+                "turn/interrupt",
+                json!({
+                    "threadId": thread_id,
+                    "turnId": turn_id,
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+}
+
+fn spawn_codex_reader(
+    stdout: ChildStdout,
+    event_tx: mpsc::UnboundedSender<AgentEvent>,
+    thread_id: Arc<Mutex<Option<String>>>,
+    active_turn_id: Arc<Mutex<Option<String>>>,
+    output_files: Arc<Mutex<HashMap<String, PathBuf>>>,
+    request_state: Arc<Mutex<PendingRequestState>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout).lines();
+
+        while let Ok(Some(line)) = lines.next_line().await {
+            handle_codex_line(
+                &line,
+                &event_tx,
+                &thread_id,
+                &active_turn_id,
+                &output_files,
+                &request_state,
+            );
+        }
+
+        fail_pending_requests(
+            &request_state,
+            "codex app-server closed before sending a response",
+        );
+    })
+}
+
+fn handle_codex_line(
+    line: &str,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
+    thread_id: &Arc<Mutex<Option<String>>>,
+    active_turn_id: &Arc<Mutex<Option<String>>>,
+    output_files: &Arc<Mutex<HashMap<String, PathBuf>>>,
+    request_state: &Arc<Mutex<PendingRequestState>>,
+) {
+    let Ok(payload) = serde_json::from_str::<Value>(line) else {
+        let _ = event_tx.send(AgentEvent::SessionError(format!(
+            "Invalid codex app-server event: {}",
+            line
+        )));
+        return;
+    };
+
+    if let Some(id) = payload.get("id").and_then(Value::as_u64) {
+        let response = if let Some(result) = payload.get("result") {
+            Ok(result.clone())
+        } else if let Some(err) = payload.get("error") {
+            let message = err
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown JSON-RPC error");
+            Err(std::io::Error::other(message.to_string()))
+        } else {
+            Err(std::io::Error::other("missing JSON-RPC result"))
+        };
+
+        if let Some(tx) = request_state
+            .lock()
+            .expect("request state mutex poisoned")
+            .pending
+            .remove(&id)
+        {
+            let _ = tx.send(response);
+        }
+        return;
+    }
+
+    let Some(method) = payload.get("method").and_then(Value::as_str) else {
+        return;
+    };
+    let params = payload.get("params").unwrap_or(&Value::Null);
+
+    match method {
+        "thread/started" => {
+            if let Some(id) = params
+                .get("thread")
+                .and_then(|thread| thread.get("id"))
+                .and_then(Value::as_str)
+            {
+                *thread_id.lock().expect("thread id mutex poisoned") = Some(id.to_string());
+            }
+        }
+        "turn/started" => {
+            if let Some(id) = params
+                .get("turn")
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str)
+            {
+                *active_turn_id.lock().expect("active turn mutex poisoned") = Some(id.to_string());
+            }
+            let _ = event_tx.send(AgentEvent::TurnStarted);
+        }
+        "item/agentMessage/delta" => {
+            if let Some(delta) = params.get("delta").and_then(Value::as_str) {
+                if let Some(turn_id) = params.get("turnId").and_then(Value::as_str) {
+                    append_to_turn_output(output_files, turn_id, delta);
+                }
+                let _ = event_tx.send(AgentEvent::AssistantDelta(delta.to_string()));
+            }
+        }
+        "item/completed" => {
+            if let Some((name, args)) =
+                extract_tool_call(params.get("item").unwrap_or(&Value::Null))
+            {
+                let _ = event_tx.send(AgentEvent::ToolCall { name, args });
+            }
+        }
+        "turn/completed" => {
+            let turn_id = params
+                .get("turn")
+                .and_then(|turn| turn.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if let Some(turn_id) = turn_id.as_ref() {
+                finish_turn_output(output_files, turn_id);
+                let mut active = active_turn_id.lock().expect("active turn mutex poisoned");
+                if active.as_deref() == Some(turn_id.as_str()) {
+                    *active = None;
+                }
+            }
+
+            let summary = params
+                .get("turn")
+                .and_then(extract_turn_summary)
+                .or_else(|| turn_id.map(|id| format!("turn {}", id)));
+            let _ = event_tx.send(AgentEvent::TurnCompleted { summary });
+            let _ = event_tx.send(AgentEvent::AwaitingInput);
+        }
+        _ => {}
+    }
+}
+
+fn fail_pending_requests(request_state: &Arc<Mutex<PendingRequestState>>, message: &str) {
+    let pending = {
+        let mut state = request_state.lock().expect("request state mutex poisoned");
+        std::mem::take(&mut state.pending)
+    };
+
+    for (_, tx) in pending {
+        let _ = tx.send(Err(std::io::Error::other(message.to_string())));
+    }
+}
+
+fn extract_tool_call(item: &Value) -> Option<(String, Value)> {
+    match item.get("type").and_then(Value::as_str) {
+        Some("commandExecution") => Some((
+            item.get("command")
+                .and_then(Value::as_str)
+                .unwrap_or("commandExecution")
+                .to_string(),
+            json!({
+                "status": item.get("status").and_then(Value::as_str),
+            }),
+        )),
+        Some("mcpToolCall") => {
+            let server = item.get("server").and_then(Value::as_str).unwrap_or("mcp");
+            let tool = item.get("tool").and_then(Value::as_str).unwrap_or("tool");
+            Some((
+                format!("{}:{}", server, tool),
+                item.get("arguments").cloned().unwrap_or(Value::Null),
+            ))
+        }
+        _ => None,
+    }
+}
+
+fn extract_turn_summary(turn: &Value) -> Option<String> {
+    if let Some(summary) = turn.get("summary").and_then(Value::as_str)
+        && !summary.trim().is_empty()
+    {
+        return Some(summary.trim().to_string());
+    }
+
+    turn.get("status")
+        .and_then(Value::as_str)
+        .map(|status| status.to_string())
+}
+
+fn queue_output_file(
+    output_files: &Arc<Mutex<HashMap<String, PathBuf>>>,
+    turn_id: &str,
+    output_file: PathBuf,
+) -> std::io::Result<()> {
+    let _ = std::fs::File::create(&output_file)?;
+    output_files
+        .lock()
+        .expect("output file mutex poisoned")
+        .insert(turn_id.to_string(), output_file);
+    Ok(())
+}
+
+fn append_to_turn_output(
+    output_files: &Arc<Mutex<HashMap<String, PathBuf>>>,
+    turn_id: &str,
+    text: &str,
+) {
+    let path = output_files
+        .lock()
+        .expect("output file mutex poisoned")
+        .get(turn_id)
+        .cloned();
+    if let Some(path) = path
+        && let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path)
+    {
+        let _ = std::io::Write::write_all(&mut file, text.as_bytes());
+    }
+}
+
+fn finish_turn_output(output_files: &Arc<Mutex<HashMap<String, PathBuf>>>, turn_id: &str) {
+    output_files
+        .lock()
+        .expect("output file mutex poisoned")
+        .remove(turn_id);
+}
+
+#[must_use]
+fn build_persistent_launch_command(cli_name: &str, cli_cmd: &str) -> String {
+    if supports_persistent_runtime(cli_name) && cli_cmd.trim_start().starts_with("codex") {
+        "codex app-server --listen stdio://".to_string()
+    } else {
+        cli_cmd.to_string()
+    }
+}
+
+#[must_use]
+fn codex_model_overrides(cli_name: &str) -> (Option<String>, Option<String>) {
+    match cli_name {
+        "codex-mini" => (Some("gpt-5.4-mini".to_string()), Some("medium".to_string())),
+        _ => (None, None),
+    }
+}
+
+pub struct StreamingAgent;
+
+impl StreamingAgent {
+    pub async fn runtime(config: StreamingAgentConfig) -> Result<AgentRuntime> {
+        if !supports_persistent_runtime(&config.cli_name) {
+            return Err(std::io::Error::other(format!(
+                "persistent runtime not supported for {}",
+                config.cli_name
+            ))
+            .into());
+        }
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let agent = CodexAppServerAgent::spawn(
+            CodexAppServerLaunchConfig::from_streaming(config),
+            tx.clone(),
+        )
+        .await?;
+
+        Ok(AgentRuntime {
+            agent: RuntimeAgent::new(Box::new(agent), tx),
+            events: AgentEventReceiver { rx },
+        })
+    }
+}
+
+#[async_trait]
+impl CodingAgent for CodexAppServerAgent {
+    async fn send(&mut self, input: AgentInput) -> Result<AgentTurnResult> {
+        match input {
+            AgentInput::UserMessage(turn) => self.start_turn(turn).await,
+            AgentInput::UrgentMessage(turn) => {
+                let active_turn_id = self
+                    .active_turn_id
+                    .lock()
+                    .expect("active turn mutex poisoned")
+                    .clone();
+                if let Some(active_turn_id) = active_turn_id {
+                    self.steer_turn(turn, active_turn_id).await
+                } else {
+                    self.start_turn(turn).await
+                }
+            }
             AgentInput::Cancel => {
-                let _ = self.stdin.take();
-                self.child.start_kill()?;
-                let status = self.child.wait().await?;
-                let _ = self.event_tx.send(AgentEvent::Exited(status.clone()));
-                Ok(AgentTurnResult { status: Ok(status) })
+                self.interrupt_active_turn().await?;
+                Ok(AgentTurnResult {
+                    status: Ok(success_exit_status()),
+                })
             }
         }
     }
@@ -796,28 +894,45 @@ impl CodingAgent for StreamingProcessAgent {
     }
 
     async fn shutdown(&mut self, mode: ShutdownMode) -> Result<Option<ExitStatus>> {
-        let status = match mode {
+        match mode {
             ShutdownMode::Graceful => {
                 if let Some(mut stdin) = self.stdin.take() {
                     let _ = stdin.shutdown().await;
                 }
-                self.child.wait().await?
+                let status = match tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    self.child.wait(),
+                )
+                .await
+                {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        self.child.start_kill()?;
+                        self.child.wait().await?
+                    }
+                };
+                self.last_exit_status = Some(status.clone());
+                self.reader_task.abort();
+                self.events.push_back(AgentEvent::Exited(status.clone()));
+                Ok(Some(status))
             }
             ShutdownMode::Immediate => {
+                let _ = self.interrupt_active_turn().await;
                 let _ = self.stdin.take();
                 self.child.start_kill()?;
-                self.child.wait().await?
+                let status = self.child.wait().await?;
+                self.last_exit_status = Some(status.clone());
+                self.reader_task.abort();
+                self.events.push_back(AgentEvent::Exited(status.clone()));
+                Ok(Some(status))
             }
-        };
-        self.reader_task.abort();
-        let _ = self.event_tx.send(AgentEvent::Exited(status.clone()));
-        Ok(Some(status))
+        }
     }
 
     fn session_id(&self) -> Option<String> {
-        self.session_id
+        self.thread_id
             .lock()
-            .expect("session id mutex poisoned")
+            .expect("thread id mutex poisoned")
             .clone()
     }
 }
@@ -856,9 +971,4 @@ fn success_exit_status() -> ExitStatus {
 #[cfg(unix)]
 fn exit_status_from_code(code: i32) -> ExitStatus {
     std::os::unix::process::ExitStatusExt::from_raw(code << 8)
-}
-
-#[cfg(windows)]
-fn exit_status_from_code(code: i32) -> ExitStatus {
-    std::os::windows::process::ExitStatusExt::from_raw(code as u32)
 }
