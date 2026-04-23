@@ -623,6 +623,10 @@ fn spawn_codex_reader(
             &request_state,
             "codex app-server closed before sending a response",
         );
+        let _ = event_tx.send(AgentEvent::SessionError(
+            "Codex app-server stream closed unexpectedly".to_string(),
+        ));
+        let _ = event_tx.send(AgentEvent::Exited(exit_status_from_code(1)));
     })
 }
 
